@@ -26,7 +26,7 @@ export function LintClient() {
   } = useLint();
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 92 }}>
       <div className="mb-8">
         <Link
           href="/"
@@ -105,6 +105,6 @@ export function LintClient() {
           )}
         </div>
       )}
-    </main>
+    </div>
   );
 }

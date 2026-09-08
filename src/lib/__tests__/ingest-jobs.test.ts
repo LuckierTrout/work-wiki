@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -10,10 +10,15 @@ import {
   purgeStaleIngestJobs,
   listIngestJobs,
   deleteIngestJob,
+  cancelIngestJob,
+  claimIngestJob,
+  retryIngestJob,
+  INGEST_CANCELLED_COPY,
   INGEST_JOB_STALE_MS,
   INGEST_JOB_GC_TTL_MS,
 } from "../ingest-jobs";
 import { _resetStorage } from "../storage";
+import { _resetLocks } from "../lock";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -68,6 +73,38 @@ describe("ingest-jobs", () => {
     expect(await getIngestJob("ghost")).toBeNull();
   });
 
+  it("allows only one cross-isolate queued-to-processing claim", async () => {
+    await createIngestJob({ jobId: "atomic-claim", owner: "alice", title: "Claim" });
+    const { getStorage } = await import("../storage");
+    const storage = getStorage();
+    const originalRead = storage.readFileWithEtag.bind(storage);
+    let firstRead!: () => void;
+    let releaseReads!: () => void;
+    const started = new Promise<void>((resolve) => { firstRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseReads = resolve; });
+    let reads = 0;
+    vi.spyOn(storage, "readFileWithEtag").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (String(rel).endsWith("atomic-claim.json") && reads < 2) {
+        reads += 1;
+        if (reads === 1) firstRead();
+        await release;
+      }
+      return value;
+    });
+
+    const first = claimIngestJob("atomic-claim", "alice");
+    await started;
+    _resetLocks();
+    const second = claimIngestJob("atomic-claim", "alice");
+    while (reads < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+    releaseReads();
+
+    const claims = await Promise.all([first, second]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect((await getIngestJob("atomic-claim"))?.status).toBe("processing");
+  });
+
   it("rejects a path-traversing job id", async () => {
     await expect(getIngestJob("../secrets")).rejects.toThrow(/invalid ingest job id/);
   });
@@ -113,6 +150,15 @@ describe("ingest-jobs", () => {
     expect(jobs[0].email?.attachmentNames).toEqual(["notes.pdf"]);
   });
 
+  it("filters ingest jobs to one Workbench Wiki", async () => {
+    await createIngestJob({ jobId: "job-a", owner: "alice", title: "A", wikiId: "wiki-a" });
+    await createIngestJob({ jobId: "job-b", owner: "alice", title: "B", wikiId: "wiki-b" });
+    await createIngestJob({ jobId: "job-legacy", owner: "alice", title: "Legacy" });
+
+    const scoped = await listIngestJobs({ owner: "alice", wikiId: "wiki-a" });
+    expect(scoped.map((job) => job.jobId).sort()).toEqual(["job-a", "job-legacy"]);
+  });
+
   it("deletes an owned terminal job", async () => {
     await createIngestJob({ jobId: "terminal", owner: "alice", title: "Done" });
     await updateIngestJob("terminal", { status: "done", slug: "done-page" });
@@ -127,6 +173,48 @@ describe("ingest-jobs", () => {
 
     expect(await deleteIngestJob("private", "bob")).toBe(false);
     expect(await getIngestJob("private")).not.toBeNull();
+  });
+
+  it("cancel of queued becomes failed; cancel of processing stays processing", async () => {
+    await createIngestJob({ jobId: "queued-1", owner: "alice", title: "Q" });
+    const queued = await cancelIngestJob("queued-1", "alice");
+    expect(queued).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: INGEST_CANCELLED_COPY,
+    });
+
+    await createIngestJob({ jobId: "proc-1", owner: "alice", title: "P" });
+    await updateIngestJob("proc-1", { status: "processing" });
+    const processing = await cancelIngestJob("proc-1", "alice");
+    expect(processing).toMatchObject({ status: "processing", cancelled: true });
+    expect(await retryIngestJob("proc-1", "alice")).toBeNull();
+    expect((await getIngestJob("proc-1"))?.status).toBe("processing");
+  });
+
+  it("cancel of a retrying job becomes failed immediately", async () => {
+    await createIngestJob({ jobId: "retrying-1", owner: "alice", title: "R" });
+    await updateIngestJob("retrying-1", { status: "retrying" });
+    const cancelled = await cancelIngestJob("retrying-1", "alice");
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: INGEST_CANCELLED_COPY,
+    });
+    expect(await retryIngestJob("retrying-1", "alice")).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  it("does not overwrite an existing failed error with cancelled copy", async () => {
+    await createIngestJob({ jobId: "fail-1", owner: "alice", title: "F" });
+    await updateIngestJob("fail-1", { status: "failed", error: "LLM timeout" });
+    const cancelled = await cancelIngestJob("fail-1", "alice");
+    expect(cancelled).toMatchObject({
+      status: "failed",
+      cancelled: true,
+      error: "LLM timeout",
+    });
   });
 
   it("protects queued and processing jobs from deletion", async () => {

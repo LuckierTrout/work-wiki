@@ -24,8 +24,100 @@ export const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024;
 /** Maximum extracted text content length passed downstream (100 K chars). */
 export const MAX_CONTENT_LENGTH = 100_000;
 
-/** URL fetch timeout in milliseconds (15 seconds). */
+/**
+ * URL fetch timeout in milliseconds (15 seconds).
+ *
+ * ORDERING (DW-439): `REQUEST_TIMEOUT_MS` in `src/lib/workbench-request.ts`
+ * must stay STRICTLY ABOVE this value, with at least a 5 s margin. That client
+ * deadline wraps a server fetch armed with this one
+ * (`POST /api/workbench/intake` -> `fetchUrlContent`), and the ordering buys
+ * exactly one thing: this fetch's deadline fires first, so a slow URL comes
+ * back as the route's own 400 rather than as a client abort reported to the
+ * owner as "the outcome is unknown" while the route completes and stores the
+ * Source.
+ *
+ * TOTAL, NOT PER HOP (DW-700). `fetchFollowingRedirects` in `src/lib/fetch.ts`
+ * used to arm this timeout inside its hop loop, so five redirects bought six
+ * fresh 15 s clocks -- up to 90 s, past any fixed client margin, which is the
+ * whole reason the ordering above could not be trusted. ONE signal is now
+ * created before the loop and passed to every hop, so this value bounds the
+ * whole redirect chain AND the body read that follows it.
+ *
+ * It still does not bound the route's TOTAL work: the store, the job record and
+ * an off-Workers inline `ingest()` all run after the fetch. That remainder is
+ * what {@link INTAKE_ANSWER_BUDGET_MS} bounds.
+ *
+ * Raising this value without raising the two above it re-opens DW-439/DW-700.
+ * The pin that catches it lives in
+ * `src/lib/__tests__/workbench-request.test.ts`.
+ */
 export const FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * The budget `POST /api/workbench/intake` allots itself (17 seconds), measured
+ * from route entry.
+ *
+ * A BUDGET, NOT A WHOLE-REQUEST DEADLINE. It is consulted at exactly ONE point
+ * — the `enqueueOrInline` call — where whatever is LEFT of it becomes the
+ * inline compile's `inlineBudgetMs`. Everything before that point
+ * (`request.formData()`, `fetchUrlContent`, `sourceSha256`, the raw-source
+ * write, `createIngestJob`, `stageText`) still runs with no deadline of its own;
+ * what those steps spend is exactly what the inline run does not get. Only the
+ * inline compile is actually bounded here, and only because it is the step that
+ * was unbounded and long.
+ *
+ * THE MIDDLE RUNG of `FETCH_TIMEOUT_MS < INTAKE_ANSWER_BUDGET_MS <
+ * REQUEST_TIMEOUT_MS` (DW-700). The fetch gets 15 s of it; when the remainder
+ * elapses the route answers `{ queued: true, jobId, path }` -- the shape the
+ * client already polls -- instead of leaving the client to abort and report a
+ * stored Source as an unknown outcome.
+ *
+ * A FIXED margin cannot do this job, which is DW-700's point: the budget has to
+ * be a remainder measured from request entry, because the work before the
+ * inline run is what consumed it.
+ *
+ * The ladder is executed in `src/lib/__tests__/workbench-request.test.ts`, and
+ * that the remainder really is one in `src/lib/__tests__/workbench-intake.test.ts`.
+ */
+export const INTAKE_ANSWER_BUDGET_MS = 17_000;
+
+/**
+ * The budget `POST /api/workbench/activity` allots itself (17 seconds),
+ * measured from route entry.
+ *
+ * SAME SHAPE AS {@link INTAKE_ANSWER_BUDGET_MS}, DIFFERENT RUNG. It is spent at
+ * the two `enqueueOrInline` calls on the retry path — the `embed` rebuild and
+ * the stored-Source re-ingest — where whatever is LEFT of it becomes the inline
+ * run's `inlineBudgetMs`. Everything before that point (`retryIngestJob`, the
+ * raw-source read, the analysis-reuse probe) still runs with no deadline of its
+ * own; what those steps spend is exactly what the inline run does not get.
+ *
+ * ONLY ONE RUNG BENEATH `REQUEST_TIMEOUT_MS`, with no fetch rung under it: this
+ * door reaches no `fetchUrlContent`, so `FETCH_TIMEOUT_MS` does not bind it and
+ * the ladder here is just `ACTIVITY_ANSWER_BUDGET_MS < REQUEST_TIMEOUT_MS` with
+ * room to compose the answer. That is why this is its own constant rather than
+ * a reuse of the intake one, even though the two agree today: the intake value
+ * is pinned ABOVE `FETCH_TIMEOUT_MS` for a reason that does not exist here, so
+ * a future move of that rung must not silently drag this door with it.
+ *
+ * A REMAINDER, NOT A FIXED MARGIN (DW-746), for the same reason DW-700 gives:
+ * `ActivityDock.tsx` reaches this route through `send`, which arms
+ * `REQUEST_TIMEOUT_MS`; when the remainder elapses the route answers
+ * `{ queued: true, jobId, retried: true }` — the shape the client already polls
+ * — instead of letting the client abort.
+ *
+ * NOT the unconfirmed-write verdict, which this door never renders. The dock's
+ * retry `.catch` is `setError(cause instanceof Error ? cause.message : "Retry
+ * failed.")`; it reaches neither `unconfirmedCause` nor `writeFailure`, so what
+ * an abort actually puts on screen is the mechanism sentence the abort carries
+ * ("signal timed out") next to a row whose retry is still running and will
+ * still be marked `done`/`failed`. That is what this budget prevents — the
+ * milder, more common failure of naming a timeout for work nobody stopped.
+ *
+ * The ladder is executed in `src/lib/__tests__/workbench-request.test.ts`, and
+ * the wiring in `src/lib/__tests__/workbench-epic2-routes.test.ts`.
+ */
+export const ACTIVITY_ANSWER_BUDGET_MS = 17_000;
 
 /**
  * Maximum characters sent to the LLM in a single chunk during ingest.

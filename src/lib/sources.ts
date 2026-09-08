@@ -35,7 +35,8 @@ function isSourceEntry(v: unknown): v is SourceEntry {
     VALID_TYPES.has(obj.type as SourceEntry["type"]) &&
     typeof obj.url === "string" &&
     typeof obj.fetched === "string" &&
-    typeof obj.triggered_by === "string"
+    typeof obj.triggered_by === "string" &&
+    (obj.origin === undefined || obj.origin === "plaud")
   );
 }
 
@@ -135,6 +136,7 @@ export function buildSourceEntry(
   type: SourceEntry["type"] = "url",
   triggeredBy = "system",
   rawId?: string,
+  origin?: SourceEntry["origin"],
 ): SourceEntry {
   return {
     type,
@@ -142,5 +144,6 @@ export function buildSourceEntry(
     fetched: new Date().toISOString().slice(0, 10),
     triggered_by: triggeredBy,
     ...(rawId ? { raw_id: rawId } : {}),
+    ...(origin ? { origin } : {}),
   };
 }

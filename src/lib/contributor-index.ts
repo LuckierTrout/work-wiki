@@ -2,9 +2,11 @@
  * Precomputed **contributor** index (Phase 2 — precomputed KV indexes).
  *
  * Serializes the wiki-wide contributor scan ({@link computeScanData}) into a KV
- * blob so the homepage and `/wiki/contributors` can build profiles from an O(1)
- * read instead of re-scanning every page's revisions + every talk thread on
- * each render.
+ * blob of RAW per-author tallies — edits, pages, comments, threads, reverts and
+ * a first/last-seen range — readable in O(1) instead of re-scanning every page's
+ * revisions + every talk thread. No trust score is stored: the formula is applied
+ * on READ, in {@link profilesFromIndex} / {@link contributorProfileFromIndex},
+ * so a change to it never leaves a stale number persisted.
  *
  * Shape:
  * ```
@@ -16,21 +18,34 @@
  *   totals: { revisionCount; contributorCount }
  * }
  * ```
- * Note `pagesEdited` is stored as the SLUG LIST (not a count) so the index can
- * be maintained incrementally (add a slug on edit, recount distinct on read).
+ * `pagesEdited` is stored as the SLUG LIST (not a count) — a shape chosen when
+ * the index was maintained incrementally (add a slug on edit, recount distinct
+ * on read). Nothing maintains it incrementally today; the list is still what
+ * {@link rebuildContributorIndex} writes and what the read path counts.
  *
- * --- Incremental-vs-rebuild split (this phase) ---
- * The lifecycle write hook maintains, for `op.author`, the cheap "edit" facts:
- *   editCount, pagesEdited, firstSeen, lastSeen   (and decrements on delete).
- * The talk hook maintains commentCount / threadsCreated for the commenter.
- * `revertCount` is LEFT to the daily rebuild: it's a pairwise diff over a page's
- * revision history (not a single-author fact), and it only feeds a capped trust
- * score, so up-to-24h lag is invisible. `totals` are recomputed cheaply on read
- * from the authors map, so they never drift. The daily rebuild reconciles
- * everything from ground truth.
+ * --- RETIRED WIRING, HONESTLY (DW-125/126/535) ---
+ * This module has NO production reader and NO production writer left:
+ *   • The readers are gone. `/wiki/contributors`, `GET /api/contributors` and
+ *     `GET /api/contributors/:handle` are `RETIRED_SURFACES` entries; there is
+ *     no `/u/<handle>` page; the `contributors.ts` profile builders that used
+ *     to consult {@link contributorProfileFromIndex} and
+ *     {@link profilesFromIndex} were deleted along with them.
+ *   • The incremental writers are gone. The lifecycle write/delete hook that
+ *     called {@link recordEditForAuthor} / {@link reverseEditForAuthor} was
+ *     removed with the last reader, and the talk-page hook that called
+ *     {@link recordTalkForAuthor} went with the thread writers in DW-390.
+ *   • The scheduled rebuild is gone. `rebuildDerivedIndexes` no longer runs
+ *     {@link rebuildContributorIndex}: a full wiki-wide scan every day is a
+ *     real cost, and nothing consumed the result.
+ * The module is RETAINED — every export intact — as an on-demand rebuild and
+ * repair tool, because deleting it would decide whether the contributor trust
+ * surface ever returns, which is a product call, not a cleanup.
  *
- * Behavior-preserving: the read site falls back to the live scan whenever the
- * index is empty/missing.
+ * Be precise about what "on-demand" means here: no route, CLI command, MCP tool
+ * or maintenance task kind calls {@link rebuildContributorIndex} today. There is
+ * no operator entry point to it at all — only a direct call from code (a future
+ * caller, or a one-off written against this module). Read nothing here as live
+ * wiring.
  */
 
 import { getStorage } from "./storage";
@@ -133,11 +148,11 @@ function profileFromIndexAuthor(
 
 /**
  * Build ONE handle's profile from the index, or `null` when the index is ABSENT
- * (the caller should then fall back to the live scan). A handle missing from a
- * PRESENT index has no recorded public contributions → an empty profile, so the
- * caller still avoids the scan. This is the O(1) read behind the `/u/<handle>`
- * profile + `/api/contributors/<handle>` (mirrors {@link profilesFromIndex} for
- * a single handle).
+ * (a caller could then fall back to a live {@link computeScanData} scan). A
+ * handle missing from a PRESENT index has no recorded public contributions → an
+ * empty profile, so the caller still avoids the scan. Mirrors
+ * {@link profilesFromIndex} for a single handle. No production caller — the
+ * profile surfaces this served are retired.
  */
 export async function contributorProfileFromIndex(
   handle: string,
@@ -147,7 +162,8 @@ export async function contributorProfileFromIndex(
   return profileFromIndexAuthor(handle, idx.authors[handle] ?? emptyIndexAuthor());
 }
 
-/** Build the full sorted profile list from the index (homepage / contributors page). */
+/** Build the full sorted profile list from the index. No production caller —
+ *  the homepage badges and `/wiki/contributors` this served are retired. */
 export function profilesFromIndex(idx: ContributorIndex): ContributorProfile[] {
   const profiles = Object.entries(idx.authors).map(([handle, a]) =>
     profileFromIndexAuthor(handle, a),
@@ -159,13 +175,18 @@ export function profilesFromIndex(idx: ContributorIndex): ContributorProfile[] {
 }
 
 // ---------------------------------------------------------------------------
-// Incremental maintenance — write path (edits) + talk path (comments/threads)
+// Incremental maintenance — edit facts + talk facts.
+//
+// UNREACHED: the lifecycle write/delete hook and the talk-page hook that called
+// these are both deleted. They remain as the primitives a rebuilt index would
+// be kept current with, should the contributor surface ever return.
 // ---------------------------------------------------------------------------
 
 /**
- * Record one edit by `author` on `slug` (lifecycle write hook). Bumps editCount,
- * adds the slug to pagesEdited, and advances firstSeen/lastSeen. `date` defaults
- * to now. Leaves revertCount to the daily rebuild.
+ * Record one edit by `author` on `slug`. Bumps editCount, adds the slug to
+ * pagesEdited, and advances firstSeen/lastSeen. `date` defaults to now. Leaves
+ * revertCount alone — it is a pairwise diff over a page's revision history, not
+ * a single-author fact, so only {@link rebuildContributorIndex} sets it.
  */
 export async function recordEditForAuthor(
   author: string,
@@ -175,7 +196,7 @@ export async function recordEditForAuthor(
   if (!author) return;
   await withFileLock(CONTRIBUTOR_INDEX_LOCK, async () => {
     const idx = await getContributorIndex();
-    if (!idx) return; // No index yet → daily rebuild seeds it; don't fabricate one.
+    if (!idx) return; // No index yet → rebuildContributorIndex seeds it; don't fabricate one.
     const a = idx.authors[author] ?? emptyIndexAuthor();
     a.editCount += 1;
     if (!a.pagesEdited.includes(slug)) a.pagesEdited.push(slug);
@@ -188,9 +209,9 @@ export async function recordEditForAuthor(
 }
 
 /**
- * Reverse one edit by `author` on `slug` (lifecycle delete hook). Decrements
- * editCount and drops the slug from pagesEdited. firstSeen/lastSeen and
- * revertCount are reconciled by the daily rebuild (cheap to leave stale).
+ * Reverse one edit by `author` on `slug`. Decrements editCount and drops the
+ * slug from pagesEdited. firstSeen/lastSeen and revertCount are left alone —
+ * only {@link rebuildContributorIndex} reconciles them from ground truth.
  */
 export async function reverseEditForAuthor(
   author: string,
@@ -211,9 +232,10 @@ export async function reverseEditForAuthor(
 }
 
 /**
- * Record talk activity for `author` (talk hook): one comment, and optionally a
- * new thread. Advances firstSeen/lastSeen. Idempotency is not guaranteed — call
- * exactly once per new comment/thread; the daily rebuild reconciles drift.
+ * Record talk activity for `author`: one comment, and optionally a new thread.
+ * Advances firstSeen/lastSeen. Idempotency is not guaranteed — call exactly once
+ * per new comment/thread; only a {@link rebuildContributorIndex} reconciles
+ * drift.
  */
 export async function recordTalkForAuthor(
   author: string,
@@ -258,9 +280,11 @@ export function scanDataToIndex(data: ContributorScanData): ContributorIndex {
 }
 
 /**
- * Rebuild the contributor index from a full wiki scan. Repair tool + daily
- * self-heal. Uses the same scan (`computeScanData`) the live read path uses, so
- * the index is byte-for-byte consistent with the fallback.
+ * Rebuild the contributor index from a full wiki scan. The module's only entry
+ * point with a reason to be called: an on-demand repair/rebuild tool. It is NOT
+ * on the daily `rebuildDerivedIndexes` pass — the scan walks every page's
+ * revisions and every `discuss/` file, and nothing reads the result. Callers
+ * pay that cost deliberately, when they want the index refreshed.
  */
 export async function rebuildContributorIndex(): Promise<ContributorIndex> {
   const data = await computeScanData(null);

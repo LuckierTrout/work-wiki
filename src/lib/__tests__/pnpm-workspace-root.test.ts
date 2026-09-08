@@ -1,0 +1,1646 @@
+/**
+ * DW-411: the repo's `pnpm-workspace.yaml` files are load-bearing.
+ *
+ * pnpm searches UPWARD for a workspace root. With no `pnpm-workspace.yaml` in
+ * the checkout it adopts the first one it finds above — on the maintainer's
+ * machine `~/pnpm-workspace.yaml`, which declares only `allowBuilds:` and no
+ * `packages:` key — and then every `pnpm <cmd>` run inside the repo aborts with
+ * `ERROR packages field missing or empty` before doing any work, including
+ * `pnpm install`, `pnpm lint` and `pnpm test`: the entry points `README.md` and
+ * `.github/workflows/ci.yml` document. A repo-root workspace file with a
+ * non-empty `packages:` list stops that walk inside the checkout.
+ *
+ * The same mechanism then has to be applied one level down. The root file
+ * captures `workers/sandbox-runner`, the repo's SECOND pnpm package (its own
+ * `package.json`, its own `pnpm-lock.yaml`), which the workflows install with
+ * `pnpm --dir workers/sandbox-runner install --frozen-lockfile`. Captured by a
+ * root workspace that does not list it, that command becomes a SILENT NO-OP —
+ * it exits 0 in ~100ms and creates no `node_modules` at all. Concretely that
+ * fails CI's Sandbox Worker job at the next step, `TS2307: Cannot find module
+ * '@cloudflare/sandbox'`; the same no-op also sits in front of a
+ * `wrangler deploy`, though that path is conditional here (AGENTS.md records
+ * that the deploy workflows are inert on this fork unless opted into with
+ * `ENABLE_CLOUDFLARE_DEPLOY`, and that production deploys are manual). Its own
+ * `pnpm-workspace.yaml` stops the walk there and restores the install.
+ *
+ * The obvious-looking alternative is a trap, and this suite exists partly to
+ * keep it shut: listing `workers/sandbox-runner` in the ROOT `packages:` list
+ * does NOT shield it, it breaks the root instead. The root lockfile has no
+ * importer for that directory, so `pnpm install --frozen-lockfile` at the root
+ * fails with `ERR_PNPM_OUTDATED_LOCKFILE` — "specifiers in the lockfile ({})
+ * don't match specs in package.json". Any directory carrying its own
+ * `pnpm-lock.yaml` therefore has to be OUTSIDE the root list and hold its own
+ * workspace file; both halves are asserted below.
+ *
+ * WHAT THIS SUITE ASSERTS IS THE FILE CONTRACT, NOT THE SHELL BEHAVIOUR.
+ * Whether `pnpm` actually aborts depends on what sits ABOVE the checkout, which
+ * is machine state a test suite cannot stage (and on a machine with nothing
+ * above the repo, these files change nothing at all). What every machine shares
+ * is that an absent — or `packages:`-less — workspace file is what makes the
+ * abort reachable, so that is what gets pinned here. The shell behaviour, and
+ * `pnpm-lock.yaml` staying byte-identical, were verified once by hand.
+ *
+ * The set of directories to shield is DERIVED, not hard-coded, so a nested
+ * package added later inherits the guard instead of the bug. It is the union of
+ * (a) every `--dir`/`-C` target scraped from `.github/workflows/*.yml` and
+ * (b) every directory in the repo holding its own `pnpm-lock.yaml` — because a
+ * nested package can also be installed by hand, with no workflow naming it.
+ */
+
+import { describe, expect, it, beforeAll } from "vitest";
+import { readFile, readdir } from "fs/promises";
+import path from "path";
+import { walkFiles } from "./source-scan";
+
+const SRC = path.resolve(__dirname, "../..");
+const ROOT = path.resolve(SRC, "..");
+
+/**
+ * ONE spelling of pnpm's abort, shared by this suite and by the comment block
+ * inside each workspace file. The comments are the only thing standing between
+ * these two-line files and a future "delete the empty config" cleanup, so the
+ * assertions below require the string to still be there.
+ */
+const PNPM_ABORT = "packages field missing or empty";
+
+/**
+ * The nested files prevent a different failure from the root one — not an
+ * abort, but an exit-0 install that installs nothing — so their comments are
+ * pinned to that phrase instead.
+ */
+const SILENT_NO_OP = "silent no-op";
+
+/** What a root list that swallows a nested package costs, verbatim from pnpm. */
+const OUTDATED_LOCKFILE = "ERR_PNPM_OUTDATED_LOCKFILE";
+
+const ROOT_WORKSPACE = "pnpm-workspace.yaml";
+const ROOT_LOCKFILE = "pnpm-lock.yaml";
+const ROOT_MANIFEST = "package.json";
+
+const DOCKERFILE = "Dockerfile";
+const DOCKERIGNORE = ".dockerignore";
+
+/**
+ * The root files pnpm consults to decide WHAT it is installing: the manifest,
+ * the lockfile, and the workspace file that stops the upward walk. All three
+ * have to reach the stage that runs `pnpm install`, and all three have to
+ * survive `.dockerignore` so the later `COPY . .` stage sees the same answer.
+ */
+const INSTALL_INPUTS = [ROOT_MANIFEST, ROOT_LOCKFILE, ROOT_WORKSPACE] as const;
+
+/**
+ * How each of the two stages is IDENTIFIED — by what it runs, never by its `AS`
+ * label, so renaming or reordering the stages keeps the assertions pointed at
+ * the right ones. `[^&|;]*` keeps each match inside one command of a chained
+ * `RUN`, so `corepack … && pnpm install` is an install and nothing else in the
+ * chain can be mistaken for one.
+ */
+const PNPM_INSTALL = /\bpnpm\b[^&|;]*\binstall\b/;
+const APP_BUILD = /\bpnpm\b[^&|;]*\bbuild\b/;
+const WORKSPACE_FILE = "pnpm-workspace.yaml";
+const LOCKFILE = "pnpm-lock.yaml";
+const WORKFLOWS_DIR = ".github/workflows";
+const KNOWN_NESTED = "workers/sandbox-runner";
+
+/**
+ * Directories the nested-package walk never descends into, BEYOND the four the
+ * shared walk already excludes (`node_modules`, `.git`, `.next`, `__tests__` —
+ * see `./source-scan`).
+ *
+ * `.yoyo` is this repo's local snapshot store: not source, and large.
+ */
+const UNWALKED = [".yoyo"] as const;
+
+/**
+ * Read a repo file, turning a missing file into a sentence that names what the
+ * file is for. A bare ENOENT stack would say only that a path did not resolve.
+ */
+async function readRepoFile(relPath: string, why: string): Promise<string> {
+  try {
+    return await readFile(path.join(ROOT, relPath), "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      `${relPath} could not be read (${code ?? String(error)}). ${why}`,
+    );
+  }
+}
+
+async function readRepoDir(relPath: string, why: string): Promise<string[]> {
+  try {
+    return await readdir(path.join(ROOT, relPath));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      `${relPath}/ could not be listed (${code ?? String(error)}). ${why}`,
+    );
+  }
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  // Unquoted scalars can carry a trailing comment: `- workers/foo # why`.
+  return trimmed.split(/\s+#/)[0].trim();
+}
+
+function normalizeDir(value: string): string {
+  const cleaned = value.replace(/^\.\//, "").replace(/\/+$/, "");
+  return cleaned === "" ? "." : cleaned;
+}
+
+/**
+ * Read the `packages:` list out of workspace YAML text.
+ *
+ * Hand-rolled because `package.json` carries no YAML parser — there is nothing
+ * to import — and adding a dependency to read a two-line file would be a worse
+ * trade than the ~40 lines below. It covers exactly what a workspace file can
+ * legally hold:
+ *
+ * - block items at ANY indentation, including column zero, which YAML permits
+ *   for a sequence under a mapping key;
+ * - a flow sequence on the key line (`packages: ["."]`);
+ * - a non-list scalar (`packages: .`, `packages: null`) reads as NO list, since
+ *   that is not a packages declaration pnpm can use;
+ * - TWO OR MORE top-level `packages:` keys read as no usable declaration. pnpm
+ *   parses this file with js-yaml, which REJECTS duplicate mapping keys rather
+ *   than taking either one — verified under the pinned pnpm 9.15.9, which
+ *   prints `[ERROR] duplicated mapping key` and installs nothing. A reader that
+ *   silently picked one would call a file healthy that pnpm refuses to load;
+ * - a leading UTF-8 BOM.
+ *
+ * Returns `null` for "no usable packages declaration" — a missing key, a
+ * scalar, or a duplicated key — and an array (possibly empty, for `packages:`
+ * followed by nothing) otherwise.
+ *
+ * It does NOT validate YAML in general; the "neither workspace file contains a
+ * tab" test below covers the one lexical trap this reader would otherwise wave
+ * through.
+ */
+function readPackagesList(text: string): string[] | null {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+
+  const keyIndexes: number[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    // Top-level means column zero: an indented `packages:` belongs to some
+    // other mapping and is not the workspace's own key.
+    if (/^packages:(.*)$/.test(lines[i])) keyIndexes.push(i);
+  }
+  // js-yaml errors on the duplicate rather than resolving it, so there is no
+  // "winning" key to read.
+  if (keyIndexes.length !== 1) return null;
+
+  const keyIndex = keyIndexes[0];
+  const inlineValue = (/^packages:(.*)$/.exec(lines[keyIndex]) as RegExpExecArray)[1].trim();
+
+  if (inlineValue.startsWith("[")) {
+    const end = inlineValue.lastIndexOf("]");
+    if (end === -1) return null;
+    const body = inlineValue.slice(1, end).trim();
+    if (body === "") return [];
+    return body
+      .split(",")
+      .map(unquote)
+      .filter((entry) => entry !== "");
+  }
+  // Anything else on the key line that is not a comment is a scalar value, not
+  // a list — `packages: .` and `packages: null` both land here.
+  if (inlineValue !== "" && !inlineValue.startsWith("#")) return null;
+
+  const items: string[] = [];
+  for (let i = keyIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+    const item = /^\s*-\s*(.*)$/.exec(line);
+    if (!item) break; // the next mapping key ends the sequence
+    const value = unquote(item[1]);
+    if (value !== "") items.push(value);
+  }
+  return items;
+}
+
+/**
+ * The importer keys of a pnpm lockfile — the directories it actually resolves
+ * dependencies for.
+ */
+function readLockfileImporters(text: string): string[] | null {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const start = lines.findIndex((line) => /^importers:\s*$/.test(line));
+  if (start === -1) return null;
+  const importers: string[] = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+    if (/^\S/.test(line)) break; // back to column zero: the next top-level key
+    const key = /^ {2}(\S.*?):\s*$/.exec(line);
+    if (key) importers.push(normalizeDir(unquote(key[1])));
+  }
+  return importers;
+}
+
+/**
+ * `*` stays inside one segment; `**` spans directories. A TRAILING `**` has to
+ * match a directory (pnpm's `workers/**` claims `workers/sandbox-runner`) —
+ * expanding it to a "zero or more directory prefixes" group would make it match
+ * nothing at all and understate what the root list claims.
+ */
+function globToRegExp(glob: string): RegExp {
+  const segments = glob.split("/");
+  const source = segments
+    .map((segment, index) => {
+      const last = index === segments.length - 1;
+      if (segment === "**") return last ? "[^/]+(?:/[^/]+)*" : "(?:[^/]+/)*";
+      const literal = segment
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, "[^/]*");
+      return last ? literal : `${literal}/`;
+    })
+    .join("");
+  return new RegExp(`^${source}$`);
+}
+
+/** Which root `packages:` entries, if any, claim this directory as a member. */
+function rootEntriesClaiming(packages: string[], target: string): string[] {
+  const normalizedTarget = normalizeDir(target);
+  return packages.filter((entry) =>
+    globToRegExp(normalizeDir(entry)).test(normalizedTarget),
+  );
+}
+
+/**
+ * Dockerfile instructions, comments dropped and `\`-continuations joined.
+ *
+ * A Dockerfile's `COPY`/`RUN` may span lines, so a line-at-a-time reader would
+ * see half an instruction and could miss both the source it is looking for and
+ * the `pnpm install` that identifies the stage.
+ */
+function dockerInstructions(text: string): string[] {
+  const out: string[] = [];
+  let pending = "";
+  for (const raw of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const line = raw.replace(/\r$/, "");
+    // Docker strips comment lines wherever they appear, continuations included.
+    if (/^\s*#/.test(line)) continue;
+    if (pending === "" && line.trim() === "") continue;
+    const continued = /\\\s*$/.test(line);
+    const body = line.replace(/\\\s*$/, "").trim();
+    pending = pending === "" ? body : `${pending} ${body}`;
+    if (!continued) {
+      if (pending !== "") out.push(pending);
+      pending = "";
+    }
+  }
+  if (pending !== "") out.push(pending);
+  return out;
+}
+
+interface DockerStage {
+  /** The `AS <name>` label, or a positional description when it has none. */
+  name: string;
+  /** Sources of every `COPY` that reads from the BUILD CONTEXT, flattened. */
+  contextCopies: string[];
+  /** Whether any `COPY --from=<stage>` brings files in from another stage. */
+  copiesFromStage: boolean;
+  /** Each `RUN` command, on one line. */
+  runs: string[];
+}
+
+/**
+ * The stages of a Dockerfile, with what each one copies OUT OF THE BUILD
+ * CONTEXT and what it runs.
+ *
+ * `COPY --from=<stage>` is tracked separately and its sources are NOT context
+ * copies: those files come from an earlier stage's filesystem, so they say
+ * nothing about what the build context supplies — and counting them would let a
+ * `COPY --from=deps /app/pnpm-workspace.yaml` satisfy an assertion about what
+ * the install stage reads from the repo.
+ */
+function dockerStages(text: string): DockerStage[] {
+  const stages: DockerStage[] = [];
+  let current: DockerStage | null = null;
+  for (const instruction of dockerInstructions(text)) {
+    const parsed = /^([A-Za-z]+)\s+(.*)$/.exec(instruction);
+    if (!parsed) continue;
+    const keyword = parsed[1].toUpperCase();
+    const rest = parsed[2].trim();
+    if (keyword === "FROM") {
+      const labelled = /\sAS\s+(\S+)\s*$/i.exec(rest);
+      current = {
+        name: labelled ? labelled[1] : `the unnamed stage #${stages.length + 1}`,
+        contextCopies: [],
+        copiesFromStage: false,
+        runs: [],
+      };
+      stages.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (keyword === "RUN") current.runs.push(rest);
+    if (keyword === "COPY" || keyword === "ADD") {
+      const tokens = rest.split(/\s+/).filter((token) => token !== "");
+      if (tokens.some((token) => /^--from=/i.test(token))) {
+        current.copiesFromStage = true;
+        continue;
+      }
+      // Flags (`--chown=`, `--link`) are not sources, and the LAST token is the
+      // destination.
+      current.contextCopies.push(
+        ...tokens.filter((token) => !token.startsWith("--")).slice(0, -1),
+      );
+    }
+  }
+  return stages;
+}
+
+/**
+ * Whether `.dockerignore` keeps `filePath` out of the build context.
+ *
+ * Docker applies every pattern in order and the LAST match wins — that is what
+ * makes this repo's `!SCHEMA.md` after `*.md` a re-inclusion rather than a
+ * conflict — and a pattern naming a directory excludes everything beneath it,
+ * which is why each ancestor path is tested too.
+ *
+ * A LEADING SLASH is stripped, not honoured as a path. Docker reads `/foo` as
+ * "foo, relative to the context root" — the same file `foo` names — but the
+ * candidates below carry no leading slash, so keeping it would compile a
+ * pattern that can never match anything. This function's answer is read as "the
+ * build context still contains this file", so an unmatched pattern is the
+ * SILENT-PASS direction: `/pnpm-workspace.yaml` really does empty the context
+ * of it while the guard reports all clear.
+ */
+function dockerignoreExcludes(text: string, filePath: string): boolean {
+  const segments = normalizeDir(filePath).split("/");
+  const candidates = segments.map((_, index) =>
+    segments.slice(0, index + 1).join("/"),
+  );
+  let excluded = false;
+  for (const raw of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const negated = line.startsWith("!");
+    // The `!` comes off FIRST: `!/SCHEMA.md` is a root-anchored re-inclusion,
+    // and stripping the anchor before the negation would leave the `!` sitting
+    // inside the pattern text.
+    const pattern = normalizeDir(
+      (negated ? line.slice(1) : line).trim().replace(/^\/+/, ""),
+    );
+    if (pattern === "" || pattern === ".") continue;
+    const matcher = globToRegExp(pattern);
+    if (candidates.some((candidate) => matcher.test(candidate))) {
+      excluded = !negated;
+    }
+  }
+  return excluded;
+}
+
+/**
+ * Split workflow YAML into step blocks — one per sequence item — so a step's
+ * keys stay attached to each other.
+ *
+ * `working-directory:` sits on the step, not on the `run:` line, so a scraper
+ * that reads one line at a time can never see the two together. A new block
+ * opens at a `- ` whose indentation is no deeper than the block it interrupts;
+ * a MORE deeply indented `- ` is a nested list inside the same step (a `paths:`
+ * list under `with:`, say) and stays with it, rather than tearing a step in
+ * half and orphaning its `run:`.
+ */
+function yamlStepBlocks(yaml: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let currentIndent = Number.POSITIVE_INFINITY;
+  const close = () => {
+    if (current.length > 0) blocks.push(current.join("\n"));
+    current = [];
+  };
+  for (const line of yaml.split(/\r?\n/)) {
+    const item = /^(\s*)-(?:\s|$)/.exec(line);
+    const trimmed = line.trim();
+    if (item && item[1].length <= currentIndent) {
+      close();
+      currentIndent = item[1].length;
+    } else if (
+      // A blank line, or a comment at column zero between two keys of the same
+      // step, is not a dedent — closing on either would orphan the step's
+      // `run:` from its `working-directory:`.
+      trimmed !== "" &&
+      !trimmed.startsWith("#") &&
+      line.length - line.trimStart().length <= currentIndent
+    ) {
+      // Dedented past the `- ` marker without opening another item: the
+      // sequence ended. Closing here stops a one-line list entry (`- "src/**"`
+      // under `paths:`) from swallowing every step that follows it.
+      close();
+      currentIndent = Number.POSITIVE_INFINITY;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks;
+}
+
+/**
+ * The shell commands a step block actually runs, in source order.
+ *
+ * Only a `run:` value is a command, plus the continuation lines of a `run: |`
+ * block scalar — which carry no `key:` of their own. Everything else that
+ * mentions pnpm is metadata, not an invocation: `- name: Set up pnpm`,
+ * `uses: pnpm/action-setup@v6`, `cache: pnpm`,
+ * `cache-dependency-path: workers/sandbox-runner/pnpm-lock.yaml`. Reading those
+ * as commands is what would let a step named after pnpm drag its
+ * `working-directory:` into the shielded set and demand a workspace file for a
+ * directory nothing installs.
+ */
+function shellCommandsIn(block: string): string[] {
+  const commands: string[] = [];
+  // Which `key: |` block scalar the current line falls inside, and the
+  // indentation of the key that opened it. Continuations belong to THAT key —
+  // `cache-dependency-path: |` followed by `workers/x/pnpm-lock.yaml` is a
+  // cache path, not something the step runs.
+  let scalarKey: string | null = null;
+  let scalarIndent = 0;
+  for (const raw of block.split(/\r?\n/)) {
+    const line = raw.replace(/^(\s*)-(\s)/, "$1 $2");
+    const indent = line.length - line.trimStart().length;
+    if (scalarKey !== null) {
+      if (line.trim() === "") continue;
+      if (indent > scalarIndent) {
+        // Inside a block scalar EVERY line is literal text, so a `run: |` line
+        // that happens to read `word: value` — `export FOO: bar`, a heredoc
+        // carrying YAML — is still a command, not metadata.
+        if (scalarKey === "run") commands.push(line);
+        continue;
+      }
+      scalarKey = null;
+    }
+    const mapping = /^\s*([A-Za-z_][\w.-]*)\s*:(?:\s(.*))?$/.exec(line);
+    if (!mapping) continue;
+    const value = (mapping[2] ?? "").trim();
+    if (/^[|>][-+0-9]*$/.test(value)) {
+      scalarKey = mapping[1];
+      scalarIndent = indent;
+      continue;
+    }
+    if (mapping[1] === "run" && value !== "") commands.push(mapping[2] ?? "");
+  }
+  return commands;
+}
+
+/** The `--dir`/`-C` flag pnpm accepts, and the directory it names. */
+const DIR_FLAG = /(?:--dir|(?:^|\s)-C)[=\s]+("[^"]+"|'[^']+'|\S+)/;
+
+/**
+ * Does this command INSTALL into wherever it is run from?
+ *
+ * The distinction matters because forms 2 and 3 below infer a package root
+ * from a directory rather than from a flag. `working-directory: docs` with
+ * `run: pnpm build`, or `src/journal` with `run: pnpm exec tsc --noEmit`, are
+ * ordinary subdirectories of the ROOT workspace that merely run a script from
+ * there — shielding them would plant a `pnpm-workspace.yaml` that CUTS them
+ * out of the root workspace, which is the opposite of a fix. Only an install
+ * materialises a `node_modules` whose absence is the silent no-op this suite
+ * guards against.
+ *
+ * Form 1 deliberately does NOT apply this test: an explicit `--dir` names a
+ * package root on its own, whatever the subcommand, and `ci.yml` relies on
+ * exactly that with `pnpm --dir workers/sandbox-runner exec tsc --noEmit`.
+ */
+function isInstallCommand(command: string): boolean {
+  return (
+    /\bpnpm\b[^\n]*?\s(?:install|add)\b/.test(command) ||
+    /--frozen-lockfile\b/.test(command)
+  );
+}
+
+/**
+ * Is this a literal path inside the repo that a workspace file could sit in?
+ *
+ * A workflow may name a directory the scraper cannot resolve —
+ * `${{ matrix.dir }}`, `$GITHUB_WORKSPACE/workers/a`, `~/build`, `cd -` — and
+ * a target like that is not a missing workspace file, it is a path that never
+ * existed. Emitting one turns the whole suite red on a `readRepoFile` of a
+ * directory nothing could have created. Silence is the honest answer: the
+ * lockfile walk still catches any such package that commits a lockfile.
+ */
+function isLiteralRepoPath(dir: string): boolean {
+  if (dir === "") return false;
+  if (dir.includes("${{") || dir.includes("$")) return false;
+  if (dir.startsWith("~") || dir.startsWith("-")) return false;
+  // Absolute paths and `..` climbs both leave the checkout.
+  if (dir.startsWith("/")) return false;
+  return !dir.split("/").includes("..");
+}
+
+/** The step's `working-directory:`, if it declares one. */
+function stepWorkingDirectory(block: string): string | null {
+  // `- ` because the key can be the sequence item's own first line.
+  const match = /^\s*(?:-\s+)?working-directory\s*:\s+(.+)$/m.exec(block);
+  return match ? unquote(match[1]) : null;
+}
+
+/**
+ * Every directory a workflow installs a nested pnpm package into.
+ *
+ * Three forms, because a nested package reached by any of them is equally
+ * exposed to the root-workspace capture this suite exists to prevent:
+ *
+ * 1. `pnpm --dir <path>` / `--dir=<path>` / `-C <path>` / `-C=<path>`. `-C` is
+ *    pnpm's own documented alias — `pnpm install --help` under the pinned
+ *    9.15.9 prints `-C, --dir <dir>` — so a guard that knew only the long
+ *    spelling would miss half of what it is guarding.
+ * 2. A step's `working-directory:` key with a plain `pnpm install` in its
+ *    `run:`. GitHub Actions runs the command from there, so pnpm's upward
+ *    search for a workspace root starts there too — identical exposure, no
+ *    flag anywhere on the command line.
+ * 3. `cd <dir> && … pnpm …` inside a `run:`, the hand-rolled spelling of the
+ *    same thing. A RELATIVE `cd` composes with the step's
+ *    `working-directory:`, because that is where the shell starts.
+ *
+ * Resolution is PER COMMAND, not per step: a step's `--dir` on one line does
+ * not describe where a plain `pnpm install` on the next line runs. Each command
+ * takes its own `--dir`/`-C` if it has one, else its own `cd` chain, else the
+ * step's `working-directory:`.
+ *
+ * Forms 2 and 3 additionally require an INSTALL-shaped command
+ * (`isInstallCommand`); form 1 does not. See that function for why the two
+ * halves differ.
+ *
+ * A command that already passes `--ignore-workspace` is skipped in every form:
+ * it is immune by construction, and demanding a workspace file for it would be
+ * a false failure. So is any target that is not a literal in-repo path
+ * (`isLiteralRepoPath`).
+ *
+ * NOT covered, deliberately and worth saying out loud rather than implying
+ * whole-file coverage: a job-level `defaults: run: working-directory:`, which
+ * is not a step block at all; and a `cd` separated from its pnpm call by a
+ * newline or a `;` rather than `&&`. A nested package reached only one of those
+ * ways stays invisible here — though `nestedLockfileDirs()` below still catches
+ * it the moment it has a lockfile of its own, which is the durable half of the
+ * union.
+ */
+function pnpmDirTargets(yaml: string): string[] {
+  const targets: string[] = [];
+  const emit = (dir: string) => {
+    if (isLiteralRepoPath(dir)) targets.push(normalizeDir(dir));
+  };
+
+  for (const block of yamlStepBlocks(yaml)) {
+    const declared = stepWorkingDirectory(block);
+    // `null` = the step declares none. A declared-but-unresolvable one
+    // (`${{ matrix.dir }}`) is NOT the same as none: a relative `cd` inside it
+    // is unresolvable too, so both forms stay silent rather than guessing.
+    const stepDir =
+      declared !== null && isLiteralRepoPath(declared)
+        ? normalizeDir(declared)
+        : null;
+    const stepDirUsable = declared === null || stepDir !== null;
+
+    for (const command of shellCommandsIn(block)) {
+      if (!/\bpnpm\b/.test(command)) continue;
+      if (/--ignore-workspace\b/.test(command)) continue;
+
+      // Form 1 — the explicit flag. It names the package root outright, so it
+      // wins over anything the step says and needs no install-shape test.
+      const flag = DIR_FLAG.exec(command);
+      if (flag) {
+        emit(unquote(flag[1]));
+        continue;
+      }
+
+      // Form 3, evaluated before form 2 — `cd <dir> && … pnpm install …`. A
+      // relative `cd` is relative to the step's `working-directory:`, so the
+      // two compose; emitting the step's directory as well would claim a
+      // package at a path the shell never visited.
+      let chained = false;
+      const chain = /\bcd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*([^\n]*)/g;
+      let match = chain.exec(command);
+      while (match !== null) {
+        const rest = match[2];
+        if (
+          /\bpnpm\b/.test(rest) &&
+          !/--ignore-workspace\b/.test(rest) &&
+          // An explicit `--dir` after the `cd` is where pnpm actually runs;
+          // form 1 already recorded it and the `cd` is then irrelevant.
+          !DIR_FLAG.test(rest) &&
+          isInstallCommand(rest)
+        ) {
+          // Normalise BEFORE joining, so `workers` + `./a/` composes as
+          // `workers/a` rather than `workers/./a/`.
+          const target = normalizeDir(unquote(match[1]));
+          chained = true;
+          if (target.startsWith("/")) emit(target);
+          else if (stepDir !== null && stepDir !== ".") emit(`${stepDir}/${target}`);
+          else if (stepDirUsable) emit(target);
+        }
+        match = chain.exec(command);
+      }
+      if (chained) continue;
+
+      // Form 2 — the step's own directory, for a command that installs where
+      // it stands.
+      if (stepDir !== null && isInstallCommand(command)) emit(stepDir);
+    }
+  }
+  return targets;
+}
+
+/**
+ * Every directory below the repo root that carries its own `pnpm-lock.yaml`.
+ * A lockfile is the durable marker of a separate pnpm package — it survives a
+ * package that no workflow installs and one installed only by hand.
+ */
+async function nestedLockfileDirs(): Promise<string[]> {
+  // The shared walk also refuses to descend into `__tests__`, which this one
+  // used to enter. That is correct here rather than merely harmless: a
+  // `pnpm-lock.yaml` under a `__tests__` directory is a FIXTURE staged by a
+  // suite, not a package pnpm would ever install, and reporting it as a nested
+  // package would demand a `pnpm-workspace.yaml` beside a test fixture.
+  const lockfiles = await walkFiles(ROOT, {
+    include: /^pnpm-lock\.yaml$/,
+    skipDirs: UNWALKED,
+  });
+  return lockfiles
+    .map((file) => path.relative(ROOT, path.dirname(file)).split(path.sep).join("/"))
+    // The repo root itself carries the root lockfile and is not a NESTED
+    // package; `path.relative` renders it as the empty string.
+    .filter((rel) => rel !== "")
+    .sort();
+}
+
+describe("pnpm workspace roots", () => {
+  beforeAll(async () => {
+    // Anchor the repo root before asserting on paths relative to it: if this
+    // file ever moves, every assertion below would otherwise fail with a
+    // confusing "missing pnpm-workspace.yaml" instead of "wrong root".
+    const pkg = JSON.parse(
+      await readRepoFile(
+        "package.json",
+        "This suite takes the repo root to be two directories above the " +
+          "`src/` that contains this test (`SRC` = `__dirname/../..`, `ROOT` = " +
+          "`SRC/..`); if this file moved, that no longer lands on the repo root.",
+      ),
+    ) as { name?: string };
+    expect(
+      pkg.name,
+      `ROOT resolved to ${ROOT}, which is not the work-wiki repo root — ` +
+        `every path assertion in this suite is relative to it.`,
+    ).toBe("work-wiki");
+  });
+
+  it("the repo-root workspace file declares exactly the root package", async () => {
+    const text = await readRepoFile(
+      ROOT_WORKSPACE,
+      `Without a repo-root ${ROOT_WORKSPACE}, pnpm walks up past the checkout, ` +
+        `adopts an unrelated ancestor workspace file, and every \`pnpm <cmd>\` ` +
+        `run in this repo — \`pnpm install\`, \`pnpm lint\`, \`pnpm test\` — ` +
+        `aborts with \`ERROR ${PNPM_ABORT}\`. Restore the file.`,
+    );
+    const packages = readPackagesList(text);
+
+    expect(
+      packages,
+      `${ROOT_WORKSPACE} declares no usable \`packages:\` list (missing key, a ` +
+        `scalar value, or the key twice). That is the exact state pnpm ` +
+        `rejects: every command run in this repo aborts with ` +
+        `\`ERROR ${PNPM_ABORT}\`.`,
+    ).not.toBeNull();
+    expect(
+      packages?.length ?? 0,
+      `${ROOT_WORKSPACE} has an EMPTY \`packages:\` list, which pnpm treats ` +
+        `exactly like a missing one — \`ERROR ${PNPM_ABORT}\`.`,
+    ).toBeGreaterThan(0);
+    // Exactly `["."]`, not merely "contains `.`": this repo IS one package at
+    // the root, and any extra entry is either a directory with its own
+    // lockfile (which breaks the root install, see the nested test) or a
+    // package that does not exist.
+    expect(
+      (packages ?? []).map(normalizeDir),
+      `${ROOT_WORKSPACE} must declare exactly \`["."]\` — listing \`.\` is what ` +
+        `makes the list non-empty without inventing a subdirectory, and this ` +
+        `repo has no other root-installed package. Adding an entry here is how ` +
+        `the ${OUTDATED_LOCKFILE} failure gets introduced.`,
+    ).toEqual(["."]);
+  });
+
+  it("the repo-root workspace file keeps the comment that explains why it exists", async () => {
+    const text = await readRepoFile(
+      ROOT_WORKSPACE,
+      `The repo-root workspace file is missing; see the previous test.`,
+    );
+    expect(
+      text,
+      `${ROOT_WORKSPACE} reads as a near-empty config, so its comment is the ` +
+        `only thing telling the next reader that deleting it re-opens ` +
+        `\`ERROR ${PNPM_ABORT}\` for every pnpm command in this repo. Keep the ` +
+        `explanation.`,
+    ).toContain(PNPM_ABORT);
+
+    // The `onlyBuiltDependencies` ban below is only true for pnpm 9, so pin
+    // the premise next to the conclusion.
+    const pkg = JSON.parse(
+      await readRepoFile("package.json", `It anchors this suite; see beforeAll.`),
+    ) as { packageManager?: string };
+    expect(
+      pkg.packageManager ?? "",
+      `This suite forbids \`onlyBuiltDependencies\` in ${ROOT_WORKSPACE} on the ` +
+        `strength of the PINNED pnpm 9, which reads build approval from ` +
+        `\`package.json#pnpm\` and ignores the workspace file. On a bump to ` +
+        `pnpm 10+ that reverses — the workspace file becomes the right home ` +
+        `for that key — so this assertion and the comments in both ` +
+        `${WORKSPACE_FILE} files must be revisited together with the bump.`,
+    ).toMatch(/^pnpm@9\./);
+    expect(
+      /^onlyBuiltDependencies:/m.test(text),
+      `${ROOT_WORKSPACE} must not declare \`onlyBuiltDependencies\`: the ` +
+        `pinned pnpm@9 reads build approval from \`package.json#pnpm\`, so a ` +
+        `key here is inert while implying the per-machine ` +
+        `\`pnpm approve-builds\` step documented in AGENTS.md no longer applies.`,
+    ).toBe(false);
+  });
+
+  it("the root lockfile still has exactly one importer, as both YAML comments claim", async () => {
+    // Both workspace files justify themselves with "this repo is one package at
+    // the root, and the nested one is installed separately". A second importer
+    // in the root lockfile would make that prose stale, and would mean the
+    // nested package had been folded into the root workspace after all.
+    const text = await readRepoFile(
+      ROOT_LOCKFILE,
+      `The root lockfile is what \`pnpm install --frozen-lockfile\` installs ` +
+        `from in CI and in the Dockerfile.`,
+    );
+    const importers = readLockfileImporters(text);
+    expect(
+      importers,
+      `${ROOT_LOCKFILE} has no \`importers:\` section — this suite can no ` +
+        `longer tell how many packages the root install covers.`,
+    ).not.toBeNull();
+    expect(
+      importers,
+      `${ROOT_LOCKFILE} must declare exactly one importer, \`.\`. That single ` +
+        `importer is why the new ${ROOT_WORKSPACE} is invisible to ` +
+        `\`pnpm install --frozen-lockfile\`, and why nested packages must stay ` +
+        `OUT of the root \`packages:\` list. If the root workspace genuinely ` +
+        `grew a second package, update both ${WORKSPACE_FILE} comments and ` +
+        `this assertion deliberately.`,
+    ).toEqual(["."]);
+
+    // Pin the nested lockfile too: it is the reason `workers/sandbox-runner`
+    // installs on its own, and its absence would silently empty the derived
+    // set in the next test.
+    await readRepoFile(
+      `${KNOWN_NESTED}/${LOCKFILE}`,
+      `${KNOWN_NESTED} is a separate pnpm package precisely because it carries ` +
+        `its own lockfile. Without it, it is not installable on its own and ` +
+        `this suite's whole nested-package story no longer holds.`,
+    );
+  });
+
+  it("the Dockerfile stage that installs sees the same workspace root the build stage does (DW-431)", async () => {
+    // DW-431: the deps stage copied `package.json pnpm-lock.yaml` and nothing
+    // else, while the build stage's `COPY . .` brought `pnpm-workspace.yaml`
+    // along with everything else (`.dockerignore` does not exclude it). So the
+    // two stages disagreed about whether `/app` is a pnpm workspace root: the
+    // install ran with pnpm walking UP out of `/app` for a workspace file, the
+    // build ran with one in place. Nothing in the repo could see the divergence
+    // — no `docker build` runs in CI — which is what this test replaces.
+    //
+    // The install stage is DERIVED (the stage whose `RUN` invokes
+    // `pnpm install`), not named, so renaming or reordering the stages keeps the
+    // assertion pointed at the right one.
+    const dockerfile = await readRepoFile(
+      DOCKERFILE,
+      `It is the container build for this app, and the stage that runs ` +
+        `\`pnpm install\` is what this test compares against ${ROOT_WORKSPACE}.`,
+    );
+    const ignore = await readRepoFile(
+      DOCKERIGNORE,
+      `It decides which root files the build stage's \`COPY . .\` supplies, ` +
+        `which is the other half of the stage parity asserted here.`,
+    );
+
+    const stages = dockerStages(dockerfile);
+    expect(
+      stages.length,
+      `${DOCKERFILE} parsed to no stages at all — this reader can no longer ` +
+        `see what any stage copies, so every assertion below would be ` +
+        `vacuous. Check for a syntax it does not handle.`,
+    ).toBeGreaterThan(0);
+
+    const installStages = stages.filter((stage) =>
+      stage.runs.some((run) => PNPM_INSTALL.test(run)),
+    );
+    expect(
+      installStages.map((stage) => stage.name),
+      `No stage in ${DOCKERFILE} runs \`pnpm install\`. Either the container ` +
+        `build stopped installing dependencies, or this reader no longer ` +
+        `recognises the command — and an unrecognised install makes this whole ` +
+        `test pass while the divergence it guards is wide open.`,
+    ).not.toEqual([]);
+
+    for (const stage of installStages) {
+      for (const input of INSTALL_INPUTS) {
+        expect(
+          stage.contextCopies,
+          `${DOCKERFILE} stage \`${stage.name}\` runs \`pnpm install\` without ` +
+            `copying ${input} from the build context (it copies ` +
+            `${stage.contextCopies.join(", ") || "nothing"}). The build stage's ` +
+            `\`COPY . .\` DOES supply it, so the two stages would disagree about ` +
+            `what pnpm is installing — for ${ROOT_WORKSPACE} specifically, ` +
+            `whether \`/app\` is a workspace root at all, which decides between ` +
+            `resolving the single \`.\` importer in place and walking up out of ` +
+            `\`/app\` for someone else's workspace file. Add it to the ` +
+            `stage's \`COPY\`.`,
+        ).toContain(input);
+      }
+    }
+
+    // The OTHER stage, derived the same way. Everything above is about the
+    // install stage, and the failure messages there lean on "the build stage's
+    // `COPY . .` DOES supply it" — a claim nothing was checking. Narrowing that
+    // to explicit paths (`COPY src ./src`, `COPY package.json ./`, …) is an
+    // ordinary layer-caching refactor, and it would re-open DW-431 from the
+    // untested side with this suite green and no `docker build` in CI to catch
+    // it. A whole-context `COPY . .` satisfies this, and so does naming each
+    // file — what must not happen is the root going missing from one side.
+    const buildStages = stages.filter((stage) =>
+      stage.runs.some((run) => APP_BUILD.test(run)),
+    );
+    expect(
+      buildStages.map((stage) => stage.name),
+      `No stage in ${DOCKERFILE} runs the app build (\`pnpm build\`). Either ` +
+        `the container stopped building the app, or this reader no longer ` +
+        `recognises the command — and an unrecognised build stage makes the ` +
+        `parity assertion below vacuous.`,
+    ).not.toEqual([]);
+
+    for (const stage of buildStages) {
+      for (const input of INSTALL_INPUTS) {
+        expect(
+          stage.contextCopies.some((source) => {
+            const normalized = normalizeDir(source);
+            return normalized === "." || normalized === input;
+          }),
+          `${DOCKERFILE} stage \`${stage.name}\` runs the app build without ` +
+            `receiving ${input} from the build context (it copies ` +
+            `${stage.contextCopies.join(", ") || "nothing"}). The install stage ` +
+            `copies it by name, so the two stages would disagree about the ` +
+            `workspace root again — this time with the INSTALL side correct and ` +
+            `the build side walking up out of \`/app\`. Copy the context root ` +
+            `(\`COPY . .\`), or name ${input} in this stage's \`COPY\` too.`,
+        ).toBe(true);
+      }
+    }
+
+    // The last half: `COPY . .` only supplies what the build context contains,
+    // so excluding one of these files would re-open the same divergence from the
+    // opposite side — and it would do so SILENTLY, because the deps stage names
+    // each file explicitly and would keep working.
+    for (const input of INSTALL_INPUTS) {
+      expect(
+        dockerignoreExcludes(ignore, input),
+        `${DOCKERIGNORE} excludes ${input} from the build context, so the ` +
+          `stage that runs \`COPY . .\` never receives it while the install ` +
+          `stage copies it by name — the two stages disagree about the ` +
+          `workspace root again, in the other direction. Un-exclude it (or ` +
+          `re-include it with a later \`!${input}\` line).`,
+      ).toBe(false);
+    }
+  });
+
+  it("every nested pnpm package is shielded from the root workspace", async () => {
+    const rootText = await readRepoFile(
+      ROOT_WORKSPACE,
+      `The repo-root workspace file is missing; see the first test.`,
+    );
+    const rootPackages = readPackagesList(rootText) ?? [];
+
+    // (a) directories addressed by a workflow…
+    const entries = await readRepoDir(
+      WORKFLOWS_DIR,
+      `This suite derives half the nested-package list from the workflows ` +
+        `rather than hard-coding it, so it needs that directory.`,
+    );
+    const workflows = entries.filter((entry) => /\.ya?ml$/.test(entry)).sort();
+    expect(
+      workflows.length,
+      `No workflow files found under ${WORKFLOWS_DIR}/ — half of this test's ` +
+        `derived set would be empty.`,
+    ).toBeGreaterThan(0);
+
+    const sourcesFor = new Map<string, string[]>();
+    for (const workflow of workflows) {
+      const yaml = await readRepoFile(
+        `${WORKFLOWS_DIR}/${workflow}`,
+        `It was listed by ${WORKFLOWS_DIR}/ a moment ago.`,
+      );
+      for (const target of pnpmDirTargets(yaml)) {
+        sourcesFor.set(target, [...(sourcesFor.get(target) ?? []), workflow]);
+      }
+    }
+    // Anti-vacuity, scraper half: a regex that stops matching must fail here
+    // rather than quietly reduce the derived set to nothing.
+    expect(
+      [...sourcesFor.keys()],
+      `Expected to find the \`pnpm --dir ${KNOWN_NESTED} …\` steps in ` +
+        `${WORKFLOWS_DIR}/. Finding none means this guard has stopped reading ` +
+        `the workflows, not that the risk went away.`,
+    ).toContain(KNOWN_NESTED);
+
+    // …(b) union'd with every directory holding its own lockfile, so a nested
+    // package installed only by hand is shielded too.
+    const ownLockfile = new Set(await nestedLockfileDirs());
+    expect(
+      [...ownLockfile],
+      `Expected to discover ${KNOWN_NESTED} by its own ${LOCKFILE}. Finding ` +
+        `none means the repo walk has stopped working, not that the repo has ` +
+        `one package.`,
+    ).toContain(KNOWN_NESTED);
+
+    const shielded = new Set([...sourcesFor.keys(), ...ownLockfile]);
+    shielded.delete(".");
+
+    for (const target of [...shielded].sort()) {
+      const sources = sourcesFor.get(target) ?? [];
+      const via =
+        sources.length > 0
+          ? sources.join(", ")
+          : `it carries its own ${LOCKFILE}`;
+      const claimed = rootEntriesClaiming(rootPackages, target);
+
+      if (ownLockfile.has(target)) {
+        // The trap. Listing it in the root looks like shielding and is the
+        // opposite: it breaks the ROOT install instead.
+        expect(
+          claimed,
+          `${ROOT_WORKSPACE} claims ${target} (via ${claimed
+            .map((entry) => `\`${entry}\``)
+            .join(", ")}), but ${target} carries its own ${LOCKFILE}. The root ` +
+            `${ROOT_LOCKFILE} has NO importer for it, so ` +
+            `\`pnpm install --frozen-lockfile\` at the root now fails with ` +
+            `${OUTDATED_LOCKFILE} — "specifiers in the lockfile ({}) don't ` +
+            `match specs in package.json" — breaking CI's Application job, the ` +
+            `Dockerfile build, and every fresh clone. Remove ${target} from the ` +
+            `root \`packages:\` list; shield it with its own ` +
+            `${target}/${WORKSPACE_FILE} instead.`,
+        ).toEqual([]);
+      } else if (claimed.length > 0) {
+        // Not a separate package: a genuine member of the root workspace,
+        // resolved by the root lockfile. Nothing to shield.
+        continue;
+      }
+
+      const nested = `${target}/${WORKSPACE_FILE}`;
+      const text = await readRepoFile(
+        nested,
+        `${target} is a separate pnpm package (${via}) and the root ` +
+          `${ROOT_WORKSPACE} does not list it. Without ${nested} to stop ` +
+          `pnpm's upward walk at that directory, pnpm resolves ` +
+          `\`pnpm --dir ${target} …\` to the ROOT workspace and ` +
+          `\`pnpm --dir ${target} install --frozen-lockfile\` becomes a SILENT ` +
+          `NO-OP: it exits 0 and installs nothing, so every step after it ` +
+          `fails on missing modules. Add ${nested} declaring ` +
+          `\`packages: ["."]\`. Adding ${target} to the ROOT list instead is ` +
+          `NOT the fix — that breaks the root install with ` +
+          `${OUTDATED_LOCKFILE}.`,
+      );
+      const packages = readPackagesList(text);
+      expect(
+        packages,
+        `${nested} declares no usable \`packages:\` list, so pnpm reads it as ` +
+          `\`ERROR ${PNPM_ABORT}\` instead of using it to stop the walk — and ` +
+          `\`pnpm --dir ${target} install --frozen-lockfile\` (${via}) stops ` +
+          `installing anything.`,
+      ).not.toBeNull();
+      // Exactly `["."]`: an entry like `..` would re-capture the very root
+      // this file exists to escape, restoring the silent no-op while looking
+      // like a valid declaration.
+      expect(
+        (packages ?? []).map(normalizeDir),
+        `${nested} must declare exactly \`["."]\` so ${target} is its own ` +
+          `workspace's only package. Any other entry — \`..\` above all — ` +
+          `widens this workspace back over the repo root and re-opens the ` +
+          `"${SILENT_NO_OP}" install this file exists to prevent.`,
+      ).toEqual(["."]);
+      expect(
+        text,
+        `${nested} is a near-empty config whose only defence against deletion ` +
+          `is the comment explaining it. Keep the note that removing it turns ` +
+          `\`pnpm --dir ${target} install --frozen-lockfile\` into a ` +
+          `"${SILENT_NO_OP}" — the consequence a reader cannot infer from two ` +
+          `lines of YAML.`,
+      ).toContain(SILENT_NO_OP);
+    }
+  });
+
+  it("neither workspace file contains a tab, which pnpm's YAML parser rejects outright", async () => {
+    // The reader above is lexical and would happily parse a file pnpm refuses
+    // to load. A committed-but-unparseable workspace file is strictly WORSE
+    // than the bug this story fixes: every pnpm command in the repo dies, and
+    // every other assertion here still passes. Tabs are the one trap a
+    // hand-edited two-line YAML file realistically hits — pnpm 9.15.9 prints
+    // `[ERROR] tab characters must not be used in indentation`.
+    const files = [
+      ROOT_WORKSPACE,
+      ...(await nestedLockfileDirs()).map((dir) => `${dir}/${WORKSPACE_FILE}`),
+    ];
+    expect(files.length, `Expected at least the root workspace file.`).toBeGreaterThan(1);
+    for (const file of files) {
+      const text = await readRepoFile(
+        file,
+        `It is one of this repo's workspace files; see the tests above.`,
+      );
+      expect(
+        text.includes("\t"),
+        `${file} contains a TAB. pnpm's YAML parser refuses the whole file — ` +
+          `\`tab characters must not be used in indentation\` — so every pnpm ` +
+          `command run against it fails, which is worse than the ` +
+          `\`${PNPM_ABORT}\` abort this file exists to prevent. Use spaces.`,
+      ).toBe(false);
+    }
+  });
+
+  describe("the packages: reader", () => {
+    it("reads a healthy list, at any indentation and in either form", () => {
+      expect(readPackagesList('packages:\n  - "."\n')).toEqual(["."]);
+      expect(readPackagesList("packages:\n- .\n- workers/x\n")).toEqual([
+        ".",
+        "workers/x",
+      ]);
+      expect(readPackagesList('\uFEFFpackages:\n  - "."\n')).toEqual(["."]);
+      expect(readPackagesList('packages: [".", "workers/x"]\n')).toEqual([
+        ".",
+        "workers/x",
+      ]);
+      // An indented `packages:` belongs to some other mapping.
+      expect(readPackagesList("other:\n  packages:\n    - a\n")).toBeNull();
+    });
+
+    it("rejects a duplicated packages: key, because js-yaml does", () => {
+      // Verified against the pinned pnpm 9.15.9: a file with the key twice
+      // fails with `[ERROR] duplicated mapping key` and installs nothing. It
+      // does NOT resolve to the first or the last key, so a reader that picked
+      // one would call this file healthy while pnpm refuses to load it.
+      expect(
+        readPackagesList('packages:\n  - a\npackages:\n  - "."\n'),
+        `Two top-level \`packages:\` keys must read as NO usable declaration: ` +
+          `pnpm parses this file with js-yaml, which errors with ` +
+          `\`duplicated mapping key\` rather than choosing one.`,
+      ).toBeNull();
+    });
+
+    it("reads the two degenerate shapes as 'no packages declared' — the state pnpm rejects", () => {
+      // Matrix row: workspace text with no `packages:` key at all. This is the
+      // shape of the ancestor file pnpm was adopting.
+      const noKey = "allowBuilds:\n  esbuild: set this to true or false\n";
+      expect(
+        readPackagesList(noKey),
+        `Text with no \`packages:\` key must read as NO list — that is what ` +
+          `makes pnpm abort with \`ERROR ${PNPM_ABORT}\`, and a reader that ` +
+          `returned [] here would let an empty file pass the root assertion.`,
+      ).toBeNull();
+
+      // Matrix row: `packages:` followed by no list items. Distinct from the
+      // row above (the key IS present) and equally fatal.
+      const emptyList = "packages:\nother: value\n";
+      expect(
+        readPackagesList(emptyList),
+        `\`packages:\` with no items must read as an EMPTY list, distinct from ` +
+          `a healthy one and from a missing key.`,
+      ).toEqual([]);
+      expect(readPackagesList("packages:\n")).toEqual([]);
+
+      // A scalar value is not a list at all.
+      expect(readPackagesList("packages: .\n")).toBeNull();
+      expect(readPackagesList("packages: null\n")).toBeNull();
+    });
+  });
+
+  describe("the --dir scraper", () => {
+    it("recognises every spelling pnpm accepts, and exempts --ignore-workspace", () => {
+      // `-C` is pnpm's own documented alias: `pnpm install --help` under the
+      // pinned 9.15.9 prints `-C, --dir <dir>`. A guard that knew only
+      // `--dir` would leave every `-C` step unshielded.
+      expect(pnpmDirTargets("      - run: pnpm --dir workers/a install\n")).toEqual([
+        "workers/a",
+      ]);
+      expect(pnpmDirTargets("      - run: pnpm --dir=workers/a install\n")).toEqual([
+        "workers/a",
+      ]);
+      expect(pnpmDirTargets("      - run: pnpm -C workers/a install\n")).toEqual([
+        "workers/a",
+      ]);
+      expect(pnpmDirTargets("      - run: pnpm -C=workers/a install\n")).toEqual([
+        "workers/a",
+      ]);
+      expect(pnpmDirTargets('      - run: pnpm --dir "workers/a b" install\n')).toEqual([
+        "workers/a b",
+      ]);
+      // Trailing slash and a leading `./` are the same directory.
+      expect(pnpmDirTargets("      - run: pnpm --dir ./workers/a/ install\n")).toEqual([
+        "workers/a",
+      ]);
+      // Already immune: pnpm never consults a workspace root for this command,
+      // so demanding a workspace file for it would be a false failure.
+      expect(
+        pnpmDirTargets("      - run: pnpm --dir workers/a --ignore-workspace install\n"),
+        "a command that already passes --ignore-workspace needs no workspace file",
+      ).toEqual([]);
+      // Not a pnpm --dir invocation at all.
+      expect(pnpmDirTargets("      - uses: pnpm/action-setup@v6\n")).toEqual([]);
+    });
+
+    /**
+     * DW-434. `--dir`/`-C` was the ONLY form the scraper knew, and the guard
+     * above reads as though it covers "every nested package a workflow
+     * installs". It does not: GitHub Actions' own `working-directory:` key and
+     * a plain `cd x && pnpm install` reach a nested package with no flag on the
+     * command line at all, and pnpm's upward search for a workspace root starts
+     * from that directory just the same. A package added that way would be
+     * captured by the root workspace — `pnpm install` a silent 100ms no-op that
+     * creates no `node_modules` — with this suite green throughout.
+     *
+     * No workflow in `.github/workflows/` uses either form today, which is
+     * exactly why these are unit tests over inline fixtures rather than an
+     * assertion about real files: there is nothing real to scrape, and waiting
+     * for the first such step to appear means the guard is written after the
+     * breakage rather than before it.
+     */
+    it("derives a nested package from a step's working-directory:", () => {
+      const step = [
+        "      - name: Install dependencies",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(
+        pnpmDirTargets(step),
+        "a step whose working-directory is the nested package runs pnpm from " +
+          "there, so it needs a workspace file exactly as a --dir step does",
+      ).toEqual(["workers/a"]);
+
+      // The key belongs to its OWN step. A `working-directory:` on a
+      // neighbouring step must not be read as though it applied to this one.
+      const neighbours = [
+        "      - name: Elsewhere",
+        "        working-directory: workers/b",
+        "        run: echo hello",
+        "      - name: Install dependencies",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(pnpmDirTargets(neighbours)).toEqual(["workers/a"]);
+
+      // Quoted, trailing-slash and `./` spellings normalise like every other
+      // form, so the same directory is never reported under two names.
+      expect(
+        pnpmDirTargets(
+          '      - working-directory: "./workers/a/"\n        run: pnpm install\n',
+        ),
+      ).toEqual(["workers/a"]);
+
+      // An explicit `--dir` overrides the step's directory — that is where
+      // pnpm actually runs — so the flag is reported and the key is not.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/b\n        run: pnpm --dir workers/a install\n",
+        ),
+      ).toEqual(["workers/a"]);
+
+      // Already immune, same as the flag form.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/a\n        run: pnpm install --ignore-workspace\n",
+        ),
+        "a working-directory step that passes --ignore-workspace needs no workspace file",
+      ).toEqual([]);
+
+      // A step that names a directory but never runs pnpm in it is not a pnpm
+      // package. Demanding a workspace file for it would be a false failure.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: docs\n        run: npm run build\n",
+        ),
+      ).toEqual([]);
+
+      // Metadata that merely mentions pnpm is not an invocation. Reading
+      // `- name: Set up pnpm` or `cache: pnpm` as a command is what would drag
+      // an unrelated `working-directory:` into the shielded set.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Set up pnpm",
+            "        working-directory: workers/a",
+            "        uses: pnpm/action-setup@v6",
+            "        with:",
+            "          cache: pnpm",
+            "",
+          ].join("\n"),
+        ),
+        "a setup step that only names pnpm installs nothing",
+      ).toEqual([]);
+    });
+
+    it("reads a directory only from a command that INSTALLS into it", () => {
+      // `docs` and `src/journal` are ordinary subdirectories of the ROOT
+      // workspace that merely run a script from there. Shielding them would
+      // demand a `docs/pnpm-workspace.yaml`, which CUTS the directory out of
+      // the root workspace — the opposite of a fix, applied to a directory
+      // that was never a package.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: docs\n        run: pnpm build\n",
+        ),
+        "running a script from a directory does not make it a pnpm package",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: src/journal\n        run: pnpm exec tsc --noEmit\n",
+        ),
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - run: cd docs && pnpm build\n",
+        ),
+      ).toEqual([]);
+
+      // The three install shapes that DO materialise a node_modules.
+      expect(
+        pnpmDirTargets("      - working-directory: workers/a\n        run: pnpm install\n"),
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets("      - working-directory: workers/a\n        run: pnpm add left-pad\n"),
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/a\n        run: pnpm --frozen-lockfile\n",
+        ),
+      ).toEqual(["workers/a"]);
+
+      // Form 1 is deliberately exempt: an explicit `--dir` names a package
+      // root whatever the subcommand, and `ci.yml` relies on exactly this.
+      expect(
+        pnpmDirTargets("      - run: pnpm --dir workers/sandbox-runner exec tsc --noEmit\n"),
+        "an explicit --dir names a package root even when it only runs tsc",
+      ).toEqual(["workers/sandbox-runner"]);
+    });
+
+    it("resolves each command's directory separately, not once per step", () => {
+      // Both commands run in the same step, in DIFFERENT directories: the
+      // first names its own with `--dir`, the second inherits the step's.
+      // Resolving once per step drops whichever one did not win.
+      const step = [
+        "      - name: Install everything",
+        "        working-directory: workers/b",
+        "        run: |",
+        "          pnpm --dir workers/a install --frozen-lockfile",
+        "          pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(
+        pnpmDirTargets(step),
+        "a --dir on one line says nothing about where the next line installs",
+      ).toEqual(["workers/a", "workers/b"]);
+    });
+
+    it("composes a relative cd with the step's working-directory", () => {
+      // The shell starts in `workers`, so `cd a` lands in `workers/a`. Emitting
+      // a bare `a` names a directory that does not exist, and the shielded-set
+      // loop then fails reading `a/pnpm-workspace.yaml`.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers\n        run: cd a && pnpm install\n",
+        ),
+        "a relative cd is relative to the step's working-directory",
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets(
+          '      - working-directory: workers\n        run: cd "./a/" && pnpm install\n',
+        ),
+      ).toEqual(["workers/a"]);
+      // An absolute cd ignores the step's directory, so the two do not compose.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers\n        run: cd /a && pnpm install\n",
+        ),
+        "an absolute path leaves the checkout and is not a shieldable target",
+      ).toEqual([]);
+    });
+
+    it("drops targets that are not literal in-repo paths", () => {
+      // Neither of these is a missing workspace file — they are paths that
+      // never existed. Emitting one turns the whole suite red on a readRepoFile
+      // of a directory nothing could have created.
+      expect(
+        pnpmDirTargets(
+          "      - run: cd $GITHUB_WORKSPACE/workers/a && pnpm install\n",
+        ),
+        "a shell variable is not a path this scraper can resolve",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: ${{ matrix.dir }}\n        run: pnpm install\n",
+        ),
+        "an expression is not a path this scraper can resolve",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets("      - run: cd ../sibling && pnpm install\n"),
+      ).toEqual([]);
+      expect(pnpmDirTargets("      - run: cd ~ && pnpm install\n")).toEqual([]);
+      // A step whose directory is unresolvable makes its relative `cd`
+      // unresolvable too — silence beats guessing at `a`.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: ${{ matrix.dir }}\n        run: cd a && pnpm install\n",
+        ),
+      ).toEqual([]);
+    });
+
+    it("attributes a block scalar's lines to the key that opened it", () => {
+      // `cache-dependency-path: |` is metadata, and its continuation lines name
+      // lockfiles. Read as commands, `workers/sandbox-runner/pnpm-lock.yaml`
+      // matches `pnpm` and drags the step's unrelated working-directory into
+      // the shielded set. `deploy-cloudflare.yml` and
+      // `deploy-journal-pages.yml` already carry `pnpm-lock.yaml` list entries,
+      // so this is one `working-directory:` away from a false failure.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Set up Node.js",
+            "        working-directory: workers/b",
+            "        uses: actions/setup-node@v7",
+            "        with:",
+            "          cache-dependency-path: |",
+            "            workers/sandbox-runner/pnpm-lock.yaml",
+            "            pnpm-lock.yaml",
+            "",
+          ].join("\n"),
+        ),
+        "a cache-dependency-path continuation is not something the step runs",
+      ).toEqual([]);
+
+      // The other direction: inside a `run: |` block EVERY line is literal
+      // shell, so a line that happens to read `key: value` is still a command.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Install",
+            "        working-directory: workers/a",
+            "        run: |",
+            "          echo 'note: installing now'",
+            "          pnpm install --frozen-lockfile",
+            "",
+          ].join("\n"),
+        ),
+        "a run: | line shaped `word: value` is shell text, not YAML metadata",
+      ).toEqual(["workers/a"]);
+    });
+
+    it("derives a nested package from a `cd <dir> && pnpm …` chain", () => {
+      expect(
+        pnpmDirTargets("      - run: cd workers/a && pnpm install --frozen-lockfile\n"),
+        "cd-then-pnpm reaches the nested package exactly as --dir does",
+      ).toEqual(["workers/a"]);
+
+      // Inside a `run: |` block scalar, where the chain has no `run:` key of
+      // its own on the line.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Install",
+            "        run: |",
+            "          echo starting",
+            "          cd workers/a && pnpm install --frozen-lockfile",
+            "",
+          ].join("\n"),
+        ),
+      ).toEqual(["workers/a"]);
+
+      expect(
+        pnpmDirTargets("      - run: cd \"./workers/a/\" && pnpm install\n"),
+      ).toEqual(["workers/a"]);
+
+      // Already immune.
+      expect(
+        pnpmDirTargets("      - run: cd workers/a && pnpm install --ignore-workspace\n"),
+        "a cd-chain that passes --ignore-workspace needs no workspace file",
+      ).toEqual([]);
+
+      // `cd` to somewhere that then runs something else entirely.
+      expect(pnpmDirTargets("      - run: cd workers/a && npm ci\n")).toEqual([]);
+
+      // A `--dir` after the `cd` is where pnpm really runs; the `cd` is noise
+      // and reporting both would shield a directory nothing installs.
+      expect(
+        pnpmDirTargets("      - run: cd workers/b && pnpm --dir workers/a install\n"),
+      ).toEqual(["workers/a"]);
+    });
+  });
+
+  describe("the step-block splitter", () => {
+    // Both branches of `yamlStepBlocks` are load-bearing for the scraper above
+    // but are only exercised incidentally by same-indent fixtures, so each is
+    // asserted here directly.
+    it("keeps a MORE deeply indented `- ` inside the step it belongs to", () => {
+      // A nested list under `with:` is part of the step, not a new one.
+      // Splitting on it tears the step in half and orphans its `run:` from the
+      // `working-directory:` above it.
+      const yaml = [
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "        with:",
+        "          paths:",
+        "            - src/**",
+        "            - pnpm-lock.yaml",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      expect(yamlStepBlocks(yaml)).toHaveLength(1);
+      expect(
+        pnpmDirTargets(yaml),
+        "a nested list must not separate a step's run: from its working-directory:",
+      ).toEqual(["workers/a"]);
+    });
+
+    it("closes a sequence when the document dedents out of it", () => {
+      // `- "pnpm-lock.yaml"` under `paths:` is a one-line list entry. Without
+      // the dedent close it would swallow every step that follows, so a
+      // `working-directory:` several steps later would answer for it.
+      const yaml = [
+        "on:",
+        "  push:",
+        "    paths:",
+        '      - "pnpm-lock.yaml"',
+        "jobs:",
+        "  build:",
+        "    steps:",
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      const blocks = yamlStepBlocks(yaml);
+      expect(
+        blocks.some((block) => /^\s*-\s+"pnpm-lock\.yaml"$/m.test(block) && !/run:/.test(block)),
+        "the paths: entry must close before the steps that follow it",
+      ).toBe(true);
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+    });
+
+    it("does not treat a blank line or a comment as a dedent", () => {
+      // A comment at column zero between two keys of the same step is not the
+      // end of the sequence.
+      const yaml = [
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "",
+        "# a stray comment at column zero",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      expect(yamlStepBlocks(yaml)).toHaveLength(1);
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+    });
+
+    it("carries no carriage return into a target on a CRLF workflow", () => {
+      const yaml =
+        "      - working-directory: workers/a\r\n        run: pnpm install --frozen-lockfile\r\n";
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+      expect(pnpmDirTargets("      - run: pnpm --dir workers/a install\r\n")).toEqual([
+        "workers/a",
+      ]);
+    });
+  });
+
+  describe("the Dockerfile reader", () => {
+    it("attributes each COPY and RUN to the stage it belongs to", () => {
+      const stages = dockerStages(
+        [
+          "# a comment",
+          "FROM node:22-alpine AS deps",
+          "WORKDIR /app",
+          "COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./",
+          "RUN pnpm install --frozen-lockfile",
+          "",
+          "FROM node:22-alpine AS build",
+          "COPY --from=deps /app/node_modules ./node_modules",
+          "COPY . .",
+          "RUN pnpm build",
+        ].join("\n"),
+      );
+      expect(stages.map((stage) => stage.name)).toEqual(["deps", "build"]);
+      expect(stages[0].contextCopies).toEqual([
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+      ]);
+      expect(stages[0].runs).toEqual(["pnpm install --frozen-lockfile"]);
+      // `--from=` sources belong to another stage's filesystem, not to the
+      // build context — counting them would let a `COPY --from=deps
+      // /app/pnpm-workspace.yaml` answer "does this stage read the repo's
+      // workspace file?" with a yes it has not earned.
+      expect(stages[1].contextCopies).toEqual(["."]);
+      expect(stages[1].copiesFromStage).toBe(true);
+    });
+
+    it("joins a continued instruction, so half of it is never read as the whole", () => {
+      const stages = dockerStages(
+        [
+          "FROM node:22-alpine",
+          "COPY package.json \\",
+          "     pnpm-lock.yaml \\",
+          "     pnpm-workspace.yaml ./",
+          "RUN pnpm install \\",
+          "    --frozen-lockfile",
+        ].join("\n"),
+      );
+      expect(stages[0].contextCopies).toEqual([
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+      ]);
+      expect(stages[0].runs).toEqual(["pnpm install --frozen-lockfile"]);
+      // An unnamed stage still gets a description, so a failure message can
+      // point at it.
+      expect(stages[0].name).toContain("#1");
+    });
+
+    it("drops flags and the destination, keeping only sources", () => {
+      const stages = dockerStages(
+        "FROM scratch\nCOPY --chown=1001:1001 --link a.json b.json /app/\n",
+      );
+      expect(stages[0].contextCopies).toEqual(["a.json", "b.json"]);
+    });
+  });
+
+  describe("the .dockerignore matcher", () => {
+    it("lets a later re-inclusion win, the way docker does", () => {
+      const ignore = ["*.md", "!SCHEMA.md"].join("\n");
+      expect(dockerignoreExcludes(ignore, "README.md")).toBe(true);
+      expect(dockerignoreExcludes(ignore, "SCHEMA.md")).toBe(false);
+      // Order matters, not specificity: reversed, the broad pattern wins.
+      expect(dockerignoreExcludes("!SCHEMA.md\n*.md", "SCHEMA.md")).toBe(true);
+    });
+
+    it("honours a root-anchored pattern, in both directions", () => {
+      // `/foo` is docker's "foo, relative to the context root" — the SAME file
+      // `foo` names. Left unstripped, the leading slash compiles to a pattern
+      // that matches nothing, and this guard answers "still in the context" for
+      // a file the build genuinely no longer receives: the silent pass the
+      // whole Dockerfile test exists to close.
+      expect(dockerignoreExcludes("/pnpm-workspace.yaml", ROOT_WORKSPACE)).toBe(true);
+      expect(dockerignoreExcludes("/node_modules", "node_modules/x/index.js")).toBe(
+        true,
+      );
+      // …and the negation is anchored the same way, with the `!` read first.
+      expect(
+        dockerignoreExcludes("*.yaml\n!/pnpm-workspace.yaml", ROOT_WORKSPACE),
+      ).toBe(false);
+      expect(dockerignoreExcludes("/pnpm-workspace.yaml", ROOT_LOCKFILE)).toBe(false);
+    });
+
+    it("excludes everything under an excluded directory", () => {
+      expect(dockerignoreExcludes("node_modules/", "node_modules/x/index.js")).toBe(
+        true,
+      );
+      expect(dockerignoreExcludes(".git/", "src/app/layout.tsx")).toBe(false);
+    });
+
+    it("does not exclude a file no pattern names", () => {
+      const ignore = ["node_modules/", "*.md", "!SCHEMA.md", "# comment", ""].join(
+        "\n",
+      );
+      expect(dockerignoreExcludes(ignore, ROOT_WORKSPACE)).toBe(false);
+      expect(dockerignoreExcludes(ignore, ROOT_LOCKFILE)).toBe(false);
+      expect(dockerignoreExcludes(ignore, ROOT_MANIFEST)).toBe(false);
+      // …and it DOES see one that is named, so the assertions above are not
+      // passing because the matcher never matches anything.
+      expect(dockerignoreExcludes("pnpm-workspace.yaml", ROOT_WORKSPACE)).toBe(true);
+    });
+  });
+
+  describe("the root-coverage matcher", () => {
+    it("matches a trailing ** against a directory, as pnpm's own globs do", () => {
+      // `workers/**` claims `workers/sandbox-runner`. Expanding a trailing
+      // `**` to "zero or more directory prefixes" would make it match nothing,
+      // understating what the root list claims and letting the
+      // ERR_PNPM_OUTDATED_LOCKFILE configuration slip through as "not covered".
+      expect(rootEntriesClaiming(["workers/**"], "workers/sandbox-runner")).toEqual([
+        "workers/**",
+      ]);
+      expect(rootEntriesClaiming(["workers/**"], "workers/a/b")).toEqual([
+        "workers/**",
+      ]);
+      expect(rootEntriesClaiming(["workers/*"], "workers/sandbox-runner")).toEqual([
+        "workers/*",
+      ]);
+      expect(
+        rootEntriesClaiming(["workers/sandbox-runner"], "workers/sandbox-runner"),
+      ).toEqual(["workers/sandbox-runner"]);
+      // `.` claims only the root, and `workers/*` does not reach two levels.
+      expect(rootEntriesClaiming(["."], "workers/sandbox-runner")).toEqual([]);
+      expect(rootEntriesClaiming(["workers/*"], "workers/a/b")).toEqual([]);
+    });
+  });
+});

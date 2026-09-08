@@ -2,7 +2,13 @@
 FROM node:22-alpine AS deps
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+# `pnpm-workspace.yaml` rides along with the manifest and the lockfile (DW-431).
+# The build stage's `COPY . .` supplies it — `.dockerignore` does not exclude it
+# — so without it here the two stages disagree about whether `/app` is a pnpm
+# workspace root: this stage would have pnpm walk UP out of `/app` looking for
+# one, while the build stage resolves it in place. Both stages must see the same
+# root, and `src/lib/__tests__/pnpm-workspace-root.test.ts` pins that they do.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Stage 2: Build the application

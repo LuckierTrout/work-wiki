@@ -16,6 +16,12 @@ vi.mock("../config", async () => {
   return {
     ...actual,
     loadConfigSync: vi.fn(() => ({})),
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: true,
+      provider: "openai",
+      model: "text-embedding-3-small",
+      baseUrl: undefined,
+    })),
   };
 });
 
@@ -53,9 +59,20 @@ import {
   embedText,
   embedTexts,
   rebuildVectorStore,
+  WORKERS_AI_EMBEDDING_DIMENSIONS,
+  getWorkersAiBinding,
+  _resetEmbeddingWarnings,
+  EMBEDDING_REBUILD_EPOCH_KEY,
 } from "../embeddings";
+import {
+  EMBEDDING_PROVIDERS,
+  WORKERS_AI_EMBEDDING_DIMENSIONS as CATALOG_FROM_PROVIDERS,
+  embeddingModelMatchesProvider,
+  isWorkersAiEmbeddingModel,
+} from "../providers";
+import { logger } from "../logger";
 import { getStorage, _resetStorage } from "../storage";
-import { loadConfigSync } from "../config";
+import { loadConfigSync, _resetConfigWarnings } from "../config";
 import { listWikiPages, readWikiPage } from "../wiki";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
@@ -72,6 +89,186 @@ async function seedVector(
   hash = "h",
 ): Promise<void> {
   await getStorage().upsertEmbedding(slug, vector, { model, contentHash: hash });
+}
+
+/**
+ * Move the persisted rebuild epoch, standing in for a completed
+ * `rebuildVectorStore` without driving the whole function.
+ *
+ * The drift key's re-arm is gated on THIS counter and nothing else since
+ * DW-598/DW-599 — re-tagging vectors is what a rebuild does to the corpus, not
+ * what a per-query door can observe. Every "and then the rebuild landed" step
+ * below therefore has to bump it; a test that only re-tags is asserting a gate
+ * that no longer exists. The one test that drives the real function
+ * ("SPEAKS again after a REAL rebuildVectorStore") is what pins that
+ * `rebuildVectorStore` actually moves this.
+ */
+async function bumpRebuildEpoch(): Promise<number> {
+  return getStorage().incrementIndex(EMBEDDING_REBUILD_EPOCH_KEY);
+}
+
+/** What every staged-interleave helper below hands back. */
+interface HeldCall {
+  /**
+   * Resolves once the held call has run for real and is parked — and REJECTS,
+   * with a named reason, if the door never reaches the held seam. A change
+   * that stops the gate calling this seam at all would otherwise surface as an
+   * opaque 5s vitest timeout with no clue which await is stuck.
+   */
+  arrived: Promise<void>;
+  /** Let the parked call return its already-computed answer. */
+  release: () => void;
+  /**
+   * Release the parked call (if any) and un-spy.
+   *
+   * Releasing is part of restoring on purpose: an assertion that throws between
+   * `arrived` and an explicit `release()` would otherwise leave the door's call
+   * parked past the end of the test, turning one readable failure into a
+   * dangling promise and a timeout. Safe to call whether or not the hold ever
+   * fired, and safe to call after an explicit `release()`.
+   */
+  restore: () => void;
+}
+
+/**
+ * How long a staged hold waits for the door to reach it before giving up.
+ *
+ * Under vitest's 5s default test timeout, so the failure names the seam that
+ * was never reached rather than the whole test running out of time.
+ */
+const HELD_CALL_ARRIVAL_TIMEOUT_MS = 2_000;
+
+/**
+ * `arrived`, with a bounded wait and a reason attached to the giving-up.
+ *
+ * The timer is cleared on either settle, so a hold that fires promptly leaves
+ * nothing pending behind it.
+ */
+function withArrivalTimeout(arrived: Promise<void>, what: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`held ${what} never arrived — the door did not reach the held seam`));
+    }, HELD_CALL_ARRIVAL_TIMEOUT_MS);
+    arrived.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Park the NEXT `queryEmbeddings` call AFTER it has really run, until released.
+ *
+ * This is how DW-602's interleave is STAGED rather than hoped for. The entry's
+ * scenario is "read A gathered its window, read B burnt the key underneath,
+ * then A resolved", and the only honest way to write it is to make the ordering
+ * a fact of the test: the real query runs first (so A's window is genuinely the
+ * pre-burn one), the promise is then held open, and the test decides exactly
+ * what happens in the gap before releasing it. A timer, a `Promise.all` over
+ * two real reads, or a retry would each make these pins flaky AND prove less —
+ * they would assert "this ordering happened to occur", not "this ordering
+ * cannot un-burn the key".
+ *
+ * One-shot: the arm is consumed by the first call, so everything the test does
+ * in the gap — including the read that burns — passes straight through.
+ */
+function holdNextVectorQuery(): HeldCall {
+  const storage = getStorage();
+  const real = storage.queryEmbeddings.bind(storage);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let announce!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    announce = resolve;
+  });
+  let armed = true;
+  const spy = vi
+    .spyOn(storage, "queryEmbeddings")
+    .mockImplementation(async (vector, topK, accept) => {
+      if (!armed) return real(vector, topK, accept);
+      armed = false;
+      let result;
+      try {
+        result = await real(vector, topK, accept);
+      } finally {
+        // In a `finally` so a REJECTING real call still un-blocks the waiter:
+        // otherwise `arrived` hangs and the rejection the test wants to see is
+        // buried under a timeout.
+        announce();
+      }
+      await gate;
+      return result;
+    });
+  return {
+    arrived: withArrivalTimeout(arrived, "queryEmbeddings"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
+/**
+ * Park the NEXT rebuild-epoch READ after it has really run, until released.
+ *
+ * The sibling of {@link holdNextVectorQuery}, for the one DW-602 row the query
+ * hold cannot stage: a read that observed a LOW epoch and only reaches its burn
+ * after a higher-epoch burn has already landed. The door reads the epoch after
+ * its query resolves, so holding the query would hand the late read the CURRENT
+ * counter — the very skew the row is about would be impossible to build.
+ *
+ * Filtered to the epoch key so that unrelated index reads (the data-version
+ * counter, say) pass straight through and cannot consume the one-shot arm. It
+ * does NOT make the hold safe around a bump: filesystem `incrementIndex` reads
+ * this very key through this very `getIndex`, inside its `index:<key>` file
+ * lock, so an arm that is still live when a bump runs parks the increment
+ * WHILE it holds that lock. The real constraint is the caller's: arm the hold
+ * only when the next epoch-key read is the door's own, and do every bump after
+ * `arrived` has consumed the arm.
+ */
+function holdNextEpochRead(): HeldCall {
+  const storage = getStorage();
+  const real = storage.getIndex.bind(storage);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let announce!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    announce = resolve;
+  });
+  let armed = true;
+  const spy = vi
+    .spyOn(storage, "getIndex")
+    .mockImplementation(async (key: string) => {
+      if (!armed || key !== EMBEDDING_REBUILD_EPOCH_KEY) return real(key);
+      armed = false;
+      let value;
+      try {
+        value = await real(key);
+      } finally {
+        announce();
+      }
+      await gate;
+      return value;
+    });
+  return {
+    arrived: withArrivalTimeout(arrived, "rebuild-epoch read"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
 }
 
 // Cast for convenience
@@ -110,6 +307,16 @@ beforeEach(() => {
   mockGetCfContext.mockImplementation(() => {
     throw new Error("no cloudflare context");
   });
+  // Misconfiguration warnings are said once per process (DW-273/DW-278), and
+  // the module outlives each test — forget them so every test that asserts a
+  // warning still hears it.
+  _resetEmbeddingWarnings();
+  // `../config` is mocked with `importActual`, so `config.ts`'s OWN warn-once
+  // registry is live in this suite too — the Ollama endpoint refusals
+  // (`ollama-endpoint:env:…`, `ollama-endpoint:config:…`) are recorded there,
+  // not here. Reset beside its sibling so a count asserted in one case cannot
+  // be decided by which case ran first, across either registry.
+  _resetConfigWarnings();
 });
 
 afterEach(() => {
@@ -134,6 +341,25 @@ function mockWorkersAi(vectors: number[][]) {
     .mockResolvedValue({ shape: [vectors.length, vectors[0]?.length ?? 0], data: vectors });
   mockGetCfContext.mockReturnValue({ env: { AI: { run } } });
   return run;
+}
+
+/**
+ * Spy on `logger.warn`, capturing calls BEFORE the restore clears them.
+ * Shared by the model-resolution and warn-once suites.
+ */
+async function withWarnSpy<T>(
+  body: () => T | Promise<T>,
+): Promise<{ result: T; warnings: string[] }> {
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    const result = await body();
+    const warnings = warn.mock.calls
+      .filter((call) => call[0] === "embeddings")
+      .map((call) => String(call[1]));
+    return { result, warnings };
+  } finally {
+    warn.mockRestore();
+  }
 }
 
 /** Build a valid 1,024-dimension bge-m3/bge-large test vector. */
@@ -221,6 +447,38 @@ describe("hasEmbeddingSupport", () => {
   it("returns true when OLLAMA_MODEL is set", () => {
     process.env.OLLAMA_MODEL = "llama3.2";
     expect(hasEmbeddingSupport()).toBe(true);
+  });
+
+  // The mirror of `detectEnvProvider`'s ollama branch (DW-370). This tail held
+  // a SECOND copy of the bare presence test, so a refused `OLLAMA_BASE_URL`
+  // selected `ollama` here and a whole corpus was embedded against an endpoint
+  // the owner never named. Its own evidence, not the other site's.
+  it("returns false when OLLAMA_BASE_URL is present but unusable", () => {
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    expect(hasEmbeddingSupport()).toBe(false);
+    expect(getEmbeddingModelName()).toBeNull();
+  });
+
+  it("still returns true when OLLAMA_MODEL is set beside an unusable URL", () => {
+    // Only the endpoint's false signal is removed; the model name is usable on
+    // its own and the SDK's default endpoint is the honest resolution.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_MODEL = "llama3.2";
+    expect(hasEmbeddingSupport()).toBe(true);
+    expect(getEmbeddingModelName()).toBe("nomic-embed-text");
+  });
+
+  it("treats a BLANK OLLAMA_BASE_URL as unset, not as a selection", () => {
+    process.env.OLLAMA_BASE_URL = "  ";
+    expect(hasEmbeddingSupport()).toBe(false);
+  });
+
+  it("does not read the STORED endpoint as an env signal", () => {
+    // `resolveEmbeddingProvider`'s credential tail asks the same env-only
+    // question `detectEnvProvider` asks; a saved endpoint is the owner's saved
+    // PROVIDER's business, one branch further up.
+    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://stored-host:11434" });
+    expect(hasEmbeddingSupport()).toBe(false);
   });
 });
 
@@ -457,12 +715,25 @@ describe("relatedByVector", () => {
     expect(await relatedByVector("ghost", 10)).toEqual([]);
   });
 
-  it("returns [] when the anchor's vector is from a different model (stale)", async () => {
+  it("returns [] AUDIBLY when the anchor's vector is from a different model (stale)", async () => {
     await seedAnchorSet("text-embedding-3-small");
     process.env.EMBEDDING_MODEL = "text-embedding-3-large"; // current model differs
     process.env.OPENAI_API_KEY = "sk-test";
 
-    expect(await relatedByVector("anchor", 10)).toEqual([]);
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    expect(result).toEqual([]);
+    // …and the breadcrumb that makes that diagnosable rather than looking like
+    // "this page has no neighbours" (DW-406). `[]` alone was satisfied by a
+    // silent return, which is what left a render-only deployment blind.
+    expect(warnings).toHaveLength(1);
+    // The sentence has to identify the BRANCH, not just the family: "likely
+    // embedding-model drift" is emitted by BOTH of this door's warn branches,
+    // so asserting it alone passes if the window branch fired instead of the
+    // early return — which cannot even be reached on a stale anchor.
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain("embedding-model drift");
+    expect(warnings[0]).toContain('active="text-embedding-3-large"');
   });
 
   it("returns [] (never throws) on a mixed-dimension store", async () => {
@@ -475,6 +746,727 @@ describe("relatedByVector", () => {
     process.env.OPENAI_API_KEY = "sk-test";
 
     await expect(relatedByVector("anchor", 10)).resolves.toEqual([]);
+  });
+
+  it("says NOTHING about drift on a mixed-dimension store, and does not re-arm", async () => {
+    // The other half of degrading (DW-406): a read that THREW reached neither
+    // branch, so it is evidence of nothing in either direction. Both live
+    // inside the try, so this holds structurally — pinned because "structurally"
+    // is exactly what a later refactor that hoists them out would break, and
+    // re-arming here would un-burn the key on a read that never saw a window.
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: a search burns `drift:…-3-small`.
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await seedVector("page-b", [0, 1, 0], "old-model", "b");
+      await searchByVector("one", 10);
+      // 2. A render whose anchor is CURRENT (so the stale-anchor return is not
+      //    what answers) over a store that has gone mixed-dimension. The cosine
+      //    scan throws before either branch runs.
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "c");
+      await seedVector("short", [1, 0], DEFAULT_TEST_MODEL, "d"); // 2-dim
+      const related = await relatedByVector("anchor", 10);
+      // 3. Back to a drifted, dimension-consistent corpus under the SAME active
+      //    model. Silence here means step 2 left the key burnt.
+      for (const slug of ["anchor", "short"]) await removeEmbedding(slug);
+      await searchByVector("two", 10);
+      return related;
+    });
+
+    // Asserted OUT here, not inside the spy callback: a throw in there escapes
+    // before `withWarnSpy` collects, and the captured lines — the whole point
+    // of this test — would be discarded with it.
+    expect(result).toEqual([]);
+
+    // ONE drift line, from step 1, and it is the SEARCH door's. Identifying the
+    // speaker is what rules the render door out: because the two doors share
+    // one key, a drift line from the throwing read would be SUPPRESSED rather
+    // than counted, so "how many" cannot tell them apart on its own.
+    const drift = warnings.filter((w) => w.includes("embedding-model drift"));
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain("searchByVector");
+    // Silence about DRIFT is not silence: the benign dimension-mismatch line is
+    // the one thing a degraded render still owes an operator, and nothing else
+    // in this file pins that it survives.
+    const failures = warnings.filter((w) => w.includes("query failed"));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("relatedByVector");
+  });
+
+  it("says the stale-anchor line ONCE however many page renders run", async () => {
+    // DW-406's named case. On a fully drifted corpus EVERY anchor is stale, so
+    // the stale-anchor early return is the only branch that ever runs — and
+    // `findSimilarPages` is on the article render path, so an unthrottled line
+    // would repeat for every page anyone opened.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await relatedByVector("anchor", 10),
+      await relatedByVector("near", 10),
+      await relatedByVector("anchor", 10),
+    ]);
+
+    // Once for the process, not once per render and not once per PAGE — the
+    // identity is the active model, and the second render is a different page.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Suppression is of repetition only — every render still answered.
+    expect(result).toEqual([[], [], []]);
+  });
+
+  it("says the drift line when the model filter drops the WHOLE window", async () => {
+    // The other warn branch: the anchor itself is an UNLABELLED legacy vector,
+    // so it passes the early return, and every other vector in the window is
+    // stale. Nothing is left to return and nothing else would say why.
+    await getStorage().upsertEmbedding("anchor", [1, 0, 0], { contentHash: "a" });
+    await seedVector("near", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("far", [0, 1, 0], "old-model", "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await relatedByVector("anchor", 10),
+      await relatedByVector("anchor", 10),
+    ]);
+
+    expect(result).toEqual([[], []]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+  });
+
+  it("RE-ARMS a key searchByVector burnt, so a later drift speaks again", async () => {
+    // The second half of DW-406, and the sharper one. Since DW-332 drift is
+    // CLEARABLE state; before this door re-armed, a rebuild proven out only
+    // through page renders never cleared `drift:M`, so a later genuine drift
+    // shipped silent for the rest of the process. The two doors share one key
+    // precisely so either can carry that news.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const reseed = async (model: string) => {
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet(model);
+    };
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. The rebuild lands — it re-tags the corpus AND moves the persisted
+      //    epoch — and the ONLY traffic that observes it is a page render. Its
+      //    window (anchor dropped) is non-empty and the epoch has advanced past
+      //    the one recorded at burn → re-arm.
+      await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
+      const related = await relatedByVector("anchor", 10);
+      // 3. Drift again under the SAME active model.
+      await reseed("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Twice, not once: without the render door's re-arm the second outage is
+    // the one an operator has no breadcrumb for.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[0]).toContain("searchByVector");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too: the middle read is the render whose window matched
+    // wholly, and it answered rather than warning.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm — or warn — on a partially rebuilt (MIXED) window", async () => {
+    // Held at this door too, now on the epoch: `rebuildVectorStore` upserts
+    // page by page with no bulk swap, so mid-rebuild a window holds stale and
+    // re-tagged vectors together — and, crucially, the rebuild has NOT
+    // COMPLETED, so the epoch has not moved. A partially rebuilt corpus is not
+    // evidence the rebuild landed, and it is not evidence of total drift
+    // either, since it still returned results.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. A rebuild gets PARTWAY: `anchor` and `near` are re-tagged, `mid` and
+      //    `far` are not. The render's window is mixed.
+      await removeEmbedding("anchor");
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      await removeEmbedding("near");
+      await seedVector("near", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
+      const related = await relatedByVector("anchor", 10);
+      // 3. The corpus drifts fully again under the SAME active model.
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Still ONE line: the mid-rebuild render neither warned nor re-armed. A
+    // gate that re-armed on window composition — or on inequality against the
+    // epoch rather than strictly-greater — hears two here.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector");
+    // And the door still ANSWERED, with exactly what it answered before.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm on an all-UNLABELLED window, and stays silent", async () => {
+    // An all-unlabelled window, held here. `modelMatches` deliberately KEEPS
+    // unlabelled legacy vectors, so the provider rejects nothing and the door
+    // answers — but no rebuild has COMPLETED, so the epoch has not moved and
+    // the key stays burnt. Nothing was rejected either, so there is nothing to
+    // warn about. (Under the old proof conjunct this was the case a
+    // whole-window match could not tell from a finished rebuild; the epoch
+    // makes the question moot, and takes the conjunct's mirror-image cost —
+    // an all-unlabelled corpus that could NEVER re-arm — away with it.)
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. The ANCHOR is re-tagged under the active model and every OTHER
+      //    vector loses its label. This is the window the gate has to read off
+      //    `others` for: the anchor is the corpus's only current member, and
+      //    it was already vetted by the stale-anchor return, so letting it
+      //    supply the proof would be a page vouching for itself.
+      await removeEmbedding("mid");
+      await removeEmbedding("anchor");
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      for (const [slug, vec] of [
+        ["near", [0.9, 0.1, 0]],
+        ["far", [0, 1, 0]],
+      ] as Array<[string, number[]]>) {
+        await removeEmbedding(slug);
+        await getStorage().upsertEmbedding(slug, vec, { contentHash: "x" });
+      }
+      const related = await relatedByVector("anchor", 10);
+      // 3. Drifted again under the SAME active model.
+      for (const slug of ["anchor", "near", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Still ONE line: no rebuild completed, so nothing may re-arm. Reading the
+    // gate off `matches` rather than `others` would still be wrong here for the
+    // OTHER reason the split exists — a lone anchor vouching for itself — which
+    // the "LONE page" pin below holds.
+    expect(warnings).toHaveLength(1);
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("says nothing on a healthy, never-drifted corpus", async () => {
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    // The re-arm is SILENT — it deletes a key nobody burnt, which is a no-op.
+    expect(warnings).toEqual([]);
+    expect(result.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+  });
+
+  it("reads NO epoch at all on a healthy render whose key was never burnt", async () => {
+    // The acceptance criterion, held at the door where it matters MOST. This is
+    // the render path — `findSimilarPages` runs on every article view — so a
+    // storage round-trip added here is one per page view, not one per search.
+    // The gate reads the epoch only when the key is already burnt or this read
+    // is about to burn it; a deployment that has never seen drift pays nothing.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      const results = await relatedByVector("anchor", 10);
+      expect(results.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("reads NO epoch across REPEATED renders while the key is never burnt", async () => {
+    // The same criterion held over the shape production actually runs: this
+    // door is reached from `findSimilarPages` on EVERY article render, so
+    // "one read costs nothing" is only worth anything if N reads do too. A
+    // per-render cache or throttle around the epoch read would pass the
+    // single-render pin above and fail here — as would any change that hoisted
+    // the read out of the `burnt || drifted` branch.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      for (let i = 0; i < 5; i++) {
+        const results = await relatedByVector("anchor", 10);
+        expect(results.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      }
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("does NOT re-arm on a render window gathered BEFORE another render burnt the key (DW-602)", async () => {
+    // DW-602 is filed at `searchByVector`, but the two doors share ONE key and
+    // this is the high-frequency one — a late re-arm would be hit here first
+    // and most often. The interleave is STAGED (see `holdNextVectorQuery`): the
+    // render's query really runs against the healthy corpus, is parked, and the
+    // burn happens in the gap.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        // Render A gathers a wholly CURRENT window and parks.
+        const a = relatedByVector("anchor", 10);
+        await held.arrived;
+        // The corpus drifts underneath it, and a second render — a stale
+        // anchor, so the early-return branch — burns the key at epoch 0.
+        for (const slug of ["anchor", "near", "mid", "far"]) {
+          await removeEmbedding(slug);
+        }
+        await seedAnchorSet("old-model");
+        const burner = await relatedByVector("anchor", 10);
+        // A resolves. Its window is PRE-BURN evidence and no rebuild completed,
+        // so it must not un-burn the key.
+        held.release();
+        const late = await a;
+        // The line a spurious re-arm would have let through.
+        const after = await searchByVector("q", 10);
+        return [late, burner, after];
+      });
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "relatedByVector: the anchor's own vector is from another model",
+      );
+      // Pin the CAUSE: A really did carry the healthy pre-burn window, which is
+      // exactly what a window-composition gate would have re-armed on.
+      expect(result[0].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("does NOT re-arm on a render window gathered before the OTHER door's burn (DW-602)", async () => {
+    // The cross-door interleave. One key, two doors, so the unsound re-arm does
+    // not need both halves to be the same door: a search burns while a render
+    // is in flight, and the render must still not clear it.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = relatedByVector("anchor", 10);
+        await held.arrived;
+        for (const slug of ["anchor", "near", "mid", "far"]) {
+          await removeEmbedding(slug);
+        }
+        await seedAnchorSet("old-model");
+        // The QUERY door burns the shared key this time.
+        const burner = await searchByVector("burn", 10);
+        held.release();
+        const late = await a;
+        const after = await searchByVector("q", 10);
+        return [late, burner, after];
+      });
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "searchByVector: the model filter dropped every match",
+      );
+      expect(result[0].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("never re-arms across REPEATED renders alternating over a partially rebuilt corpus (DW-687)", async () => {
+    // The reported shape: a half-finished rebuild leaves one topical cluster
+    // stale and another current, and the render door — which runs on every
+    // article view — walks over both, over and over. The worry was a
+    // warn/re-arm oscillation that turns a once-per-process line into a
+    // per-render one. It is structurally impossible: the door re-arms on the
+    // EPOCH alone, and no rebuild has COMPLETED, so nothing either cluster
+    // looks like can un-burn the key.
+    await seedVector("stale-anchor", [1, 0, 0], "old-model", "a");
+    await seedVector("stale-near", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("fresh-anchor", [0, 0, 1], DEFAULT_TEST_MODEL, "c");
+    await seedVector("fresh-near", [0, 0.1, 0.99], DEFAULT_TEST_MODEL, "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const seen: string[][] = [];
+      for (let i = 0; i < 4; i++) {
+        // Inside the STALE cluster: the anchor's own vector is stale, so this
+        // is the early-return branch — the one that BURNS.
+        seen.push((await relatedByVector("stale-anchor", 10)).map((r) => r.slug));
+        // Inside the CURRENT cluster: a wholly current window, which under any
+        // window-composition gate reads as proof the rebuild landed.
+        seen.push((await relatedByVector("fresh-anchor", 10)).map((r) => r.slug));
+      }
+      // …and then the corpus drifts COMPLETELY under the same active model.
+      await removeEmbedding("fresh-anchor");
+      await removeEmbedding("fresh-near");
+      await seedVector("fresh-anchor", [0, 0, 1], "old-model", "c");
+      await seedVector("fresh-near", [0, 0.1, 0.99], "old-model", "d");
+      seen.push((await searchByVector("q", 10)).map((r) => r.slug));
+      return seen;
+    });
+
+    // ONE line across nine reads, and the following full drift is silent — the
+    // key never re-armed. An alternating gate says five here.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "relatedByVector: the anchor's own vector is from another model",
+    );
+    // Pin the CAUSE: the current-cluster renders really did answer with a
+    // wholly current window, every time.
+    expect(result[0]).toEqual([]);
+    expect(result[1]).toEqual(["fresh-near"]);
+    expect(result[6]).toEqual([]);
+    expect(result[7]).toEqual(["fresh-near"]);
+    expect(result[8]).toEqual([]);
+  });
+
+  it("does NOT re-arm when only ONE topical cluster is re-tagged current (DW-687)", async () => {
+    // The narrower half of the same complaint: a hand re-embed (or a rebuild
+    // that dies partway) can leave one cluster entirely current with no rebuild
+    // having COMPLETED. A render from INSIDE that cluster sees a window with
+    // nothing stale in it at all — the strongest local evidence this door can
+    // ever be handed — and it is still not corpus-level evidence.
+    await seedVector("a1", [1, 0, 0], "old-model", "a");
+    await seedVector("a2", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("b1", [0, 0, 1], "old-model", "c");
+    await seedVector("b2", [0, 0.1, 0.99], "old-model", "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns the key at epoch 0.
+      const one = await searchByVector("one", 10);
+      // 2. Cluster B alone is re-tagged under the active model. The epoch does
+      //    NOT move — nothing completed.
+      await removeEmbedding("b1");
+      await removeEmbedding("b2");
+      await seedVector("b1", [0, 0, 1], DEFAULT_TEST_MODEL, "c");
+      await seedVector("b2", [0, 0.1, 0.99], DEFAULT_TEST_MODEL, "d");
+      // 3. A render from inside cluster B: wholly current window, no re-arm.
+      const inside = await relatedByVector("b1", 10);
+      // 4. The corpus drifts again under the SAME active model.
+      await removeEmbedding("b1");
+      await removeEmbedding("b2");
+      await seedVector("b1", [0, 0, 1], "old-model", "c");
+      await seedVector("b2", [0, 0.1, 0.99], "old-model", "d");
+      const two = await searchByVector("two", 10);
+      return [one, inside, two];
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "searchByVector: the model filter dropped every match",
+    );
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["b2"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("reads its warn evidence CORPUS-WIDE, not off the nearest neighbourhood (DW-687)", async () => {
+    // The other half of DW-687's complaint, and the reason the alternation
+    // above cannot even produce a second WARN. Since `accept` moved ahead of
+    // the top-K slice (DW-598), `matches` is the nearest ACCEPTED vectors
+    // corpus-wide — not the accepted survivors of a nearest-neighbour slice —
+    // so an anchor whose immediate neighbourhood is entirely stale still sees
+    // the current vector that lives far away, and does not call that drift.
+    await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("n1", [0.98, 0.02, 0], "old-model", "b");
+    await seedVector("n2", [0.95, 0.05, 0], "old-model", "c");
+    await seedVector("distant", [0, 0, 1], DEFAULT_TEST_MODEL, "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // topK 1 → the door queries for 2, over-fetching by one because the
+      // anchor's own vector is the query vector and therefore always the top
+      // hit. Sliced BEFORE the filter, those two are the ANCHOR and `n1`; the
+      // anchor is then dropped as self and `n1` refused, leaving `others`
+      // empty with `rejected` non-zero — drift declared on a corpus holding a
+      // perfectly current vector.
+      const near = await relatedByVector("anchor", 1);
+      // The line a spurious burn here would have swallowed.
+      for (const slug of ["anchor", "distant"]) await removeEmbedding(slug);
+      await seedVector("anchor", [1, 0, 0], "old-model", "a");
+      await seedVector("distant", [0, 0, 1], "old-model", "d");
+      const real = await searchByVector("q", 10);
+      return [near, real];
+    });
+
+    expect(result[0].map((r) => r.slug)).toEqual(["distant"]);
+    expect(result[1]).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "searchByVector: the model filter dropped every match",
+    );
+  });
+
+  it("RE-ARMS from the stale-anchor early return, bounding the orphan false positive", async () => {
+    // The re-arm on the early-return path is load-bearing, not incidental, and
+    // this is the pin that says so. It is the only thing that bounds the ONE
+    // false positive this door alone can produce: a stale ORPHAN anchor — a
+    // renamed or re-embedded page whose old vector `rebuildVectorStore` never
+    // deletes — burns the process-wide key on ONE page's evidence, over a
+    // corpus that has not drifted at all. Because the orphan is stale forever,
+    // every later render of it lands on this same early return, so if THIS
+    // path could not re-arm the key would stay shut for the rest of the
+    // process no matter how many rebuilds completed.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("page-b", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The accepted false positive: rendering the orphan burns the
+      //    process-wide key at epoch 0.
+      const one = await relatedByVector("orphan", 10);
+      // 2. …over a corpus that is perfectly healthy, which a search confirms by
+      //    answering and saying nothing. That is what makes step 1 a FALSE
+      //    positive rather than a report.
+      const healthy = await searchByVector("q", 10);
+      // 3. A rebuild COMPLETES. It cannot touch the orphan — that is what an
+      //    orphan is — so the only door a later render of it reaches is the
+      //    same stale-anchor early return.
+      await bumpRebuildEpoch();
+      // 4. That render must re-arm off the epoch and speak again. Drop the
+      //    `rearmDriftIfRebuilt` from the early return and this goes silent:
+      //    one page's stale vector mutes the key permanently.
+      const two = await relatedByVector("orphan", 10);
+      return [one, healthy, two];
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain(
+      "relatedByVector: the anchor's own vector is from another model",
+    );
+    expect(warnings[1]).toBe(warnings[0]);
+    // Pin the CAUSE: the corpus really was healthy throughout, so nothing but
+    // the early return's own re-arm can account for the second line.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT warn on a render the CALLER asked to be empty (topK: 0)", async () => {
+    // The `topK > 0` conjunct at this door. The query is for `topK + 1`, so at
+    // `topK: 0` the anchor eats the only slot, `others` is empty and `rejected`
+    // is non-zero on a corpus that has not drifted at all — burning the shared
+    // process-wide key on nothing.
+    await seedAnchorSet();
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const zero = await relatedByVector("anchor", 0);
+      // The corpus GENUINELY drifts afterwards — the line a spurious burn would
+      // have swallowed.
+      for (const slug of ["anchor", "near", "mid", "far", "orphan"]) {
+        await removeEmbedding(slug);
+      }
+      await seedAnchorSet("old-model");
+      const real = await searchByVector("q", 10);
+      return [zero, real];
+    });
+
+    expect(result).toEqual([[], []]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector: the model filter dropped every match");
+  });
+
+  it("says nothing on a LONE page — an empty window is not evidence", async () => {
+    await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    // `others` is empty and the provider rejected NOTHING, so the warn's
+    // `rejected > 0` conjunct refuses it — a bare `else` would say "the filter
+    // dropped every match" about a corpus of one page.
+    expect(result).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("shares ONE key with searchByVector — the search door stays silent after it", async () => {
+    // The key both doors write is `drift:<active model>` and nothing else, so
+    // drift is ONE piece of news however it is discovered. Nothing else in this
+    // file pins the KEY: give this door its own namespace and every other test
+    // here still passes, while a drifted deployment starts saying the same
+    // thing twice — once per door — for the rest of the process.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // The render door speaks first — the drifted corpus makes every anchor
+      // stale — and burns the shared key.
+      const related = await relatedByVector("anchor", 10);
+      // The search door then finds the SAME drift under the SAME active model.
+      // It is the same fact, so it must not be reported a second time.
+      const searched = await searchByVector("q", 10);
+      return [related, searched];
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Both doors still ANSWERED — suppression is of repetition, never of work.
+    expect(result).toEqual([[], []]);
+  });
+
+  it("completes a warn/re-arm cycle through THIS door alone", async () => {
+    // A deployment whose only vector traffic is page renders (`findSimilarPages`)
+    // has to be able to hear drift, hear nothing while it is standing, and hear
+    // it AGAIN after a rebuild and a second drift — with no search ever running.
+    // This is the only test that ties this door's warn key to its own re-arm
+    // key: point the two at different namespaces and the third render below
+    // goes mute, exactly as the render-only deployment did before DW-406.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const reseed = async (model: string) => {
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet(model);
+    };
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: every anchor is stale, so the early return speaks.
+      const one = await relatedByVector("anchor", 10);
+      // 2. The rebuild lands: the corpus is re-tagged and the epoch moves.
+      //    This render's window is non-empty and the epoch has advanced past
+      //    the one recorded at burn → re-arm, silently.
+      await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
+      const two = await relatedByVector("anchor", 10);
+      // 3. Drift again under the SAME active model.
+      await reseed("old-model");
+      const three = await relatedByVector("anchor", 10);
+      return [one, two, three];
+    });
+
+    // Twice, and byte-identical: the identity that drifted is the same one, and
+    // step 2's re-arm is the only reason the second line exists.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain("relatedByVector: the anchor's own vector is from another model");
+    // Pin the CAUSE: step 2 is the render that ANSWERED, which is what makes it
+    // evidence of a landed rebuild rather than of more drift.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("lets a stale ORPHAN anchor burn the key on a healthy corpus (accepted cost)", async () => {
+    // NOT a defect — the accepted false positive recorded on
+    // `warnedMisconfigurations`, pinned so a later "fix" cannot delete
+    // deliberate behaviour without this test arguing back. `rebuildVectorStore`
+    // never DELETES, so a renamed or re-embedded page leaves its old vector
+    // behind; rendering it makes the stale-anchor return fire on an otherwise
+    // healthy corpus and burn the PROCESS-WIDE key on one page's evidence.
+    // `searchByVector` cannot produce this — its warn needs the provider to
+    // have rejected EVERY candidate. The cost is a suppressed line, never a
+    // wrong answer, and it is the price of the two doors sharing one piece of
+    // news. The epoch bounds it: the next COMPLETED rebuild clears the key,
+    // where before DW-599 it stayed burnt for the rest of the process.
+    await seedAnchorSet();
+    await seedVector("orphan", [1, 0, 0], "old-model", "z"); // renamed page's leftover
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The orphan is rendered. One stale page, corpus otherwise current —
+      //    and `drift:…-3-small` is burnt anyway.
+      const orphan = await relatedByVector("orphan", 10);
+      // 2. The corpus GENUINELY drifts later, under the same active model.
+      for (const slug of ["anchor", "near", "mid", "far", "orphan"]) {
+        await removeEmbedding(slug);
+      }
+      await seedAnchorSet("old-model");
+      const searched = await searchByVector("q", 10);
+      return [orphan, searched];
+    });
+
+    // ONE line, and it is the orphan's. The real drift at step 2 is SILENT.
+    // That is the accepted cost stated plainly: asserting it is how a future
+    // change that alters the trade-off is forced to be deliberate about it.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(result).toEqual([[], []]);
+  });
+
+  it("says nothing when NO active model resolves", async () => {
+    // No provider keys → `getEmbeddingModelName()` is null, and every branch is
+    // already false on it: `modelMatches` is true against null, so the
+    // stale-anchor return never fires, `accept` degrades to accept-all and
+    // NOTHING is ever rejected, and the warn's `rejected > 0` conjunct
+    // therefore cannot hold. `drift:null` is structurally unspeakable — no null
+    // branch needed.
+    await seedAnchorSet();
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    expect(warnings).toEqual([]);
+    expect(result.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
   });
 });
 
@@ -686,7 +1678,7 @@ describe("searchByVector", () => {
     expect(results).toEqual([]);
   });
 
-  it("drops matches whose stored model differs from the current model", async () => {
+  it("drops matches whose stored model differs from the current model, AUDIBLY", async () => {
     // Vectors were embedded by a different model than the current provider uses.
     await seedVector("page-a", [1, 0, 0], "old-model-from-different-provider", "a");
     await seedVector("page-b", [0, 1, 0], "old-model-from-different-provider", "b");
@@ -694,10 +1686,1117 @@ describe("searchByVector", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
-    const results = await searchByVector("test query", 10);
+    const { result, warnings } = await withWarnSpy(() => searchByVector("test query", 10));
 
     // All matches filtered out — stale model.
-    expect(results).toEqual([]);
+    expect(result).toEqual([]);
+    // …and the breadcrumb that makes that diagnosable rather than looking like
+    // "no matches" (DW-310). `[]` alone was satisfied by a silent drop.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("embedding-model drift");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+  });
+
+  it("says the drift line ONCE however many queries run against the drifted corpus", async () => {
+    // DW-310. The drift is STANDING state — it holds until the corpus is
+    // rebuilt — but this door is per QUERY, so the unthrottled line repeated
+    // itself for every search anyone ran.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+      await searchByVector("three", 10),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    // Suppression is of repetition only — every query still answered.
+    expect(result).toEqual([[], [], []]);
+
+    // The sentence names NO match count. A count is a property of the QUERY,
+    // not of the misconfiguration — it is why the line was "not literally the
+    // same each time" — and keying on it would have re-armed the warning for
+    // every distinct number of hits. Pinned by GROWING the drifted corpus and
+    // re-arming the key: the same identity produces the byte-identical line.
+    expect(warnings[0]).not.toMatch(/\b\d+ match/);
+    await seedVector("page-c", [0, 0, 1], "old-model", "c");
+    _resetEmbeddingWarnings();
+    const bigger = await withWarnSpy(() => searchByVector("four", 10));
+    expect(bigger.warnings).toEqual(warnings);
+  });
+
+  it("SPEAKS again after the corpus is REBUILT and drifts a second time", async () => {
+    // DW-332. Drift is the one identity in the Set that is fixed IN-process:
+    // `rebuildVectorStore` is the fix and it runs in the same isolate. Without
+    // a re-arm, the ONCE throttle turns "you fixed it and broke it again" into
+    // silence for the rest of the process — the second outage is the one an
+    // operator has no breadcrumb for.
+    //
+    // The corpus is deliberately TWO vectors wide, and the rebuild re-tags
+    // BOTH and moves the persisted epoch. This is the file's only place a
+    // re-arm is directly OBSERVABLE — a missed one suppresses the second drift
+    // line below — so it is also the only place that can pin the re-arm over a
+    // window bigger than one match.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0.9, 0.1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const reseed = async (model: string) => {
+      await removeEmbedding("page-a");
+      await removeEmbedding("page-b");
+      await seedVector("page-a", [1, 0, 0], model, "a");
+      await seedVector("page-b", [0.9, 0.1, 0], model, "b");
+    };
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the line is said.
+      const one = await searchByVector("one", 10);
+      // 2. Rebuild — the WHOLE corpus is re-embedded under the ACTIVE model
+      //    and the rebuild COMPLETES, raising the persisted epoch. The next
+      //    query's window is non-empty and its epoch beats the one recorded at
+      //    burn, which re-arms `drift:text-embedding-3-small`.
+      await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
+      const two = await searchByVector("two", 10);
+      // 3. Drift again under the SAME active model.
+      await reseed("old-model");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // Twice, not once — and the second line is byte-identical to the first,
+    // because the identity that drifted is the same one.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too, not just the effect: the middle query is the one that
+    // saw a non-empty window on a bumped epoch, which is the only thing that
+    // re-arms. Asserting warnings alone would still pass if step 2 had somehow
+    // rejected everything and the second line came from somewhere else.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm on a PARTIALLY rebuilt (MIXED) window", async () => {
+    // `rebuildVectorStore` upserts page by page with no bulk swap, so
+    // mid-rebuild the store holds stale and re-tagged vectors together — and
+    // the rebuild has NOT completed, so the persisted epoch has not moved. The
+    // window's composition is no longer what decides this (DW-598/DW-599): a
+    // partially rebuilt corpus is not evidence a rebuild landed because no
+    // rebuild has landed, whatever any one query happens to see. `topK: 10`
+    // here so the window is wide enough to hold both vectors; the `topK: 1`
+    // reproduction DW-404 could not close is pinned separately below.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0.9, 0.1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. A rebuild gets PARTWAY: `page-b` is re-tagged, `page-a` is not.
+      await removeEmbedding("page-b");
+      await seedVector("page-b", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
+      const two = await searchByVector("two", 10);
+      const three = await searchByVector("three", 10);
+      // 3. The corpus drifts fully again under the SAME active model.
+      await removeEmbedding("page-b");
+      await seedVector("page-b", [0.9, 0.1, 0], "old-model", "b");
+      const four = await searchByVector("four", 10);
+      return [one, two, three, four];
+    });
+
+    // Still ONE line: the mid-rebuild reads never re-armed, so step 3 stayed
+    // silent. A gate that compared the epoch for INEQUALITY rather than
+    // strictly-greater would also pass here — nothing bumps the counter in this
+    // test. The two pins that hold that line are "re-arms ONLY the read's OWN
+    // drift identity" (a key burnt at the CURRENT epoch, which `!==` would
+    // clear) and "treats a DEGRADED epoch read as no rebuild observed" below.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE as well as the effect. The middle reads DID accept a match
+    // and they still RETURN it: the gate is on the re-arm alone, never on what
+    // the door answers.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-b"]);
+    expect(result[2].map((r) => r.slug)).toEqual(["page-b"]);
+    expect(result[3]).toEqual([]);
+  });
+
+  it("says the drift line ONCE across alternating topK:1 reads of a MIXED corpus (DW-598)", async () => {
+    // The reproduction DW-404 was reported with and neither of its narrowings
+    // could close. Two vectors, one stale and one re-tagged, and a window of
+    // exactly ONE: whichever vector a query happened to rank first decided
+    // everything. A query near the stale one returned a window of [stale],
+    // which the filter emptied → warn; a query near the current one returned a
+    // window of [current], which the filter left whole → re-arm. Alternating
+    // them produced FOUR drift lines over eight queries, where DW-310's
+    // throttle promises one.
+    //
+    // The fix is at the provider: `accept` narrows the candidate set BEFORE the
+    // top-K slice, so the stale vector can never occupy the single slot and
+    // every one of these reads sees the SAME window — the nearest ACCEPTED
+    // vector — whatever it was aiming at.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said once, burning `drift:…-3-small`.
+      const first = await searchByVector("zero", 1);
+
+      // 2. `page-b` is re-tagged; `page-a` stays stale. No rebuild has
+      //    COMPLETED, so the epoch has not moved.
+      await removeEmbedding("page-b");
+      await seedVector("page-b", [0, 1, 0], DEFAULT_TEST_MODEL, "b");
+
+      // 3. Eight alternating reads at topK: 1 — four aimed at the stale vector,
+      //    four at the current one.
+      const rest: Array<Array<{ slug: string; score: number }>> = [];
+      for (let i = 0; i < 8; i++) {
+        mockEmbed.mockResolvedValue({
+          embedding: i % 2 === 0 ? [1, 0, 0] : [0, 1, 0],
+        });
+        rest.push(await searchByVector(`q${i}`, 1));
+      }
+      return [first, ...rest];
+    });
+
+    // ONE line, from step 1. The mixed phase neither warned nor re-armed.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // And the CAUSE: every mixed read answered with the accepted vector, even
+    // the four aimed squarely at the stale one. Filtering after the slice
+    // returns [] for those — which is what made them warn.
+    expect(result[0]).toEqual([]);
+    for (const window of result.slice(1)) {
+      expect(window.map((r) => r.slug)).toEqual(["page-b"]);
+    }
+  });
+
+  it("SPEAKS again after a rebuild even though a stale ORPHAN keeps the window mixed (DW-599)", async () => {
+    // The other reproduction, and the reason the epoch REPLACED the window
+    // conjuncts rather than joining them. `rebuildVectorStore` never DELETES,
+    // so a deleted, renamed or emptied page leaves a stale vector behind that
+    // no rebuild can ever re-tag. Every window containing it is permanently
+    // mixed, so a re-arm that also demanded a whole-window match stayed wedged
+    // shut for the rest of the process and a second genuine drift shipped
+    // silent — on any store that has ever deleted a page.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("orphan", [0.9, 0.1, 0], "old-model", "z");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    // The orphan is NOT in the page index — that is what makes it an orphan.
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+
+      // 2. A REAL, COMPLETED rebuild. It re-tags `page-a` and leaves the orphan
+      //    exactly where it was, so the corpus is permanently mixed from here
+      //    on — and it raises the epoch.
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+      expect(await getStorage().getEmbeddingById("orphan")).not.toBeNull();
+
+      // 3. A read over that permanently mixed corpus. The window is non-empty
+      //    and the epoch beats the one recorded at burn → re-arm.
+      const two = await searchByVector("two", 10);
+
+      // 4. The corpus drifts again under the SAME active model.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // TWO lines. Under any gate that also demanded a whole-window match this is
+    // ONE, because the orphan is in every window forever.
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+    // Pin the CAUSE: step 3's window really was mixed — the orphan was rejected
+    // alongside the accepted `page-a` — and it re-armed anyway.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm when the epoch read FAILS, and never propagates", async () => {
+    // Every storage read on the warn/re-arm path is fail-soft. A throwing or
+    // unparseable epoch degrades to "no rebuild observed" — `0`, which is below
+    // every value that was ever recorded — so it can only ever FAIL to re-arm.
+    // It can never re-arm spuriously, and it can never turn a search into an
+    // error.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const realGetIndex = storage.getIndex.bind(storage);
+    // `incrementIndex` reads the counter through this same door, so the failure
+    // is armed around the door's reads only — otherwise the "a rebuild landed"
+    // step below could not land at all and the test would prove nothing.
+    let failEpochRead = true;
+    const getIndex = vi
+      .spyOn(storage, "getIndex")
+      .mockImplementation(async (key: string) => {
+        if (failEpochRead && key === EMBEDDING_REBUILD_EPOCH_KEY) {
+          throw new Error("index store down");
+        }
+        return realGetIndex(key);
+      });
+
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        // 1. Drifted: the burn's own epoch read throws, so it records 0.
+        const one = await searchByVector("one", 10);
+        // 2. A rebuild completes and the corpus is healthy — but the re-arm's
+        //    epoch read throws too, so nothing re-arms.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+        failEpochRead = false;
+        await bumpRebuildEpoch();
+        failEpochRead = true;
+        const two = await searchByVector("two", 10);
+        // 3. Drift again under the SAME active model — and stay silent.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const three = await searchByVector("three", 10);
+        return [one, two, three];
+      });
+
+      // The drift line was still said ONCE, the failure was warned about, and
+      // every read ANSWERED — degraded, never broken.
+      expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+      expect(warnings.some((w) => w.includes("rebuild-epoch read failed"))).toBe(true);
+      expect(result[0]).toEqual([]);
+      expect(result[1].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("treats a DEGRADED epoch read as no rebuild observed, even from a NON-ZERO watermark", async () => {
+    // The comparison is STRICTLY GREATER, and this is the pin that separates it
+    // from inequality. The key is burnt at epoch 2, then the re-arm read's
+    // `getIndex` fails and degrades to 0. `0 > 2` is false and the key stays
+    // burnt — but `0 !== 2` is TRUE, so an inequality gate re-arms on a FAILED
+    // READ and speaks a second line about a rebuild that never happened.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    // Two completed rebuilds BEFORE the burn, so the watermark is 2 and not 0.
+    await bumpRebuildEpoch();
+    await bumpRebuildEpoch();
+
+    const storage = getStorage();
+    const realGetIndex = storage.getIndex.bind(storage);
+    let failEpochRead = false;
+    const getIndex = vi
+      .spyOn(storage, "getIndex")
+      .mockImplementation(async (key: string) => {
+        if (failEpochRead && key === EMBEDDING_REBUILD_EPOCH_KEY) {
+          throw new Error("index store down");
+        }
+        return realGetIndex(key);
+      });
+
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // 1. Drifted, with a working read: the burn records the real epoch, 2.
+        await searchByVector("one", 10);
+        // 2. The counter has NOT moved, and the read fails on top of that.
+        failEpochRead = true;
+        await searchByVector("two", 10);
+        await searchByVector("three", 10);
+      });
+
+      expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+      expect(warnings.some((w) => w.includes("rebuild-epoch read failed"))).toBe(true);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("treats a NON-INTEGER stored epoch as no rebuild observed", async () => {
+    // The other half of the fail-soft rule. A hand-edited `"x"`, a `1.5` or a
+    // `-1` is narrowed to `0` by the same `narrowIndexInteger` the provider's
+    // own `incrementIndex` applies, so a corrupt counter can only ever fail to
+    // re-arm — never re-arm on a value that means nothing.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the burn reads an absent counter as 0.
+      const one = await searchByVector("one", 10);
+      // 2. The stored value is garbage rather than missing. Read as a number it
+      //    would look like movement; narrowed, it is 0 and nothing re-arms.
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, "x");
+      const two = await searchByVector("two", 10);
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, 1.5);
+      const three = await searchByVector("three", 10);
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, -3);
+      const four = await searchByVector("four", 10);
+      return [one, two, three, four];
+    });
+
+    // Still ONE line, and no failure was logged — a corrupt value is narrowed,
+    // not an error.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(result).toEqual([[], [], [], []]);
+  });
+
+  it("reads NO epoch at all on a healthy read whose key was never burnt", async () => {
+    // The whole point of gating the epoch read on `warnedMisconfigurations.has`
+    // rather than reading it unconditionally and comparing. A deployment that
+    // has never seen drift is the common case, and it must not pay a storage
+    // round-trip per query for a signal it will never look at.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      const results = await searchByVector("q", 10);
+      expect(results.map((r) => r.slug)).toEqual(["page-a"]);
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("does NOT re-arm on a window carried ENTIRELY by UNLABELLED vectors", async () => {
+    // `modelMatches` deliberately keeps vectors with no `model` metadata —
+    // dropping them would empty the corpus after a first deploy — so a window
+    // carried by one is fully ACCEPTED while proving nothing about the active
+    // model. Under the whole-window gate that re-armed the key on a corpus
+    // where every LABELLED vector was still stale, and alternating queries then
+    // produced TWO drift lines where DW-310's throttle guarantees one. The
+    // epoch closes it outright and without the mirror-image cost the
+    // positive-proof conjunct carried: no rebuild has completed, so nothing
+    // re-arms, whatever the window is made of.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. An UNLABELLED legacy vector joins the stale one. The provider
+      //    accepts it (no `model` key to compare) and rejects `page-a`, so the
+      //    window is non-empty…
+      await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
+      const two = await searchByVector("two", 10);
+      // 3. …and with the stale vector gone the window is entirely UNLABELLED
+      //    and nothing is rejected at all — the case the whole-window gate
+      //    could not tell from a finished rebuild.
+      await removeEmbedding("page-a");
+      const three = await searchByVector("three", 10);
+      const four = await searchByVector("four", 10);
+      // 4. The unlabelled vector goes away and the corpus is fully stale again
+      //    under the SAME active model.
+      await removeEmbedding("legacy");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const five = await searchByVector("five", 10);
+      return [one, two, three, four, five];
+    });
+
+    // Still ONE line: no rebuild completed, so no read re-armed the key.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too: the probe reads still RETURNED the unlabelled vector.
+    // The gate is on the re-arm alone, never on what the door answers —
+    // `modelMatches` stays permissive, and it stays permissive after being
+    // pushed down into the provider as `accept`.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[2].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[3].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[4]).toEqual([]);
+  });
+
+  it("DOES re-arm on a window holding an ACTIVE-model vector beside an unlabelled one", async () => {
+    // A legacy vector riding along with a genuinely rebuilt one is not evidence
+    // the rebuild failed. `modelMatches` is permissive by design, so the
+    // unlabelled vector is ACCEPTED and rides into the window; the rebuild
+    // completed, so the epoch moved; the window is non-empty; the key re-arms.
+    // A gate that inspected the window's LABELS instead — the whole-window or
+    // positive-proof conjuncts, or `matches.every(...)` — would let one
+    // unlabelled vector veto a rebuild that demonstrably landed.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. Rebuilt: `page-a` is re-tagged under the ACTIVE model, the rebuild
+      //    completes and moves the epoch, and an unlabelled legacy vector sits
+      //    beside it in the accepted window → re-arm.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
+      await bumpRebuildEpoch();
+      const two = await searchByVector("two", 10);
+      // 3. Drift again under the SAME active model.
+      await removeEmbedding("legacy");
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // Twice: the mixed labelled/unlabelled read re-armed, so the second drift
+    // is audible. Under any label-inspecting gate the unlabelled vector would
+    // have vetoed the re-arm and this would be ONE line.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain('active="text-embedding-3-small"');
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a", "legacy"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("re-arms on the EPOCH ALONE — no non-empty read in between (DW-599)", async () => {
+    // The re-arm carries no window conjunct at all, not even "the accepted
+    // window is non-empty". Gating on the window would leave DW-599 alive in a
+    // narrower form: a corpus that is rebuilt and then drifts again BEFORE any
+    // read happens to return something would fall into the warn branch forever,
+    // where `warnOnceAbout` silently declines to speak because the key is
+    // burnt. This drives both shapes of "nothing came back in between" — an
+    // EMPTY read, and no read at all — across a REAL `rebuildVectorStore`.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the line is said, burning `drift:…-3-small` at epoch 0.
+      const one = await searchByVector("one", 10);
+
+      // 2. An EMPTY read — every vector gone. Nothing to accept, nothing
+      //    rejected: it says nothing and establishes nothing.
+      await removeEmbedding("page-a");
+      const two = await searchByVector("two", 10);
+
+      // 3. A REAL, COMPLETED rebuild raises the epoch…
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+
+      // 4. …and the corpus drifts again under the SAME active model with NO
+      //    read in between at all. This read is itself drifted: it must re-arm
+      //    on the epoch first and then speak, rather than being swallowed as a
+      //    repeat of step 1.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // TWO lines. Under a re-arm gated on a non-empty window this is ONE: the
+    // empty read at step 2 could not re-arm, and step 4's drifted read never
+    // reaches a branch that could.
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(result[0]).toEqual([]);
+    expect(result[1]).toEqual([]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm on an empty read with no rebuild behind it", async () => {
+    // The other half: an empty window is not itself evidence of anything. What
+    // re-arms is the epoch, and no rebuild has completed here.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const one = await searchByVector("one", 10);
+      await removeEmbedding("page-a");
+      const two = await searchByVector("two", 10);
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // Still ONE line. The empty read neither warned nor re-armed.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(result).toEqual([[], [], []]);
+  });
+
+  it("does NOT re-arm on a window gathered BEFORE another read burnt the key (DW-602)", async () => {
+    // DW-602's own reproduction, staged rather than raced (see
+    // `holdNextVectorQuery`): read A queries a HEALTHY corpus, read B drifts
+    // and burns the key underneath it, and only then does A resolve. A's window
+    // is pre-burn evidence, so re-arming on it would clear the key with no
+    // rebuild behind it at all — the un-burn DW-602 was filed about.
+    //
+    // What makes it impossible is that the re-arm reads no property of A's
+    // window: the only input is an epoch read AFTER that query resolved, which
+    // is at least the one B recorded, and the comparison is strictly greater.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // B drifts the corpus and burns `drift:…-3-small` at epoch 0.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const b = await searchByVector("b", 10);
+        // A resolves now, holding the healthy window it gathered earlier.
+        held.release();
+        const late = await a;
+        // The line a spurious re-arm would have let through.
+        const c = await searchByVector("c", 10);
+        return [late, b, c];
+      });
+
+      // ONE line. A did not re-arm, so C's drift is a suppressed repeat.
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "searchByVector: the model filter dropped every match",
+      );
+      // Pin the CAUSE: A really did answer off the pre-burn healthy window.
+      expect(result[0].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("DOES re-arm when a real rebuild landed while the read was in flight (DW-602)", async () => {
+    // The sound mirror image of the row above, and the reason the fix is a
+    // comparison rather than "a late read may never re-arm". Same staging, but
+    // a rebuild COMPLETES in the gap: the epoch A reads afterwards is strictly
+    // greater than the watermark B recorded, which is evidence about the
+    // CORPUS between the burn and now — not about the window A is holding.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // B burns at epoch 0…
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const b = await searchByVector("b", 10);
+        // …then a rebuild really completes: vectors re-tagged, epoch → 1.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+        await bumpRebuildEpoch();
+        // A resolves and re-arms — on the counter, not on its own window.
+        held.release();
+        const late = await a;
+        // The corpus drifts AGAIN under the same active model, and is heard.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const c = await searchByVector("c", 10);
+        return [late, b, c];
+      });
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1]).toBe(warnings[0]);
+      expect(result[0].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("keeps the recorded watermark MONOTONE when a STALE-epoch burn lands second (DW-602)", async () => {
+    // The third leg of the interleaving proof, and the one that makes the other
+    // two hold. Two concurrent drifted reads can reach their burns carrying
+    // DIFFERENT observed epochs, in either order. `warnOnceAbout` returns early
+    // on a key it has already seen, so the first burn to arrive is the only one
+    // that writes — a late read holding a lower epoch cannot lower the bar.
+    //
+    // The epoch read is held here rather than the query, because the door reads
+    // the counter AFTER its query resolves: parking the query would hand the
+    // late read the CURRENT epoch and the skew could not be built at all.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    // One rebuild already behind us, so A observes 1 rather than 0.
+    await bumpRebuildEpoch();
+
+    const held = holdNextEpochRead();
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // A is drifted and parks on its way to burn, holding epoch 1.
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // A rebuild completes (epoch → 2) and B — also drifted — burns at 2.
+        await bumpRebuildEpoch();
+        await searchByVector("b", 10);
+        // A now reaches its burn with the stale 1. It must not overwrite 2.
+        held.release();
+        await a;
+        // Still at epoch 2, so nothing may re-arm. Against a watermark of 1
+        // this read re-arms and speaks about a rebuild that never happened.
+        await searchByVector("c", 10);
+        // Only a genuinely NEWER rebuild beats the watermark that stands.
+        await bumpRebuildEpoch();
+        await searchByVector("d", 10);
+      });
+
+      // Two lines: B's burn, and D's after a real bump past 2. Three would mean
+      // the watermark had been lowered to A's stale 1.
+      expect(
+        warnings.filter((w) => w.includes("embedding-model drift")),
+      ).toHaveLength(2);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("speaks an EXTRA line when a bump lands during the burn's own epoch read (accepted residue)", async () => {
+    // Pinning the accepted residue, not a bug. This is the third watermark skew
+    // named on `warnedMisconfigurations`, and it is the one direction the
+    // strictly-greater comparison cannot rule out: a bump that lands WHILE the
+    // burn's own `readRebuildEpoch()` is in flight is not seen by that read, so
+    // the watermark recorded sits BELOW the value already on disk. The next
+    // drifted read then finds a strictly greater epoch, re-arms, and speaks
+    // although no rebuild completed AFTER the burn.
+    //
+    // It errs toward SPEAKING — one extra line — which is the side of DW-310's
+    // trade this module takes everywhere: a suppressed second outage is the
+    // failure the throttle exists to prevent, and a duplicate line is cheap
+    // beside it. Its mirror (a bump landing between query-resolve and the epoch
+    // read, which that read DOES capture) errs toward silence for one cycle and
+    // is pinned by the MIXED-window rows. Neither is DW-602's interleave.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextEpochRead();
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // A is drifted and parks mid-epoch-read, holding 0.
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // The rebuild completes DURING that read: epoch → 1, unseen by A.
+        await bumpRebuildEpoch();
+        // A burns, recording the stale 0 as the watermark.
+        held.release();
+        await a;
+        // B reads 1, beats 0, and re-arms — though nothing landed after the
+        // burn. This is the extra line, and it is accepted.
+        await searchByVector("b", 10);
+      });
+
+      expect(
+        warnings.filter((w) => w.includes("embedding-model drift")),
+      ).toHaveLength(2);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("does NOT warn on a topK the CALLER asked to be empty", async () => {
+    // `browse.ts` computes its limit as `Math.min(allowedSlugs.size, …)`, which
+    // is ZERO when a tag filter matches no page — so `searchByVector(q, 0)` is
+    // reachable in production. With the predicate applied BEFORE the slice, a
+    // perfectly healthy corpus carrying ONE stale orphan answers that query
+    // with an empty window and `rejected: 1`, which without the `topK > 0`
+    // conjunct burns `drift:<model>` on a corpus that has not drifted — and
+    // suppresses the line a later genuine drift would have spoken.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The zero-width query. Empty window, one rejected vector, healthy
+      //    corpus — and nothing to say about it.
+      const zero = await searchByVector("q", 0);
+      // 2. The corpus GENUINELY drifts under the same active model. This is the
+      //    line the spurious burn would have swallowed.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const real = await searchByVector("q", 10);
+      return [zero, real];
+    });
+
+    expect(result[0]).toEqual([]);
+    expect(result[1]).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector: the model filter dropped every match");
+  });
+
+  it("does NOT re-arm while the drift is still standing", async () => {
+    // The re-arm is gated on a COMPLETED REBUILD, not on a query having run. A
+    // corpus that keeps drifting has had no rebuild land on it — and every
+    // candidate is rejected, so the window is empty too — so the throttle must
+    // hold across any number of queries.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+      await searchByVector("three", 10),
+    ]);
+
+    // The gate, not just the throttle: EVERY query accepted nothing, which is
+    // the precondition for the re-arm never having run. Without this the test
+    // is satisfied by a `warnOnceAbout` that simply works, and would keep
+    // passing if the re-arm gate loosened to "a query ran" or "the store had
+    // hits". (It does NOT catch a loosening on the EPOCH half — no rebuild
+    // completes here; the mid-rebuild pin above is what holds that line.)
+    expect(result).toEqual([[], [], []]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("re-arms ONLY the drift key — other warning FAMILIES keep theirs", async () => {
+    // The Map has four key namespaces and exactly one of them re-arms off the
+    // rebuild epoch. A wholesale `warnedMisconfigurations.clear()` here would
+    // satisfy every drift test in this file while silently un-throttling the
+    // other three families — the DW-273/DW-278 noise those keys exist to
+    // suppress. What holds that line is the KEY: `rearmDriftIfRebuilt` is only
+    // ever called with the read's own `drift:<model>`, so the other namespaces
+    // are unreachable from it. (The `null` epoch those families are recorded
+    // with is a defensive floor, not the guard — no caller passes their keys,
+    // so it is never reached.)
+    await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    // On the Workers runtime with `AI` unbound → `binding:workers-ai`. Provider
+    // auto-detect still lands on openai via the API key.
+    mockGetCfContext.mockReturnValue({ env: {} });
+    // An openai-unservable override → `model:openai:@cf/baai/bge-m3`. The
+    // ACTIVE model falls back to the default the corpus was seeded with, so
+    // this does not itself create drift.
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const first = await withWarnSpy(() => {
+      getWorkersAiBinding();
+      return getEmbeddingModelName();
+    });
+    expect(first.result).toBe(DEFAULT_TEST_MODEL);
+    expect(first.warnings).toHaveLength(2);
+
+    // A healthy read: the window is non-empty, so the re-arm path runs (and
+    // finds no burnt drift key to act on). Both other keys are already burnt,
+    // so this window is silent.
+    const read = await withWarnSpy(() => searchByVector("q", 10));
+    expect(read.result.map((r) => r.slug)).toEqual(["kept"]);
+    expect(read.warnings).toEqual([]);
+
+    // Re-provoke both other families: still silent. Their keys survived.
+    const after = await withWarnSpy(() => {
+      getWorkersAiBinding();
+      getEmbeddingModelName();
+    });
+    expect(after.warnings).toEqual([]);
+  });
+
+  it("re-arms ONLY the read's OWN drift identity, not every drift key", async () => {
+    // Two active models are two drift identities, each with its OWN watermark.
+    // A read answerable under A says nothing about whether the corpus is
+    // answerable under B, and — because the epochs recorded at burn differ — B
+    // must still be sitting on a watermark A's rebuild does not clear.
+    //
+    // The epochs are what make this observable at all. A is burnt at 0 and B at
+    // 1, and the counter then stops moving: A's read beats its own watermark
+    // (1 > 0) and re-arms, while B's read does not (1 > 1 is false) and stays
+    // burnt. That second half is ALSO this file's pin on the comparison being
+    // STRICTLY GREATER — under `!==` B re-arms here and speaks a fourth line.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      // 1. Drift under A (the default model) — `drift:A` is burnt at epoch 0.
+      await searchByVector("one", 10);
+      // 2. A rebuild completes, then drift under B — `drift:B` is burnt at
+      //    epoch 1, one ahead of A's watermark.
+      await bumpRebuildEpoch();
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("two", 10);
+      // 3. Back to A, with the corpus re-tagged under it. The epoch has NOT
+      //    moved again, so A re-arms off the step-2 rebuild it never saw.
+      delete process.env.EMBEDDING_MODEL;
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      const healthy = await searchByVector("three", 10);
+      expect(healthy.map((r) => r.slug)).toEqual(["page-a"]);
+      // 4. A drifts again: it speaks, proving step 3 re-armed `drift:A`.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await searchByVector("four", 10);
+      // 5. B is still drifted, and its watermark is still the current epoch —
+      //    so it must stay SILENT. A wholesale `clear()` in place of the keyed
+      //    delete, or an inequality comparison, both speak here.
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("five", 10);
+    });
+
+    expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(warnings[1]).toContain('active="text-embedding-3-large"');
+    expect(warnings[2]).toContain('active="text-embedding-3-small"');
+  });
+
+  it("keeps BOTH halves of the drift gate on the SAME snapshot the filter used", async () => {
+    // The mirror of the one-snapshot test below, for the gate rather than the
+    // query. Re-deriving the model after `embedText`'s round-trip can straddle
+    // the 5 s cache expiry, and on this path that is worse than a wrong answer:
+    // the filter would compare against a model the query was never embedded
+    // with, drop a perfectly good hit, and BURN a drift key for a corpus that
+    // has not drifted.
+    //
+    // Both halves are now structurally tied to the snapshot by ONE `driftKey`
+    // local, computed once from `currentModel` and used by the warn and the
+    // re-arm alike, so they cannot diverge from each other. What is still
+    // separately observable — and what this pins — is the warn: a re-derived
+    // model makes the straddle read speak when it must stay silent.
+    await seedVector("page-a", [1, 0, 0], "text-embedding-3-large", "a");
+    const cfgSmall = {
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-stored",
+      embeddingModel: "text-embedding-3-small",
+    };
+    const cfgLarge = { ...cfgSmall, embeddingModel: "text-embedding-3-large" };
+
+    // 1. Burn `drift:text-embedding-3-small` — the corpus IS drifted under it.
+    mockLoadConfigSync.mockReturnValue(cfgSmall);
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    const drifted = await withWarnSpy(() => searchByVector("one", 10));
+    expect(drifted.warnings).toHaveLength(1);
+    expect(drifted.warnings[0]).toContain('active="text-embedding-3-small"');
+
+    // 2. A query whose config cache turns over mid-`embed()`: the snapshot says
+    //    `-large` (under which the hit is ACCEPTED), while a re-read would say
+    //    `-small` (under which the provider would reject it, leaving an empty
+    //    window with `rejected: 1` — the warn's exact condition).
+    mockLoadConfigSync.mockReturnValue(cfgLarge);
+    mockEmbed.mockImplementation(async () => {
+      mockLoadConfigSync.mockReturnValue(cfgSmall);
+      return { embedding: [1, 0, 0] };
+    });
+    const straddle = await withWarnSpy(() => searchByVector("two", 10));
+    expect(straddle.result.map((r) => r.slug)).toEqual(["page-a"]);
+    expect(straddle.warnings).toEqual([]);
+
+    // 3. `-small` is STILL burnt: no rebuild has completed, so nothing may
+    //    re-arm it, and the genuinely-drifted read stays silent.
+    mockLoadConfigSync.mockReturnValue(cfgSmall);
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    const again = await withWarnSpy(() => searchByVector("three", 10));
+    expect(again.result).toEqual([]);
+    expect(again.warnings).toEqual([]);
+  });
+
+  it("does NOT even CONSULT the epoch when the query THROWS", async () => {
+    // The whole gate lives on the success path inside the `try`, AFTER the
+    // query resolves. A throw means no read completed, so nothing was
+    // established — and the epoch, which HAS moved here, is never even asked
+    // for. Asserting silence alone would not show that: a rebuild has landed,
+    // so the very next read that does complete re-arms and speaks, which is
+    // exactly what step 3 pins.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const { warnings } = await withWarnSpy(async () => {
+      // 1. Drifted → the line is said, burning the key at epoch 0.
+      await searchByVector("one", 10);
+
+      // 2. A rebuild completes, and a mismatched-dimension vector makes the
+      //    scan throw (the mid-migration case). It is tagged with the ACTIVE
+      //    model deliberately: the predicate runs BEFORE the scoring now, so a
+      //    STALE bad vector would simply be rejected and never scored at all.
+      await bumpRebuildEpoch();
+      await seedVector("bad", [1, 0], DEFAULT_TEST_MODEL, "b");
+      const getIndex = vi.spyOn(storage, "getIndex");
+      try {
+        expect(await searchByVector("two", 10)).toEqual([]);
+        // Nothing past the query ran — not the warn, not the re-arm, not the
+        // storage read either of them would have needed.
+        expect(
+          getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+        ).toEqual([]);
+      } finally {
+        getIndex.mockRestore();
+      }
+
+      // 3. With the bad vector gone the next drifted read DOES complete, sees
+      //    the epoch it was denied in step 2, re-arms and speaks.
+      await removeEmbedding("bad");
+      await searchByVector("three", 10);
+    });
+
+    // TWO drift lines — the second from step 3, never from step 2. (The catch
+    // adds its own query-failed warning to the window, which is why this
+    // filters rather than counting everything.)
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+    expect(warnings.some((w) => w.includes("query failed"))).toBe(true);
+  });
+
+  it("SPEAKS again after a REAL rebuildVectorStore, not a simulated one", async () => {
+    // Every comment on this feature names `rebuildVectorStore` as the
+    // in-process fix; this drives the actual function rather than hand-rolling
+    // it from remove+seed. It is now the canonical WIRING pin: every other
+    // re-arm test in this file bumps the epoch by hand, so this is the only one
+    // that proves `rebuildVectorStore` is what moves it. The door still does
+    // the re-arming — nothing re-arms FROM the rebuild.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { warnings } = await withWarnSpy(async () => {
+      await searchByVector("one", 10); // drifted → the line is said
+
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+      expect(rebuilt.model).toBe(DEFAULT_TEST_MODEL);
+
+      // The rebuild re-tagged the vector AND raised the epoch, so this read
+      // accepts it and re-arms.
+      const healthy = await searchByVector("two", 10);
+      expect(healthy.map((r) => r.slug)).toEqual(["page-a"]);
+
+      // Drift again under the SAME active model.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await searchByVector("three", 10);
+    });
+
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+  });
+
+  it("re-arms SILENTLY on a healthy corpus that never drifted", async () => {
+    // Deleting a key that was never set is a no-op: no warning, and results
+    // are exactly what they were before the re-arm existed.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("page-b", [0, 1, 0], DEFAULT_TEST_MODEL, "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await searchByVector("one", 10),
+      await searchByVector("two", 10),
+    ]);
+
+    expect(warnings).toEqual([]);
+    expect(result[0].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
+    expect(result[1]).toEqual(result[0]);
+  });
+
+  it("SPEAKS again when the ACTIVE MODEL changes and still drifts", async () => {
+    // A changed misconfiguration is a new identity. The corpus is untouched;
+    // what moved is the model the deployment now embeds with, and an owner
+    // reading the log needs the new name.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      await searchByVector("one", 10);
+      await searchByVector("two", 10);
+      // A second openai-servable id, so the only thing that changes is the
+      // ACTIVE model — no substitution warning joins the window.
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("three", 10);
+      await searchByVector("four", 10);
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(warnings[1]).toContain('active="text-embedding-3-large"');
+  });
+
+  it("stays SILENT when the filter keeps even one match", async () => {
+    // Not drift: the corpus still holds vectors this model produced, so the
+    // query is answerable and there is nothing standing to report.
+    //
+    // This mixed window is load-bearing twice over. It is the ONLY case that
+    // fails if the warn branch is loosened back to a bare
+    // `else if (rejected > 0)` — the two branches are not complementary, and a
+    // mixed window that legitimately returned results must fall through BOTH of
+    // them. It says nothing about the re-arm half — a re-arm is silent too, so
+    // silence cannot distinguish the two branches; that a mid-rebuild window
+    // does not re-arm is pinned above, by "does NOT re-arm on a PARTIALLY
+    // rebuilt (MIXED) window".
+    await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("dropped", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    expect(result.map((r) => r.slug)).toEqual(["kept"]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("stays SILENT when the store returns nothing at all", async () => {
+    // An empty store is not a drifted one. Warning here would fire on every
+    // fresh deployment, before a single page had been embedded. `rejected` is
+    // what tells the two apart: nothing was refused because there was nothing
+    // to refuse. (Before DW-598 the only way to distinguish them would have
+    // been a second, unfiltered probe query.)
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    expect(result).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   it("returns [] (never throws) when the scan hits a dimension mismatch", async () => {
@@ -707,6 +2806,43 @@ describe("searchByVector", () => {
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
     await expect(searchByVector("q", 10)).resolves.toEqual([]);
+  });
+
+  it("keeps `searchByVector` on ONE snapshot for both halves", async () => {
+    // The caller the door exists for. `embedText` has a network round-trip
+    // inside it, so two independent cache reads can straddle the 5 s expiry:
+    // the query gets embedded with snapshot A's model while the filter compares
+    // against snapshot B's, every hit is dropped, and the drift line fires for a
+    // corpus that has not drifted — BURNING the `drift:<model>` key so a later
+    // real drift under that model is silent for the rest of the process.
+    //
+    // Simulated by making the cache turn over DURING the embed: the mock hands
+    // back a different config from the moment `embed()` resolves. A
+    // `searchByVector` that re-read the cache for the filter would see the
+    // second one.
+    await seedVector("page-a", [1, 0, 0], "text-embedding-3-large", "a");
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-stored",
+      embeddingModel: "text-embedding-3-large",
+    });
+    mockEmbed.mockImplementation(async () => {
+      // The cache expires mid-flight and now answers a DIFFERENT active model.
+      mockLoadConfigSync.mockReturnValue({
+        embeddingProvider: "openai",
+        embeddingApiKey: "sk-stored",
+        embeddingModel: "text-embedding-3-small",
+      });
+      return { embedding: [1, 0, 0] };
+    });
+
+    const { result, warnings } = await withWarnSpy(() => searchByVector("q", 10));
+
+    // The vector was embedded with `text-embedding-3-large` and the filter
+    // compared against `text-embedding-3-large`, so the hit is KEPT…
+    expect(result.map((r) => r.slug)).toEqual(["page-a"]);
+    // …and no drift was reported for a corpus that has not drifted.
+    expect(warnings).toEqual([]);
   });
 
   it("keeps unlabelled (legacy) vectors with no model metadata", async () => {
@@ -1019,6 +3155,32 @@ describe("rebuildVectorStore", () => {
     expect(await storage.getEmbeddingById("page-b")).not.toBeNull();
   });
 
+  it("warns ONCE about a mismatched EMBEDDING_MODEL across all N pages", async () => {
+    // DW-273: `rebuildVectorStore` resolves the name once and then calls
+    // `embedText` per page, so a stale override logged ~2N identical lines.
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3"; // openai cannot serve it
+    const slugs = ["p1", "p2", "p3"];
+    mockListWikiPages.mockResolvedValue(
+      slugs.map((slug) => ({ title: slug, slug, summary: slug })),
+    );
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `content ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2] });
+
+    const { result, warnings } = await withWarnSpy(() => rebuildVectorStore());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    // Every page is still embedded, with the provider default.
+    expect(result.embedded).toBe(3);
+    expect(result.skipped).toBe(0);
+    expect(result.model).toBe("text-embedding-3-small");
+  });
+
   it("skips pages with empty content", async () => {
     mockListWikiPages.mockResolvedValue([
       { title: "Good", slug: "good", summary: "Has content" },
@@ -1085,6 +3247,101 @@ describe("rebuildVectorStore", () => {
     // harmless because reads intersect with the readable slug set.
   });
 
+  // -------------------------------------------------------------------------
+  // The rebuild epoch (DW-599)
+  // -------------------------------------------------------------------------
+
+  it("raises the rebuild epoch when at least one page was embedded", async () => {
+    // The wiring between the fix and its trigger. `searchByVector` and
+    // `relatedByVector` re-arm `drift:<model>` off this counter and nothing
+    // else, so a rebuild that does not move it is a rebuild no door can ever
+    // observe — the DW-599 silence, straight back.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "a",
+      title: "A",
+      content: "Content A",
+      path: "/fake/a.md",
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+
+    const first = await rebuildVectorStore();
+    expect(first.embedded).toBe(1);
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBe(1);
+
+    // Monotonic: every completed rebuild moves it FORWARD by exactly one, which
+    // is what makes the doors' strictly-greater comparison sound.
+    await rebuildVectorStore();
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBe(2);
+  });
+
+  it("leaves the rebuild epoch untouched when NOTHING was embedded", async () => {
+    // A rebuild that stored no vector changed no vector, so it is not evidence
+    // a corpus was rebuilt and must not un-burn a drift warning. Both ways of
+    // getting there — an empty wiki and a wiki whose every page is skipped —
+    // land on the same `embedded === 0`.
+    mockListWikiPages.mockResolvedValue([]);
+    const empty = await rebuildVectorStore();
+    expect(empty.embedded).toBe(0);
+    expect(await getStorage().getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+
+    mockListWikiPages.mockResolvedValue([
+      { title: "Empty", slug: "empty", summary: "No content" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "empty",
+      title: "Empty",
+      content: "   ",
+      path: "/fake/empty.md",
+    });
+    const skipped = await rebuildVectorStore();
+    expect(skipped.embedded).toBe(0);
+    expect(skipped.skipped).toBe(1);
+    expect(await getStorage().getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+  });
+
+  it("returns the RebuildResult unchanged when the epoch bump throws", async () => {
+    // Fail-soft, and in the direction that matters: the vectors have already
+    // landed by the time the bump runs, so a counter that will not increment
+    // must not turn a successful rebuild into a rejected one. The cost is one
+    // drift line that stays unsaid.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "a",
+      title: "A",
+      content: "Content A",
+      path: "/fake/a.md",
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    const increment = vi
+      .spyOn(storage, "incrementIndex")
+      .mockRejectedValue(new Error("counter store down"));
+
+    try {
+      const { result, warnings } = await withWarnSpy(() => rebuildVectorStore());
+      expect(result).toEqual({
+        total: 1,
+        embedded: 1,
+        skipped: 0,
+        model: "text-embedding-3-small",
+      });
+      expect(warnings.some((w) => w.includes("rebuild-epoch bump failed"))).toBe(true);
+      // The vector still landed — the bump is the tail, never a precondition.
+      expect(await storage.getEmbeddingById("a")).not.toBeNull();
+    } finally {
+      increment.mockRestore();
+    }
+  });
+
   it("calls onProgress callback", async () => {
     mockListWikiPages.mockResolvedValue([
       { title: "A", slug: "a", summary: "A" },
@@ -1143,6 +3400,95 @@ describe("rebuildVectorStore", () => {
     expect(result.total).toBe(2);
     expect(result.embedded).toBe(1);
     expect(result.skipped).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Flush accounting (DW-293)
+  // -------------------------------------------------------------------------
+  //
+  // A rebuild no longer stores one vector at a time — it accumulates up to
+  // EMBEDDING_FLUSH_BATCH and stores the set. That moves WHEN a page's counter
+  // settles: not when it embeds, but when its flush lands. These pin that a
+  // rejected flush is fail-soft and costs exactly its own pages.
+
+  it("counts a page SKIPPED, not embedded, when its flush rejects — and still resolves", async () => {
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+      { title: "B", slug: "b", summary: "B" },
+    ]);
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `Content for ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+    vi.spyOn(getStorage(), "upsertEmbeddings")
+      .mockRejectedValue(new Error("index write failed"));
+
+    // Resolves rather than throwing: one bad flush must not kill the run.
+    const result = await rebuildVectorStore();
+
+    expect(result.total).toBe(2);
+    expect(result.embedded).toBe(0);
+    // BOTH pages, not one — the whole batch is what failed.
+    expect(result.skipped).toBe(2);
+  });
+
+  it("charges a rejected flush its own pages and no more", async () => {
+    // 40 pages = one full batch of 32 plus a tail of 8. Only the SECOND flush
+    // rejects, so the first batch's pages must still count as embedded.
+    const slugs = Array.from({ length: 40 }, (_, i) => `p${i}`);
+    mockListWikiPages.mockResolvedValue(
+      slugs.map((slug) => ({ title: slug, slug, summary: slug })),
+    );
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `Content for ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    const original = storage.upsertEmbeddings.bind(storage);
+    let flushes = 0;
+    vi.spyOn(storage, "upsertEmbeddings").mockImplementation(async (entries) => {
+      flushes++;
+      if (flushes === 2) throw new Error("index write failed");
+      return original(entries);
+    });
+
+    const result = await rebuildVectorStore();
+
+    expect(flushes).toBe(2);
+    expect(result.total).toBe(40);
+    // The 32 that flushed cleanly, and only the 8 in the failed tail lost.
+    expect(result.embedded).toBe(32);
+    expect(result.skipped).toBe(8);
+    expect(await storage.getEmbeddingById("p0")).not.toBeNull();
+    expect(await storage.getEmbeddingById("p39")).toBeNull();
+  });
+
+  it("flushes what it already embedded when the page loop throws outside the per-page catch", async () => {
+    // `readWikiPage` and `onProgress` sit outside the per-page try. A throw
+    // there escapes the loop, and without the tail flush in a `finally` every
+    // vector accumulated since the last flush would be silently discarded —
+    // vectors the per-vector code this replaced had already stored.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+      { title: "B", slug: "b", summary: "B" },
+    ]);
+    mockReadWikiPage.mockImplementation(async (slug: string) => {
+      if (slug === "b") throw new Error("page read exploded");
+      return { slug, title: slug, content: `Content for ${slug}`, path: `/fake/${slug}.md` };
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    await expect(rebuildVectorStore()).rejects.toThrow("page read exploded");
+
+    // "a" was embedded before the throw, so it must be stored.
+    expect(await getStorage().getEmbeddingById("a")).not.toBeNull();
   });
 });
 
@@ -1263,6 +3609,802 @@ describe("Workers AI embeddings (bge-m3)", () => {
       "expected 1024, received 1536",
     );
   });
+
+  it("refuses a @cf/ id that is not an embedding model, and falls back", async () => {
+    // In the namespace, genuinely a Cloudflare model — and not something the
+    // embedding binding will serve (DW-220). Before the catalog it reached
+    // `ai.run()` verbatim.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    await embedText("hi");
+
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+
+  it("refuses the BARE @cf/ prefix rather than sending it to the binding", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
+    await embedText("hi");
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model resolution: ONE trim rule, and an AUDIBLE fallback
+// (DW-221 / DW-224 / DW-226 / DW-227)
+// ---------------------------------------------------------------------------
+
+describe("embedding model resolution", () => {
+  it("re-exports the ONE Workers AI catalog rather than holding a copy", () => {
+    // Same object, not merely equal: two tables would let the gate approve an
+    // id the dimension check does not know.
+    expect(WORKERS_AI_EMBEDDING_DIMENSIONS).toBe(CATALOG_FROM_PROVIDERS);
+  });
+
+  it("gives every provider a DEFAULT its own gate accepts", () => {
+    // `DEFAULT_EMBEDDING_MODELS` (embeddings.ts) and the catalog (providers.ts)
+    // are two tables with no compile-time link. If the workers-ai default ever
+    // left the catalog, `resolveEmbeddingModelName` would return a value its own
+    // predicate refuses — the fallback would be a model the gate would never let
+    // an owner choose — and `WORKERS_AI_EMBEDDING_DIMENSIONS[model]` would come
+    // back `undefined`, making the dimension check silently skip. The default is
+    // read the only way this suite can reach it: through the resolver itself,
+    // with no override set.
+    const defaults: Record<string, string> = {};
+    for (const provider of EMBEDDING_PROVIDERS) {
+      delete process.env.EMBEDDING_MODEL;
+      process.env.EMBEDDING_PROVIDER = provider;
+      // Credentials/transport, so the provider actually resolves.
+      process.env.OPENAI_API_KEY = "sk-openai";
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+      mockWorkersAi([workersVector(0.1)]);
+
+      const model = getEmbeddingModelName();
+      expect(model).not.toBeNull();
+      defaults[provider] = model!;
+      expect(embeddingModelMatchesProvider(provider, model!)).toBe(true);
+    }
+
+    // Named explicitly for the one leg that is a catalog: the Workers AI default
+    // must be a KEY of the dimensions table, so the width check has a number to
+    // compare against rather than `undefined`.
+    expect(isWorkersAiEmbeddingModel(defaults["workers-ai"])).toBe(true);
+    expect(CATALOG_FROM_PROVIDERS[defaults["workers-ai"]]).toBeGreaterThan(0);
+  });
+
+  it("honours a PADDED stored id — the gate reads it trimmed, so this must too", async () => {
+    // DW-221: the gate tests `" @cf/baai/bge-m3".trim()` and lets the owner turn
+    // vector search on; the resolver used to test the RAW string, fail, and
+    // embed with the default. Same string on both sides now — and no warning,
+    // because nothing was dropped.
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: " @cf/baai/bge-m3 " });
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const name = getEmbeddingModelName();
+      await embedText("hi");
+      return name;
+    });
+
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("treats a whitespace-only EMBEDDING_MODEL as UNSET, never as a model name", async () => {
+    // DW-227: `" "` is truthy, so it used to be handed to the provider verbatim
+    // as the model name — while the vector gate read the very same variable as
+    // absent.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "   ";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    // Unset is not a mismatch: nothing was dropped, so nothing is warned about.
+    expect(warnings).toEqual([]);
+  });
+
+  it("lets a stored id win over a whitespace-only env override", () => {
+    // The same ordering `getVectorSearchSettings` applies: `nonEmpty(env) ??
+    // nonEmpty(config)`. A blank env var must not shadow the stored choice.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.EMBEDDING_MODEL = " ";
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: "mxbai-embed-large" });
+
+    expect(getEmbeddingModelName()).toBe("mxbai-embed-large");
+  });
+
+  it("keeps env winning over a stored id when the env var is really set", () => {
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.EMBEDDING_MODEL = "nomic-embed-text";
+    mockLoadConfigSync.mockReturnValue({ embeddingModel: "mxbai-embed-large" });
+
+    expect(getEmbeddingModelName()).toBe("nomic-embed-text");
+  });
+
+  it("WARNS once on getEmbeddingModelName when the override is dropped", async () => {
+    // DW-226/224: the substitution used to be completely silent, where its
+    // sibling `resolveEmbeddingProvider` has always warned.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(warnings).toHaveLength(1);
+    // Both ids are named — the dropped one and the one actually used.
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    expect(warnings[0]).toContain("workers-ai");
+  });
+
+  it("WARNS on the embed path itself — embedText and embedTexts", async () => {
+    // The gate never runs here: an env override bypasses the store entirely.
+    // This is the path DW-224 is about — the logs are the only place the
+    // substitution can show up.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    const runSingle = mockWorkersAi([workersVector(0.5)]);
+
+    const single = await withWarnSpy(() => embedText("hi"));
+    expect(runSingle).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+    expect(single.warnings).toHaveLength(1);
+    expect(single.warnings[0]).toContain("text-embedding-3-small");
+
+    // A DIFFERENT dropped id, so `embedTexts` faces a fresh misconfiguration
+    // identity rather than the one the guard has already spoken for. This keeps
+    // the assertion about the embedTexts door warning on its own key — no
+    // test-only reset lever in the middle of it. (Throttling of the SAME key
+    // across doors is asserted by "SAYS the mismatch ONCE across every embed
+    // door" below.)
+    process.env.EMBEDDING_MODEL = "gemini-embedding-001";
+    const runBatch = mockWorkersAi([workersVector(0.5), workersVector(0.6)]);
+    const batch = await withWarnSpy(() => embedTexts(["a", "b"]));
+    expect(runBatch).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["a", "b"],
+      pooling: "cls",
+    });
+    expect(batch.warnings).toHaveLength(1);
+    expect(batch.warnings[0]).toContain("gemini-embedding-001");
+    expect(batch.warnings[0]).toContain("@cf/baai/bge-m3");
+  });
+
+  it("WARNS on the AI-SDK leg too, where getEmbeddingModel builds the model", async () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModel());
+
+    expect(result).not.toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    expect(warnings[0]).toContain("text-embedding-3-small");
+  });
+
+  it("stays SILENT when the override is honoured", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-large-en-v1.5";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { warnings } = await withWarnSpy(async () => {
+      getEmbeddingModelName();
+      await embedText("hi");
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("is a LOG, not a behaviour change — the default is still returned", async () => {
+    // Silencing the logger must not alter what gets embedded.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "@cf/";
+    const run = mockWorkersAi([workersVector(0.5)]);
+
+    const { result } = await withWarnSpy(() => embedText("hi"));
+
+    expect(result).toHaveLength(1024);
+    expect(run).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Once per DISTINCT misconfiguration, not once per call (DW-273 / DW-278)
+// ---------------------------------------------------------------------------
+
+describe("misconfiguration warnings are said once", () => {
+  it("SAYS the mismatch ONCE across every embed door", async () => {
+    // DW-273: each door re-enters the resolver, so the same sentence used to be
+    // logged once per door — and ~2N times for an N-page rebuild.
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const name = getEmbeddingModelName();
+      await embedText("hi");
+      mockWorkersAi([workersVector(0.5), workersVector(0.6)]);
+      await embedTexts(["a", "b"]);
+      return name;
+    });
+
+    expect(warnings).toHaveLength(1);
+    // ...and it is the RIGHT sentence. A count alone would be satisfied by a
+    // wrong-but-single warning, so the dropped id, the provider, and the model
+    // actually used are all named.
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[0]).toContain("workers-ai");
+    expect(warnings[0]).toContain("@cf/baai/bge-m3");
+    // Suppression is of repetition only — every call still resolved.
+    expect(result).toBe("@cf/baai/bge-m3");
+    expect(getEmbeddingModelName()).toBe("@cf/baai/bge-m3");
+  });
+
+  it("SPEAKS again when the override CHANGES", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+    mockWorkersAi([workersVector(0.5)]);
+
+    const { warnings } = await withWarnSpy(() => {
+      getEmbeddingModelName();
+      process.env.EMBEDDING_MODEL = "@cf/nope";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("text-embedding-3-small");
+    expect(warnings[1]).toContain("@cf/nope");
+  });
+
+  it("keys on the PROVIDER too — one model id rejected by two providers warns twice", async () => {
+    // The key is the misconfiguration's identity, and "@cf/baai/bge-m3 under
+    // openai" is a different fact from "@cf/baai/bge-m3 under ollama".
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+    // A SAVED EMBEDDING ENDPOINT, so the `ollama` leg below does not also emit
+    // DW-401's "no embedding endpoint" line. Since DW-70 that line reads
+    // `embeddingBaseUrl`, not `OLLAMA_BASE_URL`. This count is about
+    // MODEL/PROVIDER keying; an unrelated second identity standing at the same
+    // time would make it pass or fail for the wrong reason.
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://ollama.test:11434/api" });
+
+    const { warnings } = await withWarnSpy(() => {
+      process.env.EMBEDDING_PROVIDER = "openai";
+      getEmbeddingModelName();
+      process.env.EMBEDDING_PROVIDER = "ollama";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("openai");
+    expect(warnings[1]).toContain("ollama");
+  });
+
+  it("SAYS an invalid EMBEDDING_PROVIDER ONCE, and still refuses both times", async () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { result, warnings } = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deepseek");
+    // The refusal is unchanged — it does NOT fall through to the openai key.
+    expect(result).toEqual([null, null]);
+  });
+
+  it("SPEAKS again when the invalid provider override CHANGES", async () => {
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { warnings } = await withWarnSpy(() => {
+      getEmbeddingModelName();
+      process.env.EMBEDDING_PROVIDER = "bogus";
+      getEmbeddingModelName();
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("deepseek");
+    expect(warnings[1]).toContain("bogus");
+  });
+
+  it("SAYS the unbound Workers AI binding ONCE across repeated calls", async () => {
+    // DW-278: `GET`/`PUT /api/settings` call this unconditionally once per
+    // request, so an unbound deployment logged a line per request.
+    mockGetCfContext.mockReturnValue({ env: {} });
+
+    const { result, warnings } = await withWarnSpy(() => [
+      getWorkersAiBinding(),
+      getWorkersAiBinding(),
+    ]);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("AI binding is not bound");
+    // Both callers still see "no binding" — `hasWorkersAiBinding === false`.
+    expect(result).toEqual([null, null]);
+  });
+
+  it("stays silent OFF the Workers runtime without consuming the binding key", async () => {
+    // The off-Workers `catch` returns before the guard, so a local run cannot
+    // spend the one warning a real Workers miss is owed.
+    //
+    // TWO spy windows, deliberately. A single window asserting "one warning
+    // total" cannot fail: if the `catch` DID warn, the guard would mute the
+    // real miss that follows and the window would still see exactly one line
+    // with exactly this text. Only a window that ends before the runtime
+    // changes can say the off-Workers path was silent.
+    const off = await withWarnSpy(() => getWorkersAiBinding());
+    expect(off.result).toBeNull();
+    expect(off.warnings).toEqual([]);
+
+    // Now on the Workers runtime with `AI` absent — the key is still unspent.
+    mockGetCfContext.mockReturnValue({ env: {} });
+    const on = await withWarnSpy(() => getWorkersAiBinding());
+    expect(on.result).toBeNull();
+    expect(on.warnings).toHaveLength(1);
+    expect(on.warnings[0]).toContain("AI binding is not bound");
+  });
+
+  it("keeps DIFFERENT misconfiguration families from spending each other's warning", async () => {
+    // One `Set`, three key namespaces: an unbound binding and a model mismatch
+    // are separate facts standing at the same time, and each is owed its own
+    // line. Cross-suppression here would silently drop half the diagnosis.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3"; // openai cannot serve it
+    mockGetCfContext.mockReturnValue({ env: {} }); // on Workers, AI unbound
+
+    const { warnings } = await withWarnSpy(() => {
+      expect(getWorkersAiBinding()).toBeNull();
+      expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+      // Repeats of BOTH families stay silent.
+      expect(getWorkersAiBinding()).toBeNull();
+      expect(getEmbeddingModelName()).toBe("text-embedding-3-small");
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((w) => w.includes("AI binding is not bound"))).toHaveLength(1);
+    expect(warnings.filter((w) => w.includes("cannot be served by"))).toHaveLength(1);
+  });
+
+  it("throttles a mismatch that arrives from the STORE, not just from env", async () => {
+    // This is the path `/api/settings` actually writes: `cfg.embeddingModel`,
+    // with no env var in sight. It reaches the same guard through the same key.
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "text-embedding-3-small",
+    });
+    mockWorkersAi([workersVector(0.5)]);
+
+    const first = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain("text-embedding-3-small");
+    expect(first.result).toEqual(["@cf/baai/bge-m3", "@cf/baai/bge-m3"]);
+
+    // Changing the STORED id is a new identity and speaks again.
+    mockLoadConfigSync.mockReturnValue({
+      embeddingProvider: "workers-ai",
+      embeddingModel: "@cf/nope",
+    });
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.warnings).toHaveLength(1);
+    expect(second.warnings[0]).toContain("@cf/nope");
+    expect(second.result).toBe("@cf/baai/bge-m3");
+  });
+
+  it("throttles a STORED invalid embedding provider, and speaks again when it changes", async () => {
+    // `cfg.embeddingProvider` is the other stored leg of the same override.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+
+    const first = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain("deepseek");
+    // Still refused both times — it does NOT fall through to the openai key.
+    expect(first.result).toEqual([null, null]);
+
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "bogus" });
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.warnings).toHaveLength(1);
+    expect(second.warnings[0]).toContain("bogus");
+    expect(second.result).toBeNull();
+  });
+
+  it("names the ENV as the source of a bad provider override, with the remedy it has", async () => {
+    // DW-311. The env sentence is unchanged: this deployment DOES have an
+    // `EMBEDDING_PROVIDER` set, and unsetting it is a thing the owner can do.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    expect(warnings[0]).toContain("unset it to auto-detect");
+    expect(result).toBeNull();
+  });
+
+  it("names SETTINGS as the source of a bad STORED provider, and never a variable", async () => {
+    // DW-311's actual bug. `EMBEDDING_PROVIDER` was hardcoded into the sentence
+    // whatever the value's origin, so an owner who chose the provider in
+    // Settings — and who has no such variable anywhere — was told to unset one.
+    // Since DW-273 the line is said exactly ONCE, so that may be the only thing
+    // they ever read about it.
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("deepseek");
+    expect(warnings[0]).toContain("Settings");
+    expect(warnings[0]).not.toContain("EMBEDDING_PROVIDER");
+    expect(warnings[0]).not.toContain("unset");
+    // The refusal itself is untouched — only the sentence learned where the
+    // value came from.
+    expect(result).toBeNull();
+  });
+
+  it("treats the SAME bad value from the two sources as TWO identities", async () => {
+    // The key carries the source because the two sentences carry different
+    // REMEDIES. Keyed on the string alone, whichever arrived first would
+    // silence the other's remedy for the life of the process — and the one
+    // silenced is the one the owner can actually act on.
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "deepseek" });
+    const stored = await withWarnSpy(() => getEmbeddingModelName());
+    expect(stored.warnings).toHaveLength(1);
+    expect(stored.warnings[0]).toContain("Settings");
+
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    const env = await withWarnSpy(() => getEmbeddingModelName());
+    expect(env.warnings).toHaveLength(1);
+    expect(env.warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    // Two DIFFERENT sentences, and both were heard.
+    expect(env.warnings[0]).not.toBe(stored.warnings[0]);
+    // …and each is still throttled within its own identity.
+    const again = await withWarnSpy(() => getEmbeddingModelName());
+    expect(again.warnings).toEqual([]);
+    expect(again.result).toBeNull();
+  });
+
+  it("is a LOG-only change — the SUPPRESSED call embeds identically", async () => {
+    process.env.EMBEDDING_PROVIDER = "workers-ai";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+
+    await withWarnSpy(async () => {
+      const first = mockWorkersAi([workersVector(0.5)]);
+      await embedText("hi");
+      expect(first).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+        text: ["hi"],
+        pooling: "cls",
+      });
+    });
+
+    // Second call: warning suppressed, behaviour identical.
+    const second = mockWorkersAi([workersVector(0.5)]);
+    const { result, warnings } = await withWarnSpy(() => embedText("hi"));
+
+    expect(warnings).toEqual([]);
+    expect(result).toHaveLength(1024);
+    expect(second).toHaveBeenCalledWith("@cf/baai/bge-m3", {
+      text: ["hi"],
+      pooling: "cls",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider resolution: blank is UNSET, and an endpointless ollama is AUDIBLE
+// (DW-333 / DW-401)
+// ---------------------------------------------------------------------------
+
+describe("embedding provider override reads blanks as unset (DW-333)", () => {
+  it("lets a STORED provider win over a whitespace-only EMBEDDING_PROVIDER", async () => {
+    // `" "` used to be truthy here, so it shadowed the owner's saved choice and
+    // was then refused in a sentence quoting the blank. The ordering
+    // `getVectorSearchSettings` applies — `nonEmpty(env) ?? nonEmpty(config)` —
+    // says the store wins.
+    process.env.EMBEDDING_PROVIDER = " ";
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "openai" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+  });
+
+  it("falls through to auto-detect on a blank env var exactly as an UNSET one does", async () => {
+    // The second half of the same claim: with nothing stored, blank must not
+    // become its own rung. Both readings are taken in one process so the answer
+    // is compared, not merely asserted.
+    process.env.OPENAI_API_KEY = "sk-openai";
+
+    process.env.EMBEDDING_PROVIDER = "   ";
+    const blank = await withWarnSpy(() => getEmbeddingModelName());
+    delete process.env.EMBEDDING_PROVIDER;
+    const unset = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(blank.result).toBe(unset.result);
+    expect(blank.result).toBe("text-embedding-3-small");
+    expect(blank.warnings).toEqual([]);
+    expect(unset.warnings).toEqual([]);
+  });
+
+  it("honours a PADDED env value — the same reading the vector gate applies", async () => {
+    process.env.EMBEDDING_PROVIDER = " openai ";
+    process.env.OPENAI_API_KEY = "sk-openai";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    // Trimmed, so it is a supported provider — nothing was dropped and nothing
+    // is refused.
+    expect(warnings).toEqual([]);
+  });
+
+  it("honours a PADDED STORED value too — the parity claim covers BOTH legs", async () => {
+    // `getVectorSearchSettings` reads `nonEmpty(cfg.embeddingProvider)`, so a
+    // config JSON hand-edited (or restored) with a stray space satisfied the
+    // gate while this resolver refused the raw string as unsupported. One trim
+    // rule on both legs, or the two go on disagreeing.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: " openai " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+  });
+
+  it("never refuses a BLANK stored provider, or quotes one back at the owner", async () => {
+    // The store's leg of the same bug: `"  "` reached `isEmbeddingProvider`,
+    // failed, and produced "the embedding provider saved in Settings, "  ", is
+    // not embedding-capable" — an instruction about a value nothing displays.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "  " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    // Auto-detect, exactly as with no stored provider at all.
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+    expect(warnings.some((w) => w.includes("not embedding-capable"))).toBe(false);
+  });
+
+  it("keeps a REAL env override winning over the store", async () => {
+    // The guard on the fix: only blank stopped shadowing. A genuinely set
+    // variable still beats a different stored selection.
+    process.env.EMBEDDING_PROVIDER = "google";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "openai" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("gemini-embedding-001");
+    expect(warnings).toEqual([]);
+  });
+
+  it("still refuses an unsupported env value, in the unchanged sentence", async () => {
+    // `nonEmpty` trims; it does not forgive. A junk override is still refused
+    // outright, with the env remedy DW-311 gave it.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = " deepseek ";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBeNull();
+    expect(warnings).toHaveLength(1);
+    // Quoted TRIMMED — the value the check actually read.
+    expect(warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    expect(warnings[0]).toContain("unset it to auto-detect");
+  });
+});
+
+describe("an ollama selection with no embedding endpoint is AUDIBLE (DW-401/DW-70)", () => {
+  const SDK_DEFAULT = "http://127.0.0.1:11434/api";
+
+  it("still resolves ollama, and names the endpoint actually in effect", async () => {
+    // DW-370 stopped a REFUSED `OLLAMA_BASE_URL` from selecting ollama on the
+    // auto-detect rung. An EXPLICIT selection never consulted the endpoint at
+    // all, so this deployment embedded its corpus against the SDK's own
+    // localhost default without a word.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    // LOG-ONLY: the selection is exactly what it was.
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    // The FIELD it now reads (DW-70), and the fact that the chat variable is
+    // not it. A sentence naming only `OLLAMA_BASE_URL` would send the owner to
+    // fill in a value this leg no longer looks at.
+    expect(warnings[0]).toContain("Embedding endpoint");
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL is the chat endpoint");
+  });
+
+  it("stays SILENT when the EMBEDDING endpoint is saved", async () => {
+    // The stored `embeddingBaseUrl` is what `_createEmbeddingModel` hands
+    // `createOllama` since DW-70, so it is what silences the sentence.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://embed.test:11434" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toEqual([]);
+  });
+
+  it("says it ONCE across every embed door", async () => {
+    // Each door re-enters the resolver, so an unguarded line would repeat per
+    // page of a rebuild — the very noise DW-273 removed from its siblings.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2] });
+    mockEmbedMany.mockResolvedValue({ embeddings: [[0.1], [0.2]] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      getEmbeddingModelName();
+      getEmbeddingModel();
+      await embedText("hi");
+      await embedTexts(["a", "b"]);
+      hasEmbeddingSupport();
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("reaches the same key from the STORED generation provider rung", async () => {
+    // `cfg.provider === "ollama"` is a third door into the same substitution,
+    // and it is one fact however many rungs find it — so the explicit override
+    // having already spoken silences this one.
+    mockLoadConfigSync.mockReturnValue({ provider: "ollama" });
+
+    const first = await withWarnSpy(() => getEmbeddingModelName());
+    expect(first.result).toBe("nomic-embed-text");
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain(SDK_DEFAULT);
+
+    // Same process, a different rung, the same missing endpoint: silent.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.result).toBe("nomic-embed-text");
+    expect(second.warnings).toEqual([]);
+  });
+
+  it("reaches it from the CREDENTIAL tail too, on OLLAMA_MODEL alone", async () => {
+    // `OLLAMA_MODEL` is an independent, usable signal (DW-370), so auto-detect
+    // can select ollama with no endpoint anywhere — which is why the check
+    // lives in one helper rather than on the two explicit rungs.
+    process.env.OLLAMA_MODEL = "nomic-embed-text";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("goes quiet on a save that fixes the endpoint, and speaks again if it breaks", async () => {
+    // `embeddingBaseUrl` is STORE-ONLY (no env feeder), so it is fixable
+    // IN-process by definition — which is why this key re-arms where the
+    // env/binding identities do not (DW-332's reasoning).
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const broken = await withWarnSpy(() => getEmbeddingModelName());
+    expect(broken.warnings).toHaveLength(1);
+
+    // A save lands an embedding endpoint: silent, and the key is re-armed.
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://saved.test:11434" });
+    const fixed = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(fixed.warnings).toEqual([]);
+    expect(fixed.result).toEqual(["nomic-embed-text", "nomic-embed-text"]);
+
+    // …and a later save that clears it is news again.
+    mockLoadConfigSync.mockReturnValue({});
+    const again = await withWarnSpy(() => getEmbeddingModelName());
+    expect(again.warnings).toHaveLength(1);
+    expect(again.warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("is a LOG, not a behaviour change — a model is still built", async () => {
+    // What this case can see: the warning did not stop the resolution, so the
+    // AI-SDK leg still hands back a model. It does NOT check what
+    // `createOllama` was called with — `ollama-ai-provider-v2` is real here.
+    // The argument itself is pinned in `settings-runtime-wiring.test.ts`, which
+    // mocks the SDK: see "gives the EMBEDDING leg no endpoint either when none
+    // resolves (DW-401)" and "does NOT hand the embedding leg the CHAT endpoint
+    // (DW-70)" beside it for the claim that the sentence's endpoint never
+    // becomes the value passed.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const { result } = await withWarnSpy(() => getEmbeddingModel());
+
+    expect(result).not.toBeNull();
+  });
+
+  it("still speaks when a USABLE OLLAMA_BASE_URL is set but no Embedding endpoint is (DW-70)", async () => {
+    // THE SPLIT'S HAZARD, and the case this describe exists for after DW-70.
+    // The chat endpoint is set and perfectly usable — the old condition read it
+    // and would have gone quiet here — but the embedding leg no longer dials it,
+    // so this deployment IS embedding against the SDK default and the owner has
+    // every reason to think otherwise. This is also the migration path: an
+    // `OLLAMA_BASE_URL`-only deployment that embedded yesterday is told, once,
+    // which field to fill in.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.OLLAMA_BASE_URL = "http://host.test:11434/api";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    expect(warnings[0]).toContain("Embedding endpoint");
+  });
+
+  it("treats a WHITESPACE-ONLY embedding endpoint as absent", async () => {
+    // `embeddingBaseUrlOf` trims, and blank is UNSET — the same rule
+    // `getEmbeddingModelOverride` applies to `EMBEDDING_MODEL` (DW-227). That
+    // rule is newly load-bearing under ollama (DW-70): it decides BOTH whether
+    // this sentence speaks and whether `createOllama` is handed an argument, so
+    // a `"   "` treated as present would silence the warning AND send the SDK a
+    // baseURL of three spaces.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "   " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    expect(warnings[0]).toContain("Embedding endpoint");
+  });
+
+  it("is not silenced by a stored CHAT endpoint either", async () => {
+    // The store half of the same split: `ollamaBaseUrl` is the chat/generation
+    // field, and `getOllamaBaseUrl`'s ladder is no longer this leg's ladder.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://chat.test:11434" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1307,5 +4449,72 @@ describe("embedding/LLM provider decoupling", () => {
     expect(getEmbeddingModelName()).toBeNull();
     expect(getEmbeddingModel()).toBeNull();
     expect(hasEmbeddingSupport()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One resolution, one snapshot — the `cfg` door (DW-313)
+// ---------------------------------------------------------------------------
+
+describe("the optional `cfg` door resolves against the snapshot it is given", () => {
+  // `loadConfigSync()` is a 5 s-TTL cache, so "read it again" and "read it once
+  // and pass it along" are only the same answer while the cache happens not to
+  // turn over between the two reads. Every case below makes the PASSED snapshot
+  // disagree with what the cache would answer, which is the only way to tell a
+  // threaded `cfg` from a decorative one — a resolver that accepted the
+  // parameter and then ignored it would satisfy any test where the two agree.
+  const CACHED = { embeddingProvider: "openai" } as const;
+  const PASSED = {
+    embeddingProvider: "openai",
+    embeddingApiKey: "sk-passed-in",
+    embeddingModel: "text-embedding-3-large",
+  } as const;
+
+  it("follows the ARGUMENT, through the provider, the KEY and the model legs", () => {
+    // The cache holds a provider with no credential anywhere, so it resolves to
+    // nothing at all.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+
+    // The passed snapshot carries the stored key, and that is the ONLY place it
+    // exists — no `OPENAI_API_KEY` is set. So an answer of anything but `null`
+    // proves `embeddingApiKeyFor` read the argument rather than re-entering the
+    // cache, which is the private leg the two public doors traverse.
+    expect(getEmbeddingModelName(PASSED)).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport(PASSED)).toBe(true);
+
+    // …and the model name came from the argument too: the cache's snapshot has
+    // no `embeddingModel`, so a resolver reading it would have answered the
+    // provider default instead.
+    expect(getEmbeddingModelName(PASSED)).not.toBe("text-embedding-3-small");
+  });
+
+  it("does not touch the cache AT ALL when a snapshot is passed", () => {
+    // The strongest form of the claim: not "it agreed with the argument" but
+    // "it never asked". A single stray `loadConfigSync()` anywhere down the
+    // path is what DW-313 is about, and it is invisible whenever the two
+    // snapshots happen to match.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+    mockLoadConfigSync.mockClear();
+
+    expect(getEmbeddingModelName(PASSED)).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport(PASSED)).toBe(true);
+
+    expect(mockLoadConfigSync).not.toHaveBeenCalled();
+  });
+
+  it("still reads the CACHE when nothing is passed — the default is unchanged", () => {
+    // The other half of the spec's claim. The parameter exists for the two
+    // settings resolvers; every other caller wants "resolve against whatever is
+    // current", and passing nothing has to stay byte-identical to the behaviour
+    // before the parameter existed.
+    mockLoadConfigSync.mockReturnValue({ ...CACHED });
+    expect(getEmbeddingModelName()).toBeNull();
+    expect(hasEmbeddingSupport()).toBe(false);
+    expect(mockLoadConfigSync).toHaveBeenCalled();
+
+    // Move the cache and the bare doors move with it.
+    mockLoadConfigSync.mockReturnValue({ ...PASSED });
+    expect(getEmbeddingModelName()).toBe("text-embedding-3-large");
+    expect(hasEmbeddingSupport()).toBe(true);
   });
 });

@@ -1,0 +1,386 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import type { Page } from "@playwright/test";
+import { GRAPH_NARROW_COPY } from "../src/lib/workbench-modes";
+import {
+  SETTINGS_API_ENABLE_LABEL,
+  SETTINGS_API_MCP_COPY,
+  SETTINGS_API_MCP_HEADING,
+} from "../src/lib/workbench-api-mcp-settings";
+import {
+  SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+  SETTINGS_API_HEALTH_RUNNING_COPY,
+  SETTINGS_API_HEALTH_STARTING_COPY,
+  SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+} from "../src/lib/workbench-loopback-health";
+import { expect, test, unsignedTest } from "./fixtures/owner";
+// Shared with `workbench-layout.spec.ts`. `fixtures/wiki.ts` is a module both
+// specs import, and its NAME is what keeps it one: the config sets no
+// `testMatch`, so Playwright's default would collect a `wiki.test.ts` here as a
+// suite of its own.
+import {
+  E2E_TENANT_DIR,
+  createOwnWiki,
+  currentWikiId,
+  readE2ePage,
+  readE2ePageOrEmpty,
+  resetOwnerTenant,
+  seedWikiPages,
+} from "./fixtures/wiki";
+
+/**
+ * The first two cases below open on an EMPTY tenant — "No wiki yet." on the
+ * canvas and a **Create Wiki** button — so this file establishes that itself
+ * rather than inheriting it.
+ *
+ * One worker shares one store across every spec file, and `webServer` wipes it
+ * once, before the server boots. Whichever files ran first therefore decide
+ * what this one starts from, and any of them may have minted a wiki. Resting on
+ * path order would make this file's result depend on what it is named and on
+ * what else happens to be on disk — and the failure it produces when that
+ * changes ("Create Wiki" not found) says nothing about the cause.
+ */
+test.beforeAll(async () => {
+  await resetOwnerTenant();
+});
+
+async function seedReviewQueue(
+  page: Page,
+  items: Array<Record<string, unknown>>,
+) {
+  const wikiId = await currentWikiId(page);
+  const now = new Date().toISOString();
+  await fs.mkdir(E2E_TENANT_DIR, { recursive: true });
+  await fs.writeFile(
+    path.join(E2E_TENANT_DIR, "review-queue.json"),
+    JSON.stringify({
+      items: items.map((item) => ({
+        createdAt: now,
+        updatedAt: now,
+        wikiId,
+        ...item,
+      })),
+    }),
+  );
+}
+
+test.describe("private Workbench owner journey", () => {
+  test("lands on the Wiki canvas as the signed-in owner", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Wiki", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Modes" })).toBeVisible();
+    await expect(page.locator("#wb-canvas").getByText("No wiki yet.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Create Wiki" })).toBeEnabled();
+  });
+
+  test("creates a wiki from a scenario template and opens Settings", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Create Wiki" }).click();
+    const dialog = page.getByRole("dialog", { name: "Create Wiki" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Create" }).click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+    await expect(page.locator("#wb-canvas").getByText("No wiki yet.")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Wiki", exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(
+      page.getByRole("navigation", { name: "Settings categories" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "External Sources" }).click();
+    await expect(page.getByLabel("Deep Research provider")).toBeVisible();
+    await expect(page.getByLabel("Deep Research provider")).toHaveValue("tavily");
+    await expect(page.getByLabel("Tavily API key")).toBeVisible();
+    await expect(page.getByLabel("SerpApi API key")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Firecrawl is an optional Capture credential for fetching pages; it is not a Deep Research search provider.",
+      ),
+    ).toBeVisible();
+    await expect(page.getByLabel("Firecrawl API key")).toBeVisible();
+  });
+
+  test("Settings API + MCP and Chat rails are reachable", async ({ page }) => {
+    await createOwnWiki(page, `E2E api mcp ${Date.now()}`);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(
+      page.getByRole("navigation", { name: "Settings categories" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "API + MCP" }).click();
+    await expect(page.getByLabel(SETTINGS_API_ENABLE_LABEL)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: SETTINGS_API_MCP_HEADING, exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(SETTINGS_API_MCP_COPY)).toBeVisible();
+    // FOUR sentences, not three (DW-633): `starting` — a listener that has not
+    // bound yet — used to fall through the pane's ternary onto the running
+    // sentence, so this locator never had to know about it. It has its own
+    // sentence now, and a sidecar caught mid-start is a real answer here.
+    const health = page.getByRole("status").filter({
+      hasText:
+        /sidecar is (not running|running|starting) on 127\.0\.0\.1:19828|Something else owns port 19828/,
+    });
+    await expect(health).toBeVisible();
+    await expect(health).toContainText(
+      new RegExp(
+        [
+          SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+          SETTINGS_API_HEALTH_RUNNING_COPY,
+          SETTINGS_API_HEALTH_STARTING_COPY,
+          SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+        ]
+          .map((sentence) => sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("|"),
+      ),
+    );
+    const mcpConfig = page.locator("pre.wb-set-pre").first();
+    await expect(mcpConfig).toContainText('"command": "node"');
+    await expect(mcpConfig).toContainText(`${path.sep}sidecar${path.sep}mcp.mjs`);
+
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByText("Start the local sidecar on 127.0.0.1:19828 to use Chat.")
+        .or(page.getByRole("button", { name: "New Chat" })),
+    ).toBeVisible();
+  });
+
+  test("Chat and Search rails expose their canvases", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByText("Start the local sidecar on 127.0.0.1:19828 to use Chat.")
+        .or(page.getByRole("button", { name: "New Chat" })),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Search", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Search", exact: true })).toBeVisible();
+    await expect(page.getByPlaceholder("Press Enter to search.")).toBeVisible();
+    await page.getByPlaceholder("Press Enter to search.").fill("alpha");
+    await page.getByPlaceholder("Press Enter to search.").press("Enter");
+    await expect(
+      page.getByText("No matching Pages or Sources.").or(page.getByText("Searching…")),
+    ).toBeVisible();
+  });
+
+  test("signed-in Graph, Lint, Review, and Research journeys open after a wiki exists", async ({
+    page,
+  }) => {
+    await createOwnWiki(page, `E2E rails ${Date.now()}`);
+    await expect(page.getByRole("heading", { name: "Wiki", exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Graph", exact: true })).toBeVisible();
+    await expect(page.locator(".wb-graph")).toContainText("No graph yet. Ingest sources to build one.");
+
+    await page.getByRole("button", { name: "Lint", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Lint", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Run lint" })).toBeVisible();
+    await page.getByRole("button", { name: "Run lint" }).click();
+    await expect(page.getByText("Run lint to check wiki health.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Run lint" })).toBeEnabled();
+
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Review", exact: true })).toBeVisible();
+    await expect(page.getByText("No pending cards.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Deep Research", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Deep Research", exact: true })).toBeVisible();
+    await expect(page.getByText("No research tasks yet.")).toBeVisible();
+  });
+
+  test("the Files tab is reachable after sign-in", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("tab", { name: "Files" }).click();
+    await expect(page.getByRole("tab", { name: "Files" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  test("non-empty Graph chrome, reduced-motion Fit, narrow layout, and Research handoff", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await createOwnWiki(page, `E2E graph ${Date.now()}`);
+    await seedWikiPages(page, [
+      { slug: "hub", content: "# Hub\n\nSee [[spoke]]." },
+      { slug: "spoke", content: "# Spoke\n\nLinked from hub." },
+      { slug: "alone", content: "# Alone\n\nNo inbound links." },
+    ]);
+    await page.goto("/");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByRole("button", { name: "Graph", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Fit" })).toBeVisible({ timeout: 20_000 });
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(page.getByText(GRAPH_NARROW_COPY)).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect(page.getByText(GRAPH_NARROW_COPY)).toBeHidden();
+    await expect(page.locator(".wb-graph-canvas")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Graph", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await page.getByRole("button", { name: "Zoom out" }).click();
+    await page.getByRole("button", { name: "Fit" }).click();
+    await page.locator(".wb-graph-canvas").hover();
+    await page.locator(".wb-graph-canvas").click();
+    const insights = page.locator(".wb-graph-insights");
+    if (!(await insights.isVisible())) {
+      await page.getByRole("button", { name: "Insights" }).click();
+    }
+    await expect(insights).toBeVisible();
+    const insight = insights.locator(".wb-graph-insight-hit").first();
+    await expect(insight).toBeVisible();
+    await insight.click();
+    await expect(insight).toHaveAttribute("aria-pressed", "true");
+    await insights.getByRole("button", { name: "Deep Research" }).first().click();
+    const dialog = page.getByRole("dialog", { name: "Deep Research" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Confirm" }).click();
+    // CONFIRM NOW STARTS A RUN, and this deployment has no research provider
+    // (pinned unconfigured in `playwright.config.ts`), so the start is refused.
+    // The old assertion here — a draft card reading "web search has not
+    // started." — was the Epic 5 behaviour this epic removes: a confirmed topic
+    // that nothing would ever search.
+    //
+    // ONE CONFIRM, ONE PROJECT. The create landed, so the confirm is spent: the
+    // dialog closes and the panel opens on the project. A dialog left open
+    // holding the refusal was a Confirm that minted another project per press.
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Deep Research", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    // The failure is ON THE RECORD, which is the point — not only in a dialog
+    // that closed.
+    const research = page.locator(".wb-research");
+    await expect(research.locator(".wb-research-task")).toBeVisible({ timeout: 15_000 });
+    await expect(research.getByText("Failed")).toBeVisible();
+    await expect(research.getByText(/no credential/)).toBeVisible();
+  });
+
+  test("Lint auto-fix and Review Create Page / Skip in the signed-in browser", async ({
+    page,
+  }) => {
+    await createOwnWiki(page, `E2E lint ${Date.now()}`);
+    await seedWikiPages(page, [
+      { slug: "linker", content: "# Linker\n\nSee [[gone]] and keep [[stay]]." },
+      { slug: "stay", content: "# Stay\n\nA valid link target." },
+    ]);
+    await page.goto("/");
+    await page.getByRole("button", { name: "Lint", exact: true }).click();
+    await page.getByRole("button", { name: "Run lint" }).click();
+    const autoFix = page.getByRole("button", { name: "Auto-fix" }).first();
+    await expect(autoFix).toBeVisible({ timeout: 15_000 });
+    await autoFix.click();
+    await expect(autoFix).toBeHidden({ timeout: 15_000 });
+    await expect.poll(() => readE2ePage("linker")).not.toContain("[[gone]]");
+    await expect.poll(() => readE2ePage("linker")).toContain("[[stay]]");
+
+    await seedReviewQueue(page, [
+      {
+        id: "e2e-review-1",
+        kind: "warning",
+        title: "E2E judgment",
+        summary: "Seeded for browser coverage.",
+        path: "wiki/topic.md",
+        queries: ["What should we keep?"],
+        status: "pending",
+        sourcePath: "wiki/topic.md",
+      },
+    ]);
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect(page.getByText("E2E judgment")).toBeVisible();
+    await page.getByRole("button", { name: "Skip" }).click();
+    await expect(page.getByText("E2E judgment")).toHaveCount(0);
+    await page.getByRole("button", { name: "Wiki", exact: true }).click();
+    await page.reload();
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect(page.getByText("E2E judgment")).toHaveCount(0);
+
+    await seedReviewQueue(page, [
+      {
+        id: "e2e-review-2",
+        kind: "warning",
+        title: "E2E create page",
+        summary: "Create this page.",
+        path: "wiki/topic.md",
+        queries: [],
+        status: "pending",
+        sourcePath: "wiki/topic.md",
+      },
+    ]);
+    await page.getByRole("button", { name: "Wiki", exact: true }).click();
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect(page.getByText("E2E create page")).toBeVisible();
+    await page.getByRole("button", { name: "Create Page" }).click();
+    await expect(page.getByText("E2E create page")).toHaveCount(0, { timeout: 20_000 });
+    await expect
+      .poll(() => readE2ePageOrEmpty("e2e-create-page"))
+      .toContain("# E2E create page");
+  });
+
+  test("Research Panel shows concurrent rows, cancel, reduced motion, and Wiki scope", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    const wikiA = await createOwnWiki(page, `E2E research A ${Date.now()}`);
+    const createdB = await page.request.post("/api/wikis", {
+      data: { name: `E2E research B ${Date.now()}`, scenario: "general" },
+    });
+    expect(createdB.status()).toBe(201);
+    const wikiB = ((await createdB.json()) as { wiki?: { id?: string } }).wiki?.id;
+    expect(wikiB).toBeTruthy();
+    const now = new Date().toISOString();
+    const row = (title: string, vaultId: string, extra: Record<string, unknown> = {}) => ({
+      id: crypto.randomUUID(),
+      title,
+      question: title,
+      queries: ["q"],
+      sourceUrls: [],
+      pageSlugs: [],
+      status: "collecting",
+      createdAt: now,
+      updatedAt: now,
+      vaultId,
+      progress: { completedQueries: 1, totalQueries: 2, message: "Searching the web." },
+      ...extra,
+    });
+    await fs.mkdir(E2E_TENANT_DIR, { recursive: true });
+    await fs.writeFile(
+      path.join(E2E_TENANT_DIR, "research-projects.json"),
+      JSON.stringify([
+        row("Alpha topic", wikiA, { thinking: ["weighing two dates"] }),
+        row("Beta topic", wikiA),
+        row("Other wiki topic", wikiB as string),
+      ], null, 2),
+    );
+    await page.reload();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByLabel("Active wiki").selectOption(wikiA);
+    await page.getByRole("button", { name: "Deep Research", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Alpha topic" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Beta topic" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Other wiki topic" })).toHaveCount(0);
+    await expect(page.locator(".wb-chat-thinking--live")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).first().click();
+    await page.getByLabel("Active wiki").selectOption(wikiB as string);
+    await page.getByRole("button", { name: "Deep Research", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Other wiki topic" })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole("heading", { name: "Alpha topic" })).toHaveCount(0);
+  });
+});
+
+unsignedTest.describe("signed-out boundary", () => {
+  unsignedTest.use({ storageState: { cookies: [], origins: [] } });
+
+  unsignedTest("sends a browser with no session to sign-in", async ({ page }) => {
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/sign-in/);
+  });
+});

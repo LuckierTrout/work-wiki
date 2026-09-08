@@ -27,20 +27,12 @@
  *   delete_agent   — Delete an agent profile
  *   lint_wiki      — Run quality checks on the wiki
  *   fix_lint_issue — Auto-fix a lint issue found by lint_wiki
- *   list_discussions   — List discussion threads for a wiki page
- *   read_discussion    — Read a single discussion thread with full comment bodies
- *   create_discussion  — Start a new discussion thread
- *   add_comment        — Add a comment to a discussion thread
- *   resolve_discussion — Resolve a discussion thread
- *   reconcile_page     — Reconcile a page from a discussion thread (LLM-driven)
  *   reingest           — Re-ingest a wiki page from its original source URL
  *   ingest_history     — View ingest ledger entries for provenance auditing
  *   dataview_query     — Query wiki pages by frontmatter fields
  *   list_revisions     — List revision history for a wiki page
  *   read_revision      — Read a specific revision's content
  *   revert_revision    — Revert a wiki page to a previous revision
- *   list_contributors  — List all contributors with trust scores
- *   get_contributor    — Get a specific contributor's trust profile
  *   wiki_graph         — Get the wiki knowledge graph (nodes and edges)
  *   vault_curate       — Curate a commons page into one of a user's named vaults
  *   vault_uncurate     — Remove a curated page from one of a user's named vaults
@@ -73,36 +65,59 @@ import {
   type Frontmatter,
 } from "./lib/wiki";
 import { canReadFrontmatter, canWriteFrontmatter } from "./lib/authz";
+import { resolveWriteDenial } from "./lib/write-denial";
 import type { Principal } from "./lib/auth";
 import { extractSummary, ingest, ingestUrl, ingestImage, ingestPdf, ingestXMention, reingest, readLedger, type LedgerEntry, type IngestOptions } from "./lib/ingest";
 import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
 import { listQueries, type QueryHistoryEntry } from "./lib/query-history";
 import { isUrl } from "./lib/fetch";
+import { createGuidanceCache } from "./lib/guidance-cache";
 import { MAX_BATCH_URLS } from "./lib/constants";
 import { getErrorMessage } from "./lib/errors";
 import { patchMetadata, type PatchMetadataResult } from "./lib/patch-metadata";
 import { getAgent, listAgents, updateAgent, deleteAgent, seedAgent, resolveAgentPages } from "./lib/agents";
-import { listContributors, buildContributorProfile } from "./lib/contributors";
 import type { SeedAgentSection, UpdateAgentOptions } from "./lib/agents";
-import type { AgentProfile, ContributorProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
+import type { AgentProfile, IngestResult, QueryResult, LintResult, LintIssue } from "./lib/types";
 import type { DeletePageResult } from "./lib/lifecycle";
 import { resolveScope, type ContentSearchResult } from "./lib/search";
 import { lint, ALL_CHECK_TYPES } from "./lib/lint";
 import { fixLintIssue, type FixResult } from "./lib/lint-fix";
-import { listThreads, getThread, createThread, resolveThread, addComment } from "./lib/talk";
+import { AUTO_FIXABLE_CHECK_TYPES } from "./lib/lint-types";
 import { queryByFrontmatter, validateQuery, type DataviewFilter, type DataviewQuery, type DataviewResult } from "./lib/dataview";
 import { listRevisions, readRevision, readRevisionMeta, type Revision } from "./lib/revisions";
 import { vaultIdFor, getVault, findVaultByName, createVault, renameVault, deleteVault, addToVault, removeFromVault, listVaults, vaultSlugs } from "./lib/vault";
 import type { Vault } from "./lib/vault";
 import { isVaultEligible } from "./lib/commons";
-import { reconcileFromTalk, type ReconcileFromTalkResult } from "./lib/reconcile";
 import { buildWikiGraph, type GraphNode, type GraphEdge } from "./lib/graph-build";
 import { mergePages, type MergePagesResult } from "./lib/merge";
 import { scanForMaintenance } from "./lib/maintenance";
 import { getTrail, type TrailEvent } from "./lib/trail";
-import { publishToCommons } from "./lib/publish";
 import { logger } from "./lib/logger";
-import type { TalkThread, TalkComment } from "./lib/types";
+import { servicePrincipalId } from "./lib/principal-id";
+
+// ---------------------------------------------------------------------------
+// The stdio door's system caller
+// ---------------------------------------------------------------------------
+
+/**
+ * The principal id every deployment-trusted stdio write falls back to.
+ *
+ * Minted through `servicePrincipalId` rather than written out, so this door and
+ * the `isServicePrincipalId` predicate that reads it (`src/lib/authz.ts`, the
+ * deployment-trusted write grant) share ONE definition of the prefix.
+ *
+ * WHAT PINS THE VALUE. `owner-gate-parity.test.ts`, `owner-handle.test.ts` and
+ * `patch-metadata.test.ts` each spell the id out as a literal, but they BUILD
+ * their own principals with it — they pin what those READERS expect, and would
+ * stay green if this constant changed underneath them. So it is EXPORTED, and
+ * `mcp.test.ts` asserts directly that what this door mints is exactly
+ * `service:mcp` and that `isServicePrincipalId` accepts it. Exported for that
+ * observer, not for callers: nothing else in the app imports it.
+ *
+ * The handle varies per call (`args.author ?? "system"`); only the id is fixed,
+ * so this is a constant rather than a whole principal.
+ */
+export const STDIO_SERVICE_PRINCIPAL_ID = servicePrincipalId("mcp");
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -229,8 +244,18 @@ export async function handleCreatePage(args: {
 }): Promise<{ slug: string; title: string; created: true }> {
   validateSlug(args.slug);
 
-  // Check for conflicts
-  const existing = await readWikiPage(args.slug);
+  // Check for conflicts.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation: `null` here is what
+  // lets the create below proceed. `pageCache` is module-global and ref-counted
+  // around bulk scans, so a concurrent scan can hold a superseded entry open
+  // and the guard would rule on bytes that are no longer stored.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", and the guard reads a blip
+  // as proof the slug is free — landing a create over a stored Page. Strict
+  // rethrows the storage error to the MCP caller instead.
+  const existing = await readWikiPage(args.slug, { fresh: true, strict: true });
   if (existing) {
     throw new Error(`Page already exists: ${args.slug}`);
   }
@@ -276,6 +301,8 @@ export async function handleCreatePage(args: {
     logOp: "ingest",
     author: args.author,
     crossRefSource: args.content,
+    createOnly: true,
+    validateNewLinkTargets: true,
   });
 
   return { slug: args.slug, title, created: true };
@@ -288,7 +315,23 @@ export async function handleUpdatePage(args: {
   owner?: string;
   principal?: Principal | null;
 }): Promise<{ slug: string; title: string; updated: true }> {
-  const existingPage = await readWikiPageWithFrontmatter(args.slug);
+  // Read the existing page. FRESH+STRICT (DW-495; the pattern originates in
+  // DW-195/DW-378 and was swept elsewhere as DW-379). These bytes are the merge
+  // base at `expectedContent` below, and they also authorize the write via the
+  // ACL below. `pageCache` is module-global and ref-counted around bulk scans,
+  // so one can hold a superseded entry open — and then both roles describe a
+  // file that is no longer stored: the ACL rules on stale frontmatter, and the
+  // write's own CAS refuses the stale merge base, so a legitimate update fails
+  // as a spurious conflict for the duration of an unrelated scan. FRESH is what
+  // keeps that from happening; the CAS is the backstop, not the fix.
+  //
+  // STRICT so a non-ENOENT storage blip reaches the MCP caller as a storage
+  // error instead of flattening to `null` and posing as `Page not found` — a
+  // deletion the store never made.
+  const existingPage = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existingPage) {
     throw new Error(`Page not found: ${args.slug}`);
   }
@@ -301,10 +344,14 @@ export async function handleUpdatePage(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
   if (!canWriteFrontmatter(existingPage.frontmatter, principal, "body")) {
     if (canReadFrontmatter(existingPage.frontmatter, principal)) {
-      throw new Error("You don't have permission to edit this page.");
+      // Readable (the cloak below runs otherwise), so the resolver may name
+      // the realm — and does so only where the realm gate applies.
+      throw new Error(
+        resolveWriteDenial("edit", existingPage.frontmatter, "body"),
+      );
     }
     throw new Error(`Page not found: ${args.slug}`);
   }
@@ -351,6 +398,8 @@ export async function handleUpdatePage(args: {
     logOp: "edit",
     author: args.author,
     crossRefSource: callerBody,
+    expectedContent: existingPage.content,
+    validateNewLinkTargets: true,
   });
 
   return { slug: args.slug, title, updated: true };
@@ -373,7 +422,7 @@ export async function handleUpdateMetadata(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
   return patchMetadata({
     slug: args.slug,
     metadata: args.metadata,
@@ -397,14 +446,25 @@ export async function handleDeletePage(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
-  const existing = await readWikiPageWithFrontmatter(args.slug);
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
+  // FRESH+STRICT (DW-691) — what makes the parity claim above true. This
+  // frontmatter authorizes a delete, and without `strict` a non-ENOENT storage
+  // blip flattens to `null` and is reported as `page not found` for a page
+  // that is stored. Strict rethrows the storage failure to the MCP caller.
+  const existing = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existing) {
     throw new Error(`page not found: ${args.slug}`);
   }
   if (!canWriteFrontmatter(existing.frontmatter, principal, "delete")) {
     if (canReadFrontmatter(existing.frontmatter, principal)) {
-      throw new Error("You don't have permission to delete this page.");
+      // Readable (the cloak below runs otherwise), so the resolver may name
+      // the realm — and does so only where the realm gate applies.
+      throw new Error(
+        resolveWriteDenial("delete", existing.frontmatter, "delete"),
+      );
     }
     throw new Error(`page not found: ${args.slug}`);
   }
@@ -528,12 +588,24 @@ export async function handleBatchIngest(args: {
   let succeeded = 0;
   let failed = 0;
 
+  // ONE guidance memo for the whole batch (DW-395), matching what
+  // `POST /api/ingest/batch` already does for its inline fallback. Without it
+  // each URL re-resolves the active Wiki's Workspace Purpose and re-reads the
+  // Names & Terms dictionary from scratch, N times inside ONE agent action.
+  // The scope is exactly that action: one batch is one consistent set of
+  // guidance, with a Purpose or dictionary edit landing mid-batch deliberately
+  // invisible to the rest of it. The handle lives only as long as this call —
+  // it is caller-owned and per-operation, never module-level (see
+  // `guidance-cache.ts`), so the next call mints its own.
+  const guidanceCache = createGuidanceCache();
+
   for (const url of urls) {
     try {
       const result: IngestResult = await ingestUrl(url, {
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(owner ? { owner, author: owner } : {}),
         ...(triggeredBy ? { triggeredBy } : {}),
+        guidanceCache,
       });
       results.push({ url, slug: result.primarySlug });
       succeeded++;
@@ -997,47 +1069,6 @@ export async function handleDeleteAgent(args: {
   return { deleted: true, agent_id: args.agent_id };
 }
 
-export async function handlePublishToCommons(args: {
-  slug: string;
-  agentId: string;
-}): Promise<{ published: true; slug: string; owner: string; agent: string; previousType: string }> {
-  const result = await publishToCommons(args.slug, args.agentId);
-  return {
-    published: true,
-    slug: result.slug,
-    owner: result.owner,
-    agent: result.agent,
-    previousType: result.previousType,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Contributor handlers
-// ---------------------------------------------------------------------------
-
-export async function handleListContributors(): Promise<{
-  contributors: ContributorProfile[];
-}> {
-  const contributors = await listContributors();
-  return { contributors };
-}
-
-export async function handleGetContributor(args: {
-  handle: string;
-}): Promise<ContributorProfile> {
-  const profile = await buildContributorProfile(args.handle);
-  // buildContributorProfile returns a zeroed-out profile for unknown handles.
-  // Treat zero activity as "not found" for agent consumers.
-  if (
-    profile.editCount === 0 &&
-    profile.commentCount === 0 &&
-    profile.threadsCreated === 0
-  ) {
-    throw new Error(`No activity found for contributor: ${args.handle}`);
-  }
-  return profile;
-}
-
 // ---------------------------------------------------------------------------
 // Graph handler
 // ---------------------------------------------------------------------------
@@ -1247,171 +1278,38 @@ export async function handleLintWiki(args: {
   });
 }
 
+/**
+ * `slug` is OPTIONAL, and an absent one reaches `fixLintIssue` as `""` — the
+ * same `slug ?? ""` conversion `POST /api/lint/fix` does (DW-457).
+ *
+ * `missing-concept-page` reads `message` ALONE; its handler never looks at a
+ * slug. Requiring one here made the only slug-less fix type unreachable over
+ * both MCP transports unless the agent invented a dummy value. Every type that
+ * DOES need a slug still answers "Missing required field: slug" for the empty
+ * string, which names both the field and the fact that this type needs it —
+ * strictly better than a schema's "expected string, received undefined".
+ *
+ * `triggeredBy`, not `author` (DW-447): a lint fix is authored by `"lint-fix"`
+ * at every door, and the resolved principal is recorded as the TRIGGER on the
+ * wiki-log detail line instead — same field name `handleReingest` below uses.
+ * `author` is left to `fixLintIssue`'s own default, so nothing this handler
+ * forwards can reach `normalizeActor`, the contributor list or a trust score.
+ */
 export async function handleFixLintIssue(args: {
   type: string;
-  slug: string;
+  slug?: string | undefined;
   target?: string | undefined;
   message?: string | undefined;
-  author?: string | undefined;
+  triggeredBy?: string | undefined;
 }): Promise<FixResult> {
-  return fixLintIssue(args.type, args.slug, args.target, args.message, args.author);
-}
-
-// ---------------------------------------------------------------------------
-// Discussion (talk page) handlers
-// ---------------------------------------------------------------------------
-
-export async function handleListDiscussions(args: {
-  pageSlug: string;
-}): Promise<{
-  pageSlug: string;
-  threads: {
-    index: number;
-    title: string;
-    status: string;
-    author: string;
-    commentCount: number;
-    created: string;
-    updated: string;
-  }[];
-}> {
-  const threads = await listThreads(args.pageSlug);
-  return {
-    pageSlug: args.pageSlug,
-    threads: threads.map((t, i) => ({
-      index: i,
-      title: t.title,
-      status: t.status,
-      author: t.comments[0]?.author ?? "unknown",
-      commentCount: t.comments.length,
-      created: t.created,
-      updated: t.updated,
-    })),
-  };
-}
-
-export async function handleReadDiscussion(args: {
-  pageSlug: string;
-  threadIndex: number;
-}): Promise<{
-  pageSlug: string;
-  threadIndex: number;
-  title: string;
-  status: string;
-  created: string;
-  updated: string;
-  comments: { id: string; author: string; created: string; body: string; parentId: string | null }[];
-}> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (typeof args.threadIndex !== "number" || !Number.isInteger(args.threadIndex) || args.threadIndex < 0) {
-    throw new Error("threadIndex must be a non-negative integer");
-  }
-  const thread = await getThread(args.pageSlug, args.threadIndex);
-  if (!thread) {
-    throw new Error(`thread not found: index ${args.threadIndex} on page ${args.pageSlug}`);
-  }
-  return {
-    pageSlug: args.pageSlug,
-    threadIndex: args.threadIndex,
-    title: thread.title,
-    status: thread.status,
-    created: thread.created,
-    updated: thread.updated,
-    comments: thread.comments.map((c) => ({
-      id: c.id,
-      author: c.author,
-      created: c.created,
-      body: c.body,
-      parentId: c.parentId,
-    })),
-  };
-}
-
-export async function handleCreateDiscussion(args: {
-  pageSlug: string;
-  title: string;
-  body: string;
-  author: string;
-}): Promise<TalkThread> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (!args.title || !args.title.trim()) {
-    throw new Error("title must be a non-empty string");
-  }
-  if (!args.body || !args.body.trim()) {
-    throw new Error("body must be a non-empty string");
-  }
-  if (!args.author || !args.author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  return createThread(args.pageSlug, args.title.trim(), args.author.trim(), args.body.trim());
-}
-
-export async function handleResolveDiscussion(args: {
-  pageSlug: string;
-  threadIndex: number;
-  resolution: "open" | "resolved" | "wontfix";
-}): Promise<TalkThread> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  if (!args.resolution) {
-    throw new Error("resolution is required");
-  }
-  if (args.resolution !== "open" && args.resolution !== "resolved" && args.resolution !== "wontfix") {
-    throw new Error(
-      `Invalid resolution: "${args.resolution}". Must be "open", "resolved", or "wontfix"`,
-    );
-  }
-  return resolveThread(args.pageSlug, args.threadIndex, args.resolution);
-}
-
-export async function handleAddComment(args: {
-  pageSlug: string;
-  threadIndex: number;
-  content: string;
-  author: string;
-  parentId?: string | undefined;
-}): Promise<TalkComment> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  if (!args.content || !args.content.trim()) {
-    throw new Error("content must be a non-empty string");
-  }
-  if (!args.author || !args.author.trim()) {
-    throw new Error("author must be a non-empty string");
-  }
-  return addComment(args.pageSlug, args.threadIndex, args.author.trim(), args.content.trim(), args.parentId);
-}
-
-// ---------------------------------------------------------------------------
-// Reconcile page handler
-// ---------------------------------------------------------------------------
-
-export async function handleReconcilePage(args: {
-  pageSlug: string;
-  threadIndex: number;
-  author?: string | undefined;
-}): Promise<ReconcileFromTalkResult> {
-  if (!args.pageSlug) {
-    throw new Error("pageSlug is required");
-  }
-  if (args.threadIndex === undefined || args.threadIndex === null) {
-    throw new Error("threadIndex is required");
-  }
-  return reconcileFromTalk(args.pageSlug, args.threadIndex, {
-    author: args.author || undefined,
-  });
+  return fixLintIssue(
+    args.type,
+    args.slug ?? "",
+    args.target,
+    args.message,
+    undefined,
+    args.triggeredBy,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1551,6 +1449,7 @@ export async function handleRevertRevision(args: {
   slug: string;
   timestamp: number;
   author?: string;
+  principal?: Principal | null;
 }): Promise<{ slug: string; updatedSlugs: string[] }> {
   if (!args.slug) {
     throw new Error("slug is required");
@@ -1565,8 +1464,45 @@ export async function handleRevertRevision(args: {
     throw new Error("timestamp must be a positive number");
   }
 
-  const existing = await readWikiPageWithFrontmatter(args.slug);
+  // Read the existing page. FRESH+STRICT (DW-495; the pattern originates in
+  // DW-195/DW-378 and was swept elsewhere as DW-379). These bytes wear three
+  // hats at once: the revert's merge base at `expectedContent` below, the
+  // `extractTitle` fallback, and the seed for `mergedFrontmatter` (including
+  // the `created` fallback). Off a superseded `pageCache` entry an open bulk
+  // scan holds, every one of them describes a file that is not stored — the
+  // title and `created` would be carried over from bytes that are gone, and the
+  // write's own CAS refuses the stale merge base, so the revert fails as a
+  // spurious conflict. FRESH is what keeps that from happening.
+  //
+  // STRICT so a non-ENOENT storage blip reaches the MCP caller as a storage
+  // error rather than posing as `page not found`.
+  const existing = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existing) {
+    throw new Error(`page not found: ${args.slug}`);
+  }
+
+  // Realm-aware write ACL — mirrors the REST revert surface. An omitted
+  // principal is the deployment-trusted stdio compatibility signal; explicit
+  // null remains unauthenticated and therefore fails closed.
+  const principal: Principal | null =
+    args.principal !== undefined
+      ? args.principal
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
+  // `canWriteFrontmatter` assumes an authenticated caller for public Pages
+  // outside the commons realm. This handler also accepts explicit null, so
+  // close that upstream-authentication gap here before asking the Page ACL.
+  if (
+    principal === null ||
+    !canWriteFrontmatter(existing.frontmatter, principal, "body")
+  ) {
+    if (canReadFrontmatter(existing.frontmatter, principal)) {
+      throw new Error(
+        resolveWriteDenial("revert", existing.frontmatter, "body"),
+      );
+    }
     throw new Error(`page not found: ${args.slug}`);
   }
 
@@ -1601,6 +1537,8 @@ export async function handleRevertRevision(args: {
     logOp: "edit",
     author,
     crossRefSource: revisionContent,
+    expectedContent: existing.content,
+    validateNewLinkTargets: true,
   });
 
   return { slug: result.slug, updatedSlugs: result.updatedSlugs };
@@ -1610,7 +1548,7 @@ export async function handleRevertRevision(args: {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
-const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are tracked and resolved through talk pages.
+const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and agents. It accumulates durable, citable knowledge — not ephemeral RAG results. Every page has confidence scores, expiry dates, cited sources, and revision history. Contradictions are flagged on the page itself (the \`disputed\` flag and \`lint_wiki\`) and resolved by revising the page — talk pages are retired.
 
 ## Recommended workflow
 
@@ -1625,7 +1563,6 @@ const SERVER_INSTRUCTIONS = `work-wiki is a shared knowledge wiki for humans and
 - **Confidence** (0–1): every page declares how well-supported its claims are. Low-confidence pages need more sources.
 - **Expiry** (ISO date): pages go stale. Check expiry and reingest or update when needed.
 - **Sources**: every page tracks its sources with type, URL, and fetch date. Prefer cited claims over unsourced ones.
-- **Talk pages**: use \`list_discussions\`, \`create_discussion\`, and \`add_comment\` to discuss disputes or propose changes. Resolve threads with \`resolve_discussion\`.
 - **Revisions**: all edits are tracked. Use \`list_revisions\` and \`read_revision\` to review history.
 - **Lint**: use \`lint_wiki\` to find quality issues (orphans, broken links, stale pages, contradictions). Use \`fix_lint_issue\` to auto-fix them.
 
@@ -2614,48 +2551,6 @@ export function createMcpServer(): McpServer {
     }
   });
 
-  // publish_to_commons — Promote an agent page to the public commons
-  server.registerTool("publish_to_commons", {
-    description:
-      "Publish an agent-knowledge page to the public commons. The page's type is " +
-      "cleared (making it a normal wiki page), ownership transfers to the agent's " +
-      "human owner, and the agent is preserved in contributors[]. The page then " +
-      "participates in normal concept resolution and appears in public browse/search. " +
-      "This is a one-way promotion — the page cannot be unpublished back to agent-knowledge.",
-    inputSchema: {
-      slug: z.string().describe("Slug of the agent-knowledge page to publish"),
-      agentId: z.string().describe("ID of the agent that owns the page (e.g. alice--yoyo)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handlePublishToCommons(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
   // lint_wiki — Run quality checks on the wiki
   server.registerTool("lint_wiki", {
     description:
@@ -2705,14 +2600,51 @@ export function createMcpServer(): McpServer {
   // fix_lint_issue — Auto-fix a lint issue
   server.registerTool("fix_lint_issue", {
     description:
-      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. Not all issue types are auto-fixable.",
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, plus optional slug/target/message: " +
+      "`slug` is required by every type EXCEPT missing-concept-page, which reads `message` alone. " +
+      "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
+      "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
     inputSchema: {
-      type: z.enum(ALL_CHECK_TYPES).describe("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
-      slug: z.string().describe("Slug of the affected page"),
+      // The FIXABLE subset, not `ALL_CHECK_TYPES`: the SDK validates against
+      // this schema before the handler runs, so a type with no auto-fix is
+      // refused at the transport instead of travelling to `fixLintIssue` and
+      // coming back as an error result (DW-348). Spelled out the way
+      // `lint_wiki` spells its own list, because an agent that only sees
+      // "e.g. 'orphan-page'" has to guess at the other nine.
+      //
+      // THE ACCEPTED COST: refusing at the schema means `NOT_AUTO_FIXABLE`'s
+      // explanation — "Disputed pages cannot be auto-fixed. Reconcile … PATCH
+      // /api/wiki/<slug> …" — no longer reaches this transport; the agent gets
+      // the SDK's validation error instead. That is a fair trade rather than a
+      // loss, because a schema error is raised over the `type` field ALONE and
+      // so could never interpolate the sibling `slug` the sentence has to name
+      // to be copy-pasteable (`lint-types.ts` is explicit that a `<slug>`
+      // placeholder is not good enough). The same guidance is already reachable
+      // at a better surface: every non-fixable check emits it in the issue's
+      // own `suggestion` with the real slug filled in — `checkDisputedPages`
+      // passes `entry.slug` to `disputedClearGuidance`, the one clause
+      // `NOT_AUTO_FIXABLE` renders too (DW-389), as it builds the issue —
+      // which is where the description above points the agent.
+      type: z
+        .enum(AUTO_FIXABLE_CHECK_TYPES)
+        .describe(
+          `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
+        ),
+      // OPTIONAL (DW-457): `missing-concept-page` reads `message` alone, so a
+      // required slug made the one slug-less fix type unreachable here. Every
+      // other type still needs one, and answers for its own absence — see
+      // `handleFixLintIssue`.
+      slug: z
+        .string()
+        .optional()
+        .describe(
+          "Slug of the affected page. Required by every type EXCEPT " +
+            "missing-concept-page, which reads `message` alone.",
+        ),
       target: z
         .string()
         .optional()
-        .describe("Target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes"),
+        .describe("Target slug for cross-ref, contradiction, and broken-link fixes"),
       message: z
         .string()
         .optional()
@@ -2726,7 +2658,32 @@ export function createMcpServer(): McpServer {
     },
   }, async (args) => {
     try {
-      const result = await handleFixLintIssue(args);
+      // `args` carries no `triggeredBy`, and no door here can supply one: the
+      // stdio transport is unauthenticated and deployment-trusted — every
+      // handler runs with a `null` principal (see `handleSearchWiki`) — so
+      // there is no resolved actor who could be named as having ASKED for the
+      // fix. The log detail line stays exactly what it was.
+      //
+      // The AUTHOR is `"lint-fix"` here and at every other door (DW-447), not
+      // just this one: an auto-fix is a machine edit, and `"lint-fix"` is an
+      // `AUTOMATION_ACTORS` member (`agent-handle.ts`) that `normalizeActor`
+      // folds into the agent. The doors that DO resolve a principal
+      // (`mcp-http.ts`, `POST /api/lint/fix`, `POST /api/lint/workbench-fix`)
+      // pass it as `triggeredBy` — a log-line-only record — precisely so a
+      // human is never credited in revision history, the contributor list or a
+      // trust score for an edit they did not write.
+      // EXPLICIT FIELDS, not `handleFixLintIssue(args)`. `triggeredBy` is
+      // server-derived by contract — no door lets a caller name who triggered a
+      // fix — and forwarding the parsed argument object wholesale made that
+      // contract depend on the SDK stripping unknown keys during `parse`, which
+      // is a property of its zod call rather than of this one. The same
+      // discipline `mcp-http.ts` argues for at its own `fix_lint_issue`.
+      const result = await handleFixLintIssue({
+        type: args.type,
+        slug: args.slug,
+        target: args.target,
+        message: args.message,
+      });
       return {
         content: [
           {
@@ -2748,276 +2705,10 @@ export function createMcpServer(): McpServer {
     }
   });
 
-  // list_discussions — List discussion threads for a wiki page
-  server.registerTool("list_discussions", {
-    description:
-      "List all discussion threads for a wiki page, including status, author, and comment count",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to list discussions for"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleListDiscussions(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // read_discussion — Read a single discussion thread with full comment bodies
-  server.registerTool("read_discussion", {
-    description:
-      "Read a single discussion thread for a wiki page, including full comment bodies. " +
-      "Use list_discussions first to discover thread indices.",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread (from list_discussions)"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleReadDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // create_discussion — Start a new discussion thread on a wiki page
-  server.registerTool("create_discussion", {
-    description:
-      "Create a new discussion thread on a wiki page for editorial discussion",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to discuss"),
-      title: z.string().describe("Title of the discussion thread"),
-      body: z
-        .string()
-        .describe("Body of the first comment (markdown supported)"),
-      author: z
-        .string()
-        .describe("Author handle (agent ID or user handle)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleCreateDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // resolve_discussion — Resolve a discussion thread
-  server.registerTool("resolve_discussion", {
-    description:
-      "Resolve a discussion thread on a wiki page (mark as resolved or wontfix)",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread to resolve"),
-      resolution: z
-        .enum(["open", "resolved", "wontfix"])
-        .describe('Resolution status: "open" (reopen), "resolved", or "wontfix"'),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleResolveDiscussion(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // add_comment — Add a comment to a discussion thread
-  server.registerTool("add_comment", {
-    description:
-      "Add a comment to an existing discussion thread on a wiki page",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page the discussion belongs to"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the thread to comment on"),
-      content: z
-        .string()
-        .describe("Comment body (markdown supported)"),
-      author: z
-        .string()
-        .describe("Author handle (agent ID or user handle) — required for governance attribution"),
-      parentId: z
-        .string()
-        .optional()
-        .describe("ID of parent comment for threaded replies (omit for top-level)"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleAddComment(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // reconcile_page — Reconcile a wiki page from a discussion thread
-  server.registerTool("reconcile_page", {
-    description:
-      "Reconcile a wiki page by applying valid points from a discussion thread — the core 'agents maintain, humans discuss' action. Reads the page and thread, LLM-revises the page, posts a summary comment, and resolves the thread.",
-    inputSchema: {
-      pageSlug: z
-        .string()
-        .describe("Slug of the wiki page to reconcile"),
-      threadIndex: z
-        .number()
-        .describe("Zero-based index of the discussion thread to reconcile from"),
-      author: z
-        .string()
-        .optional()
-        .describe("Author handle for attribution (defaults to 'yoyo')"),
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleReconcilePage(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
+  // Discussion tools (list_discussions, read_discussion, create_discussion,
+  // resolve_discussion, add_comment) are RETIRED with talk (AD-21): the REST
+  // handlers 404 and the UI panel is gone, so an agent thread would land on a
+  // surface nothing can display. `src/lib/talk.ts` stays on disk.
 
   // reingest — Re-ingest a wiki page from its original source URL
   server.registerTool("reingest", {
@@ -3275,80 +2966,6 @@ export function createMcpServer(): McpServer {
   }, async (args) => {
     try {
       const result = await handleRevertRevision(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // list_contributors — List all contributors with trust scores
-  server.registerTool("list_contributors", {
-    description:
-      "List all contributors who have edited wiki pages or participated in discussions. " +
-      "Returns trust scores, edit counts, revert rates, and activity dates for each contributor.",
-    inputSchema: {},
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async () => {
-    try {
-      const result = await handleListContributors();
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: (err as Error).message,
-          },
-        ],
-        isError: true,
-      };
-    }
-  });
-
-  // get_contributor — Get a single contributor's profile
-  server.registerTool("get_contributor", {
-    description:
-      "Get the trust profile for a specific contributor by handle. " +
-      "Returns edit count, pages edited, comment count, revert rate, trust score, and activity dates.",
-    inputSchema: {
-      handle: z.string().describe("Contributor handle to look up"),
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  }, async (args) => {
-    try {
-      const result = await handleGetContributor(args);
       return {
         content: [
           {
@@ -3721,7 +3338,7 @@ export function createMcpServer(): McpServer {
   // maintenance_scan — Scan for wiki maintenance tasks (read-only health check)
   server.registerTool("maintenance_scan", {
     description:
-      "Scan the wiki for maintenance tasks — disputed pages needing reconciliation, expired pages needing reingest, orphan/stale entries, broken links, and more. Returns candidate tasks the agent can act on using existing tools. Does NOT enqueue or execute any work.",
+      "Scan the wiki for maintenance tasks — expired pages needing reingest, unmigrated pages, dangling supersedes references, orphan/stale index entries, broken links, and more. Returns candidate tasks the agent can act on using existing tools. Does NOT enqueue or execute any work. Disputed pages are NOT scanned here — list them with lint_wiki (check type 'disputed-page'), since clearing the flag needs a human review rather than an automated fix.",
     inputSchema: {
       cap: z
         .number()

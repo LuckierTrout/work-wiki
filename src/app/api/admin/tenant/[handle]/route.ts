@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal, getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { tenantForOwner, DEFAULT_TENANT } from "@/lib/wiki";
 import { deleteTenant } from "@/lib/tenant-admin";
 import { decodeSlug } from "@/lib/slugify";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
 
 /**
@@ -33,7 +34,7 @@ export async function DELETE(
   // "self" = same TENANT, not same handle — distinct handles that normalize to
   // the same tenant (e.g. "a.b"/"a-b") share a silo and can self-delete it.
   const isSelf = !!principal && tenantForOwner(principal.handle) === tenant;
-  const isAdmin = !!service || isOwnerHandle(principal?.handle);
+  const isAdmin = !!service || isOwnerPrincipal(principal);
   if (!isAdmin && !isSelf) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
@@ -69,6 +70,15 @@ export async function DELETE(
       status: result.errors.length > 0 ? 207 : 200,
     });
   } catch (err) {
+    // Deployment read-only (DW-188). The ATOMICITY fix lives in `deleteTenant`
+    // itself, which refuses before it lists a single page — without it the
+    // per-page refusals would be swallowed into `errors` while the unconditional
+    // silo `deleteDirectory` still destroyed `tenants/<t>/`, answering 207 for a
+    // half-destroyed tenant. This route only has to carry that refusal out as a
+    // 403 rather than the 500 below.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     logger.error("tenant-admin", "deleteTenant failed", err);
     return NextResponse.json({ error: getErrorMessage(err) }, { status: 500 });
   }

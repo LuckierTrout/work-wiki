@@ -1,0 +1,494 @@
+import { afterEach } from "vitest";
+import { cleanup } from "@testing-library/react";
+
+/**
+ * DOM-project setup: unmount between tests, plus the browser capabilities the
+ * environment does not expose that the components under test read directly.
+ * jsdom has no matchMedia / layout / visibilityState; Node 26's own Storage
+ * getter shadows the one jsdom would otherwise put on `window`.
+ *
+ * Every shim lives HERE and never in `src/`. The point of the DOM project is to
+ * pin the behaviour the app already has; reshaping a component so it stops
+ * asking the platform a question would be pinning something else.
+ */
+
+// React Testing Library keeps mounted trees in a module-level registry. Without
+// this, a suite's second test renders into a document that still holds the
+// first test's tree — `getByRole` then finds two matches and throws.
+//
+// This `cleanup()` is a BACKSTOP, not the primary teardown. vitest runs
+// `afterEach` hooks in REVERSE registration order, and a setup file registers
+// before any test file does — so this one runs LAST, after a suite has already
+// restored real timers, unstubbed `fetch` and reset module registries. A tree
+// unmounted at that point tears down against an environment that is no longer
+// the one it ran in, which hides leaks instead of catching them. Every suite
+// here therefore calls `cleanup()` itself as the first statement of its own
+// `afterEach`; this covers any file that forgets to.
+afterEach(() => {
+  cleanup();
+  resetMediaQueries();
+  resetElementRects();
+  setVisibilityState("visible");
+  resetDomStorage();
+});
+
+// ---------------------------------------------------------------------------
+// window.matchMedia
+// ---------------------------------------------------------------------------
+//
+// jsdom ships NO `window.matchMedia` at all (it has no CSSOM media evaluation),
+// so `Workbench`'s breakpoint effect returns on its `!window.matchMedia` guard
+// and the "widening past 900px closes the sheet" path can never execute. The
+// shim is a real listener-carrying MediaQueryList whose `matches` a test moves
+// with `setMediaQuery`, which is the only way to drive that path.
+
+type MediaChangeListener = (event: MediaQueryListEvent) => void;
+
+/** One `MediaQueryList` the shim has handed out, so `onchange` can be read. */
+interface FakeList {
+  onchange: MediaChangeListener | null;
+}
+
+interface FakeMediaQuery {
+  media: string;
+  matches: boolean;
+  listeners: Set<MediaChangeListener>;
+  /**
+   * A real `matchMedia` returns a NEW MediaQueryList per call, and each one
+   * carries its own `onchange`. Keeping them here is what lets `setMediaQuery`
+   * notify an `onchange` handler as a browser would — the shim advertises the
+   * property, so it has to honour it.
+   */
+  lists: Set<FakeList>;
+  /** Has anything actually called `matchMedia(query)` for this string? */
+  observed: boolean;
+}
+
+const mediaQueries = new Map<string, FakeMediaQuery>();
+
+function mediaQuery(query: string): FakeMediaQuery {
+  let entry = mediaQueries.get(query);
+  if (!entry) {
+    // Default `false`: the narrow viewport, which is the only width at which
+    // the sheet exists at all, so a test that never touches this gets the
+    // breakpoint the sheet behaviours are about.
+    entry = {
+      media: query,
+      matches: false,
+      listeners: new Set(),
+      lists: new Set(),
+      observed: false,
+    };
+    mediaQueries.set(query, entry);
+  }
+  return entry;
+}
+
+Object.defineProperty(window, "matchMedia", {
+  configurable: true,
+  writable: true,
+  value: (query: string): MediaQueryList => {
+    const entry = mediaQuery(query);
+    entry.observed = true;
+    const list: FakeList = {
+      onchange: null,
+      get media() {
+        return entry.media;
+      },
+      get matches() {
+        return entry.matches;
+      },
+      addEventListener: (type: string, listener: MediaChangeListener) => {
+        if (type === "change") entry.listeners.add(listener);
+      },
+      removeEventListener: (type: string, listener: MediaChangeListener) => {
+        if (type === "change") entry.listeners.delete(listener);
+      },
+      // The legacy pair, so a component using either API works against the shim.
+      addListener: (listener: MediaChangeListener) => entry.listeners.add(listener),
+      removeListener: (listener: MediaChangeListener) => entry.listeners.delete(listener),
+      dispatchEvent: () => true,
+    } as FakeList;
+    entry.lists.add(list);
+    return list as unknown as MediaQueryList;
+  },
+});
+
+/**
+ * Move a media query and notify every listener registered against it.
+ *
+ * Throws when nothing under test has asked for this query. A test drives a
+ * breakpoint by repeating the query string the component uses (they are
+ * module-private, so there is nothing to import), and `mediaQuery()` mints an
+ * entry for whatever string it is handed — so a typo, or a query the component
+ * has since renamed, would move a registry entry nobody listens to and pass as
+ * a silent no-op. Refusing is the difference between a red test naming the
+ * query and a green one asserting nothing.
+ */
+export function setMediaQuery(query: string, matches: boolean): void {
+  const entry = mediaQuery(query);
+  if (!entry.observed) {
+    throw new Error(
+      `setMediaQuery("${query}"): nothing has called matchMedia() with this ` +
+        `query, so moving it would notify no one. Render the component first, ` +
+        `and check the query string still matches the one it uses.`,
+    );
+  }
+  entry.matches = matches;
+  const event = { matches, media: query } as MediaQueryListEvent;
+  for (const listener of [...entry.listeners]) listener(event);
+  for (const list of [...entry.lists]) list.onchange?.(event);
+}
+
+/**
+ * Return every query to its default and drop its listeners, so files cannot
+ * leak state into each other.
+ *
+ * Each entry is reset IN PLACE rather than dropped from the map: a component
+ * that outlives the reset still holds the `MediaQueryList` this shim handed it,
+ * and clearing the map would mint a fresh entry on the next `setMediaQuery` —
+ * silently moving a query nothing is listening to.
+ */
+export function resetMediaQueries(): void {
+  for (const entry of mediaQueries.values()) {
+    entry.matches = false;
+    entry.listeners.clear();
+    entry.lists.clear();
+    // The next file has to ask for the query itself, or `setMediaQuery` would
+    // accept a string only some earlier file ever used.
+    entry.observed = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTMLElement.prototype.offsetParent
+// ---------------------------------------------------------------------------
+//
+// jsdom has no layout engine, so `offsetParent` is undefined for every element.
+// `Workbench`'s focus-restore guard is `if (trigger?.offsetParent) trigger.focus()`
+// — with the real jsdom value that branch is dead, and "Esc returns focus to the
+// trigger" could never be observed. The approximation answers the only question
+// the guard asks: is this element actually in the rendered layout?
+
+/**
+ * FIDELITY LIMIT, and the most important one in this file. jsdom loads no
+ * stylesheet, so there is no computed style to consult: this sees ONLY the
+ * `hidden` attribute and an INLINE `display: none`, walking up the ancestor
+ * chain. An element hidden by a CSS class or a media query — which is how the
+ * real app hides the rail's collapse chevron below 900px — reads as VISIBLE
+ * here. A test that needs an element to count as hidden must hide it the two
+ * ways this function can actually observe.
+ */
+function displayHidden(element: HTMLElement): boolean {
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    if (node.hidden || node.style.display === "none") return true;
+  }
+  return false;
+}
+
+Object.defineProperty(HTMLElement.prototype, "offsetParent", {
+  configurable: true,
+  get(this: HTMLElement): Element | null {
+    if (!this.isConnected || displayHidden(this)) return null;
+    // `<body>` has no offset parent in a real browser either.
+    return this === document.body ? null : document.body;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Declared element rects
+// ---------------------------------------------------------------------------
+//
+// jsdom runs no layout, so every box is all-zeros. `Workbench`'s measure effect
+// is `setShellWidth(shell.getBoundingClientRect().width)` on `.wb-shell`, which
+// means an unaided mount reports `shellWidth === 0` — and `isSplitMeasured` is
+// `shellWidth > 0`, so the clamp, both divider ranges and both `showSplitHandle`
+// gates are short-circuited before they can decide anything. Not one
+// width-derived decision in the shell is reachable from a mounted test.
+//
+// A test therefore DECLARES the box it wants an element to report, and the
+// declaration is keyed by CSS SELECTOR rather than by element. The decision
+// under test happens AT MOUNT: the measure effect runs before `render()` has
+// returned anything a test could hold, so an element-keyed registry could only
+// ever drive the resize path. `setElementRect(".wb-shell", { width: 1400 })`
+// before `render()` is what makes "mounted at 1400px" expressible at all.
+//
+// Unlike `setMediaQuery`, this does NOT refuse an unobserved declaration. A
+// selector matching nothing is inert by design — a test may declare a box for a
+// column that only some of its cases dock, and there is no equivalent of
+// `observed` to consult: `matches()` is asked per element per call, not once at
+// declaration time.
+
+/**
+ * A declared box, as a test states it. Only `width` is required because width is
+ * the only dimension any shell decision reads; the rest default to 0, which is
+ * what jsdom would have reported anyway.
+ *
+ * `width` has a shimmed sibling — `offsetWidth` answers it — and `height` and
+ * `top` deliberately do NOT. They are carried on the rect alone, so they reach
+ * `getBoundingClientRect()` and `getClientRects()` and nothing else: a test that
+ * declares a height and then reads `offsetHeight` still gets jsdom's 0. Nothing
+ * in the shell reads either, and a second shimmed accessor with no caller would
+ * be a fidelity claim this file cannot back.
+ */
+export interface DeclaredRect {
+  width: number;
+  height?: number;
+  left?: number;
+  top?: number;
+}
+
+const declaredRects = new Map<string, DOMRect>();
+const realGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+const realOffsetWidth = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "offsetWidth",
+);
+
+/**
+ * The box declared for this element, or `null` when no declaration matches.
+ *
+ * LAST MATCHING DECLARATION WINS — for two overlapping selectors as much as for
+ * one re-declared key. The loop does not stop at the first hit: a test that
+ * declares `.wb-shell` and then re-declares it, which is exactly how the resize
+ * path is driven, must get the second number. `Map` preserves insertion order
+ * and a re-`set` keeps the ORIGINAL position, so `setElementRect` deletes the
+ * key first — that is what keeps "last declared" and "last in iteration order"
+ * the same statement.
+ *
+ * A COPY, never the stored instance. `DOMRect`'s fields are writable, so handing
+ * back the registry's own object would let two matching elements share one box
+ * and let code under test corrupt a later read by assigning to `.width`.
+ */
+function declaredRect(element: Element): DOMRect | null {
+  let found: DOMRect | null = null;
+  for (const [selector, rect] of declaredRects) {
+    if (element.matches(selector)) found = rect;
+  }
+  return found ? DOMRect.fromRect(found) : null;
+}
+
+/**
+ * State the box an element reports, for elements matching `selector`.
+ *
+ * Declare BEFORE `render()` for anything a mount effect measures. And declare it
+ * PER TEST, or in a `beforeEach` — never in a `beforeAll`: the `afterEach` above
+ * empties the registry, so a declaration made once for a whole `describe` is
+ * gone from the second case onwards, and the first case passing is what makes
+ * that hard to see. The same reset is why no declaration outlives its file.
+ */
+export function setElementRect(selector: string, rect: DeclaredRect): void {
+  // Refuse a selector the engine cannot parse, in the spirit of
+  // `setMediaQuery`'s `observed` guard above. Left to `matches()`, the
+  // `SyntaxError` would surface from an unrelated element's box read in the
+  // middle of a render — a stack with nothing in it pointing at the typo. A
+  // selector that merely matches NOTHING is still accepted: it is inert by
+  // design, and there is no moment at which this could know.
+  try {
+    document.createDocumentFragment().querySelector(selector);
+  } catch {
+    throw new Error(
+      `setElementRect("${selector}"): not a valid CSS selector, so no element ` +
+        `could ever match it. Declare the box against a selector the element ` +
+        `actually carries (e.g. ".wb-shell").`,
+    );
+  }
+  // Delete-then-set, so re-declaring moves the key to the END of the iteration
+  // order and `declaredRect`'s "last wins" resolves to the newest statement.
+  declaredRects.delete(selector);
+  declaredRects.set(
+    selector,
+    new DOMRect(rect.left ?? 0, rect.top ?? 0, rect.width, rect.height ?? 0),
+  );
+}
+
+/** Empty the registry, so declarations cannot leak between files. */
+export function resetElementRects(): void {
+  declaredRects.clear();
+}
+
+// The three reads a declaration answers. Each one DELEGATES when nothing is
+// declared, so every suite written before this harness existed sees exactly the
+// environment it was written against: all-zeros boxes and a 1x1 placeholder.
+Element.prototype.getBoundingClientRect = function getBoundingClientRect(
+  this: Element,
+): DOMRect {
+  return declaredRect(this) ?? realGetBoundingClientRect.call(this);
+};
+
+Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+  configurable: true,
+  get(this: HTMLElement): number {
+    const rect = declaredRect(this);
+    if (rect) return rect.width;
+    // jsdom's own accessor, which answers 0 — restored by call rather than
+    // restated, so this stays right if jsdom ever grows a real one.
+    return (realOffsetWidth?.get?.call(this) as number | undefined) ?? 0;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// HTMLElement.prototype.getClientRects
+// ---------------------------------------------------------------------------
+//
+// Same missing layout engine: jsdom returns an EMPTY DOMRectList for every
+// element, including visible ones. `Workbench`'s sheet Tab cycle filters the
+// rail's controls with `item.getClientRects().length > 0`, so against real jsdom
+// the filtered list is always empty and the cycle returns before it can wrap —
+// the behaviour would be untestable rather than merely unverified.
+//
+// FIDELITY LIMIT: nothing here is measured. Every box is all-zeros — and this
+// list a fixed 1x1 placeholder — until a test DECLARES one with
+// `setElementRect`, and a declared box is a stated fact rather than a
+// measurement. So a declaration pins the shell's REACTION to a width ("at
+// 1000px the tree gives up its space first, and the separator announces the
+// range it was actually clamped to") and can never catch a CSS or layout
+// mistake: no stylesheet was applied, no track was resolved, and an element
+// whose real width the CSS would have made something else still reports what the
+// test said. The NUMBERS themselves stay `workbench-split.test.ts`'s, where they
+// are executed as rules against the same stylesheet the browser gets.
+
+HTMLElement.prototype.getClientRects = function getClientRects(
+  this: HTMLElement,
+): DOMRectList {
+  // Visibility still gates the list — the Tab cycle's whole question is "is this
+  // control on screen", and a declared box must not smuggle a hidden element
+  // back into it.
+  const visible = this.isConnected && !displayHidden(this);
+  const declared = visible ? declaredRect(this) : null;
+  const rects = visible ? [declared ?? new DOMRect(0, 0, 1, 1)] : [];
+  return Object.assign(rects, {
+    item: (index: number): DOMRect | null => rects[index] ?? null,
+  }) as unknown as DOMRectList;
+};
+
+// ---------------------------------------------------------------------------
+// Element.prototype.scrollIntoView
+// ---------------------------------------------------------------------------
+//
+// Same missing layout engine once more: jsdom implements no scrolling at all
+// and ships NO `scrollIntoView`, so calling it is a `TypeError` rather than a
+// no-op. `Workbench`'s narrow-width reveal calls it on the docked Preview, and
+// without a shim the only way to keep the suite green would be to delete the
+// call or wrap it in a capability test — i.e. to reshape the component so it
+// stops asking the platform, which is the one thing this file exists to avoid.
+//
+// It is deliberately a `vi.fn`-able plain method rather than a recorder: a test
+// that wants to observe the call spies on it (`vi.spyOn(Element.prototype,
+// "scrollIntoView")`) and gets both the arguments and a per-test reset.
+//
+// FIDELITY LIMIT: it scrolls nothing, because there is nothing to scroll.
+// `scrollTop`, `scrollY` and every rect stay at zero afterwards, so "the column
+// is now visible" is not observable here — only that the shell asked for it.
+// Whether the CSS actually leaves somewhere to scroll TO is pinned as a rule in
+// the stylesheet scan, not here.
+Element.prototype.scrollIntoView = function scrollIntoView(): void {};
+
+// ---------------------------------------------------------------------------
+// document.visibilityState
+// ---------------------------------------------------------------------------
+//
+// jsdom's `visibilityState` is a read-only accessor pinned to "visible", and
+// both `DataVersionWatcher` and `useSidecarStatus` branch on it at mount and on
+// every `visibilitychange`. Redefining it on the document instance is what lets
+// a test mount into a hidden tab at all.
+
+/** Set the reported visibility WITHOUT firing an event (for state at mount). */
+export function setVisibilityState(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  // `document.hidden` is the other half of the same fact, and jsdom pins it to
+  // `false` independently. Both components under test happen to read
+  // `visibilityState`, so leaving this behind would pass today and quietly
+  // assert nothing the moment a component reads the equally idiomatic
+  // `document.hidden` — a "does not poll while hidden" test that never puts the
+  // tab in the background.
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => state !== "visible",
+  });
+}
+
+/** Set the reported visibility AND fire `visibilitychange`, as a browser does. */
+export function fireVisibilityChange(state: DocumentVisibilityState): void {
+  setVisibilityState(state);
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+// ---------------------------------------------------------------------------
+// window.localStorage / sessionStorage
+// ---------------------------------------------------------------------------
+//
+// jsdom 30 implements Storage. Node 26.8 also ships a `globalThis.localStorage`
+// getter, and that getter wins: without `--localstorage-file` it returns
+// `undefined` and prints `ExperimentalWarning: localStorage is not available`.
+// The getter is on the realm, not on jsdom's window prototype, so constructing
+// a JSDOM directly still works — vitest's `environment: "jsdom"` is what
+// exposes the Node one as `window.localStorage`. Every mounted suite that
+// calls `window.localStorage.clear()` then dies before asserting anything.
+//
+// The descriptor is `configurable: true` (probed on this Node), so we can
+// replace it. We define the same Storage instance on `window` AND `globalThis`
+// because some suites read one and some the other, and a node-project file
+// that stubs `globalThis.window` must still be able to redefine it
+// (`configurable: true`).
+
+class MemoryStorage implements Storage {
+  #map = new Map<string, string>();
+
+  get length(): number {
+    return this.#map.size;
+  }
+
+  clear(): void {
+    this.#map.clear();
+  }
+
+  getItem(key: string): string | null {
+    const name = String(key);
+    return this.#map.has(name) ? this.#map.get(name)! : null;
+  }
+
+  key(index: number): string | null {
+    if (!Number.isInteger(index) || index < 0 || index >= this.#map.size) {
+      return null;
+    }
+    return [...this.#map.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.#map.delete(String(key));
+  }
+
+  setItem(key: string, value: string): void {
+    this.#map.set(String(key), String(value));
+  }
+}
+
+const localStorageShim = new MemoryStorage();
+const sessionStorageShim = new MemoryStorage();
+
+function defineStorage(
+  target: object,
+  name: "localStorage" | "sessionStorage",
+  storage: Storage,
+): void {
+  Object.defineProperty(target, name, {
+    configurable: true,
+    enumerable: true,
+    get: () => storage,
+  });
+}
+
+defineStorage(window, "localStorage", localStorageShim);
+defineStorage(window, "sessionStorage", sessionStorageShim);
+defineStorage(globalThis, "localStorage", localStorageShim);
+defineStorage(globalThis, "sessionStorage", sessionStorageShim);
+
+/** Empty both stores, so one file cannot leak keys into the next. */
+export function resetDomStorage(): void {
+  localStorageShim.clear();
+  sessionStorageShim.clear();
+}

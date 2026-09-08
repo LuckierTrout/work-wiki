@@ -1,0 +1,3759 @@
+/**
+ * The Workbench Settings surface's vocabulary and every decision it makes.
+ *
+ * Pure and client-safe, the same posture as `workbench-modes.ts` (vocabulary +
+ * copy) and `workbench-preview.ts` (decisions + one fetch/save client taking an
+ * injectable `fetchImpl`): the route imports it on the server, `SettingsCanvas`
+ * imports it in the browser, and the node suite EXECUTES it.
+ *
+ * That last part is the whole reason the module exists. That suite is vitest's
+ * `node` project (`environment: "node"`, `*.test.ts`) — it mounts nothing and
+ * loads no testing-library — so any rule that lives inside a React effect can
+ * only ever be grepped for there. "Which categories exist", "may vector search
+ * be enabled", "what does Save actually send", and "which sentence does a
+ * rejected save show" are exactly the rules a rewrite keeps the wording of
+ * while changing the behaviour, so all four are functions here rather than
+ * branches typed into JSX.
+ *
+ * It restates no provider list: {@link PROVIDER_INFO} and
+ * {@link EMBEDDING_PROVIDERS} come from `providers.ts`, which is already
+ * client-safe by its own header comment.
+ */
+
+import {
+  EMBEDDING_PROVIDERS,
+  PROVIDER_INFO,
+  WORKERS_AI_MODEL_PREFIX,
+  WORKERS_AI_EMBEDDING_MODEL_IDS,
+  embeddingModelMatchesProvider,
+  embeddingProviderLabel,
+  isEmbeddingProvider,
+  VALID_PROVIDERS,
+} from "./providers";
+import type { EmbeddingProvider, ProviderValue } from "./providers";
+import type { LoopbackTokenSource } from "./v1-contract";
+import {
+  refusedWriteFailure,
+  thrownWriteFailure,
+  unconfirmedCause,
+  type WriteFailure,
+} from "./workbench-request";
+import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
+
+// ---------------------------------------------------------------------------
+// The category vocabulary
+// ---------------------------------------------------------------------------
+
+export type SettingsCategoryId =
+  | "general"
+  | "llm-models"
+  | "embeddings"
+  | "intake"
+  | "mineru"
+  | "external-sources"
+  | "api-mcp"
+  | "interface"
+  | "about";
+
+export interface SettingsCategory {
+  id: SettingsCategoryId;
+  /** Nav row text, the detail heading, and the half of the announcement that moves. */
+  label: string;
+  /**
+   * The one muted sentence a category with no fields yet shows, or `null` when
+   * the category has controls. A listed-but-unbuilt category renders exactly one
+   * sentence — no illustration, no emoji, no encouragement (UX-DR15 / UX-DR23) —
+   * because a nav row that rendered nothing would be a dead link, and one that
+   * rendered a stub would be a lie about what works.
+   */
+  pending: string | null;
+}
+
+/**
+ * Nav order, top → bottom. EVERY category carries content now: Story 1.9 built
+ * six, Epic 7's Stories 7.5 / 7.2 built Intake and MinerU PDF, and Story 8.1
+ * built API + MCP — which was the last `pending` one.
+ *
+ * `pending` STAYS in the type and in {@link SettingsCategory}. It is the rule
+ * for a listed-but-unbuilt category (one muted sentence, no stub), and deleting
+ * the mechanism because nothing uses it today would mean the next category
+ * added ahead of its controls either renders nothing (a dead nav row) or
+ * renders a stub (a lie about what works).
+ */
+export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
+  { id: "general", label: "General", pending: null },
+  { id: "llm-models", label: "LLM Models", pending: null },
+  { id: "embeddings", label: "Embeddings", pending: null },
+  { id: "intake", label: "Intake", pending: null },
+  { id: "mineru", label: "MinerU PDF", pending: null },
+  { id: "external-sources", label: "External Sources", pending: null },
+  // Story 8.1. The sentence this used to carry — "Local API and MCP settings
+  // arrive with the sidecar." — was true for exactly as long as the pane had no
+  // enable switch, no token and no copyable MCP config. It has all three now,
+  // so keeping the sentence would be the lie in the other direction.
+  { id: "api-mcp", label: "API + MCP", pending: null },
+  { id: "interface", label: "Interface", pending: null },
+  { id: "about", label: "About", pending: null },
+] as const;
+
+export const DEFAULT_SETTINGS_CATEGORY: SettingsCategoryId = "general";
+
+export function settingsCategory(id: SettingsCategoryId): SettingsCategory {
+  // The union guarantees a hit; the fallback keeps the return type honest.
+  return SETTINGS_CATEGORIES.find((category) => category.id === id) ?? SETTINGS_CATEGORIES[0];
+}
+
+const SETTINGS_CATEGORY_IDS: ReadonlySet<string> = new Set(
+  SETTINGS_CATEGORIES.map((category) => category.id),
+);
+
+/**
+ * Narrows an untrusted value (the `?category=` param, DW-514) to a real
+ * category id.
+ *
+ * HERE rather than in `workbench-url.ts`, and shaped exactly like
+ * `isWorkbenchModeId`: this module owns the vocabulary, so the list has one
+ * definition and a category added above is narrowed by that edit alone. A
+ * validator written beside the reader would be a second copy of
+ * {@link SETTINGS_CATEGORIES} that nothing forces to agree with this one.
+ */
+export function isSettingsCategoryId(value: unknown): value is SettingsCategoryId {
+  return typeof value === "string" && SETTINGS_CATEGORY_IDS.has(value);
+}
+
+/**
+ * What the shell's live region says when Settings opens or the category moves
+ * (EXPERIENCE.md:175 — a surface change announces the surface name).
+ */
+export function settingsAnnouncement(label: string): string {
+  return `Settings, ${label}`;
+}
+
+// ---------------------------------------------------------------------------
+// Copy — every user-visible sentence the surface can show
+// ---------------------------------------------------------------------------
+
+/** The rail control and the surface's own name. */
+export const SETTINGS_LABEL = "Settings";
+
+/**
+ * WHICH Settings surface a sentence is being written for (DW-327, DW-329).
+ *
+ * There are two, and they are not the same shape. `"workbench"` is the
+ * {@link SETTINGS_CATEGORIES} surface, which renders a control for every field
+ * this module knows about — the DEFAULT everywhere, so nothing that does not
+ * ask for the other one changes. `"flat"` is the legacy `/settings` page, which
+ * renders the primary provider/model pair and the embedding MODEL box and
+ * nothing else: no embedding provider, no embedding endpoint, no embedding key,
+ * and no vector switch.
+ *
+ * It selects only WHICH SENTENCE a state produces, never WHETHER that state is
+ * a refusal — {@link canEnableVectorSearch} stays the one rule both surfaces
+ * answer identically. A sentence that told the owner of the flat page to flip a
+ * switch that page does not render would name an action they cannot take from
+ * where they are standing, which is the same dead end DW-303 closed for the
+ * legs.
+ */
+export type SettingsSurface = "workbench" | "flat";
+
+/**
+ * "Workbench Settings → LLM Models" — where a sentence rendered on the FLAT
+ * page sends an owner, which is a different surface from the one they are on.
+ *
+ * NAMED IN FULL, and that is the whole point. `SETTINGS_CATEGORIES` is the nav
+ * of the Workbench's `SettingsCanvas` and exists nowhere else: the app's own
+ * "Settings" nav row (`src/components/NavHeader.tsx:197`, `:322`) routes to
+ * `/settings`, the legacy flat page, whose `<h1>` also reads "Settings". So a
+ * bare "Settings → LLM Models" rendered on `/settings` reads as a path INSIDE
+ * the page the owner is already standing on — a dead end of exactly the kind
+ * DW-329 exists to close, rather than a way out of one. The surface word is
+ * what disambiguates the two.
+ *
+ * Only that word is typed. The CATEGORY half stays derived from
+ * {@link settingsCategory}, so the nav row, the detail heading and every
+ * pointer at that category remain the same one string and renaming a category
+ * cannot leave a sentence naming something the nav no longer shows.
+ *
+ * `src/lib/llm.ts` keeps its shorter "Settings → LLM Models" and now composes it
+ * HERE (DW-369), by passing {@link SETTINGS_LABEL} as `surfaceLabel`. The
+ * SURFACE half still differs on purpose — those are RUNTIME errors, raised from
+ * the LLM call rather than rendered on a Settings page, so the ambiguity the
+ * full name resolves does not arise there and the two are deliberately not the
+ * same string. The CATEGORY half is no longer hand-typed anywhere: llm.ts used
+ * to spell "LLM Models" in five throw sites, so renaming the category left five
+ * runtime messages naming a nav row that no longer exists. A label parameter
+ * rather than a second exported function, because the two forms differ in
+ * exactly one leading word and splitting them would reintroduce the drift this
+ * helper exists to prevent.
+ *
+ * `surfaceLabel` defaults to {@link WORKBENCH_SETTINGS_LABEL}, which is declared
+ * BELOW this function: a default parameter is evaluated at call time, and the
+ * only module-level call (`SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY`) runs after that
+ * declaration.
+ */
+export function settingsPointer(
+  id: SettingsCategoryId,
+  surfaceLabel: string = WORKBENCH_SETTINGS_LABEL,
+): string {
+  return `${surfaceLabel} → ${settingsCategory(id).label}`;
+}
+
+/**
+ * The OTHER Settings surface, by the name the flat page has to call it.
+ *
+ * Composed from {@link SETTINGS_LABEL} rather than spelled out, so the two
+ * surfaces cannot end up with different words for "Settings".
+ */
+const WORKBENCH_SETTINGS_LABEL = `Workbench ${SETTINGS_LABEL}`;
+
+/** The sticky save bar's standing sentence (UX-DR14 / `epic-1-context.md:53`). */
+export const SETTINGS_SAVE_BAR_COPY = "Changes apply after saving";
+
+export const SETTINGS_SAVE_COPY = "Save";
+export const SETTINGS_SAVING_COPY = "Saving…";
+export const SETTINGS_LOADING_COPY = "Loading…";
+
+/**
+ * The read failed or was refused. Deliberately identical for "gated out" and
+ * "absent": the route answers a non-owner with the same 404 it answers a missing
+ * resource with, so the surface must not be able to tell the owner which it was.
+ */
+export const SETTINGS_LOAD_FAILED_COPY = "Settings couldn’t be loaded.";
+
+/**
+ * The save was refused or never landed. Used only as the FALLBACK — a sentence
+ * the server supplied is always preferred, because only the server knows whether
+ * it was a 403, a 404 or a validation refusal. A THROWN error never reaches the
+ * owner: `Failed to fetch` and `signal timed out` are transport vocabulary that
+ * no Copy table contains and that names the mechanism rather than the failure.
+ */
+export const SETTINGS_SAVE_FAILED_COPY = "Settings couldn’t be saved.";
+
+/**
+ * The `"unreadable"` verdict's own sentence (DW-554).
+ *
+ * A 2xx whose body yielded no payload. THREE VERDICTS, THREE SENTENCES: this
+ * one is neither {@link SETTINGS_SAVE_FAILED_COPY}, which states outright that
+ * nothing was stored, nor `unconfirmedWriteMessage`, which says nothing came
+ * back at all.
+ *
+ * The fallback used to stand here, and it was the ONE claim this branch is not
+ * in a position to make. `saveWorkbenchSettings` clears the held version on
+ * this verdict precisely BECAUSE the route may have run and moved the stored
+ * config past it — so the same result cannot also tell the owner the save
+ * failed. Something answered; what it answered with had no settings in it.
+ *
+ * "Reload to see what landed" is the only action that resolves it, and it is
+ * honest either way: the surface cannot say whether the patch is stored, and a
+ * fresh read is what would tell the owner. No transport vocabulary — no Copy
+ * table contains any, and naming a status line or a parse would describe the
+ * mechanism rather than what the owner now does not know.
+ */
+export const SETTINGS_SAVE_UNREADABLE_COPY =
+  "The answer came back with nothing to show, so the outcome is unknown. " +
+  "Reload to see what landed.";
+
+/**
+ * The ACTION phrase, for the one sentence `workbench-request` composes when the
+ * save's outcome is unknown (DW-376).
+ *
+ * A phrase and not a sentence: the fallback above and the unknown-outcome
+ * sentence are two renderings of one fact, and passing both from the surface is
+ * where they would start to disagree. The fallback claims the save did NOT
+ * land, which is exactly the claim an unknown outcome cannot make.
+ */
+export const SETTINGS_SAVE_ACTION = "save these settings";
+
+/** The polite status line after a landed save. */
+export const SETTINGS_SAVED_COPY = "Settings saved.";
+
+/**
+ * `YOPEDIA_READONLY=1`: the store refuses writes deployment-wide.
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.settingsSave` — what
+ * `PUT /api/settings` answers — and character-identical to it, pinned by
+ * `read-only-copy-parity.test.ts`. It lives here rather than beside a component
+ * because it has TWO consumers, the Workbench save bar and the `/settings`
+ * banner, and this module is already client-safe and already owns the rest of
+ * that surface's copy; a constant beside either one would be a second owner of
+ * one sentence (DW-387).
+ *
+ * `PUT /api/workspace-profile` is a DIFFERENT door and keeps its own literal —
+ * do not assume a reword here is a reword there.
+ */
+export const SETTINGS_READ_ONLY_COPY =
+  "Settings cannot be changed while this deployment is read-only.";
+
+/**
+ * A save is in progress, so the form is inert (DW-67/DW-626).
+ *
+ * The THIRD state of the save bar's standing sentence, and the same job
+ * {@link SETTINGS_READ_ONLY_COPY} does for a read-only deployment: it is the
+ * only place the refusal is stated at all, and every control the freeze refuses
+ * appends it to its own description. Without it a `readOnly` box and an
+ * `aria-disabled` select announce as "read-only" and "dimmed" with no reason,
+ * for a window that can run to two `REQUEST_TIMEOUT_MS` deadlines.
+ *
+ * WHY the freeze exists rather than a merge: `save` captures `draftRef.current`
+ * BEFORE the DW-555 recovery read and the PUT, and a landed save re-seeds the
+ * whole draft from the answered payload. Anything typed in between is neither
+ * sent nor kept, so the honest surface is one that will not take the keystroke —
+ * and says so — rather than one that accepts it and drops it.
+ *
+ * Shaped like the read-only sentence deliberately: they are read in the same
+ * place, by the same controls, and the owner should not have to learn two
+ * grammars to tell "this deployment refuses writes" from "this moment does".
+ */
+export const SETTINGS_SAVING_NOTE_COPY =
+  "Settings cannot be changed while a save is in progress.";
+
+/** Secret fields: what the owner sees instead of a key, and how to drop one. */
+export const SETTINGS_KEY_STORED_COPY = "A key is stored.";
+export const SETTINGS_KEY_ABSENT_COPY = "No key is stored.";
+export const SETTINGS_KEY_REMOVE_COPY = "Remove";
+export const SETTINGS_KEY_REMOVE_PENDING_COPY = "The stored key is removed on save.";
+export const SETTINGS_KEY_UNDO_COPY = "Keep the stored key";
+/**
+ * A password field that shows nothing cannot tell "leave it alone" from "delete
+ * it", so the placeholder says which of the two an empty box means.
+ */
+export const SETTINGS_KEY_PLACEHOLDER = "Leave blank to keep the stored key";
+
+/** General points at the Schema editor; it writes nothing itself (DW-58). */
+export const SETTINGS_GENERAL_SCHEMA_COPY =
+  "Open Schema in the Wiki Files Preview. Its Page conventions guide generated pages.";
+
+export const SETTINGS_GENERAL_PURPOSE_COPY =
+  "Open Purpose in the Wiki Files Preview. It is the canonical owner-authored guidance for new generated work.";
+
+export const SETTINGS_GENERAL_NO_WIKI_COPY =
+  "Create or select a Wiki before opening its Purpose or Schema.";
+
+/** The one workload-inheritance sentence, shown under both model pickers. */
+export const SETTINGS_MODEL_INHERIT_COPY =
+  "Leave the provider unset to inherit the primary provider and model.";
+
+/** The Custom provider needs an endpoint before it can be constructed. */
+export const SETTINGS_CUSTOM_ENDPOINT_COPY =
+  "Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key below.";
+
+/**
+ * The same fact, said on the surface that has no such fields (DW-61).
+ *
+ * The flat `/settings` page offers `Custom` in its provider picker and renders
+ * neither a base URL nor an API key anywhere, so a save made there stored a
+ * provider `src/lib/llm.ts` then refused to construct — three runtime errors
+ * pointing at fields the owner had just failed to find. The picker keeps the
+ * option (the flat page is where the primary provider is chosen, and removing
+ * it would make an already-stored `custom` unrepresentable in its own picker);
+ * what changes is that the page now says WHERE the other two halves live,
+ * instead of only saying so once the next LLM call has already failed.
+ *
+ * "below" becomes the pointer, and the pointer is the SAME destination
+ * `src/lib/llm.ts:287-301` names — one place to go, whichever half of the
+ * product told you to go there. It DESCRIBES: no `aria-invalid`, and the save
+ * is not blocked (the DW-274 override note's convention).
+ */
+export const SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY = `Custom uses an OpenAI-compatible endpoint. Set the base URL and the API key in ${settingsPointer("llm-models")}.`;
+
+/**
+ * The ONE name this module gives `workers-ai` (DW-222).
+ *
+ * The picker renders `embeddingProviderLabel(option)`, so a refusal that typed
+ * the name instead described the same selection under a second name on the same
+ * screen. Deriving it means the two cannot drift.
+ */
+const WORKERS_AI_LABEL = embeddingProviderLabel("workers-ai");
+
+/**
+ * Shown when the control is ENABLED. When it is not, the sentence is
+ * {@link vectorSearchMissingCopy}'s, which names the legs the SELECTED provider
+ * is actually missing — Ollama and Workers AI supply their own transport, so
+ * demanding an endpoint and a key from them would send the owner looking for a
+ * credential that does not exist.
+ */
+export const SETTINGS_VECTOR_HINT_COPY =
+  "Vector search is off by default. Keyword search works without it.";
+
+/**
+ * Why the embedding provider is not optional here even though embeddings
+ * themselves auto-detect one. See {@link canEnableVectorSearch}.
+ */
+export const SETTINGS_VECTOR_PROVIDER_COPY =
+  "Vector search needs the embedding provider chosen explicitly, not auto-detected.";
+
+/**
+ * The second sentence of a model refusal the ENVIRONMENT owns (DW-218).
+ *
+ * `EMBEDDING_MODEL` wins over anything typed or stored in all three feeders, so
+ * a refusal that named only the namespace sent the owner to a box whose value
+ * the gate never reads: they type a supported `@cf/` id, save successfully, and
+ * the switch still will not turn on. Naming the VARIABLE is the only form of
+ * this sentence an owner can act on. It NAMES the Embedding model box rather
+ * than saying "here", because it rides on the CHECKBOX's sentence rather than on
+ * the model field's — the model row already carries
+ * {@link settingsEnvOverrideCopy} saying where that value comes from, and "here"
+ * read from the checkbox would point at the checkbox.
+ */
+export const SETTINGS_VECTOR_ENV_MODEL_NOTE =
+  "That value comes from EMBEDDING_MODEL, so a model typed in the Embedding model box cannot lift this until that variable is unset.";
+
+/**
+ * The second sentence of the Workers AI BINDING refusal (DW-225).
+ *
+ * `workers-ai` is self-transporting — it needs no endpoint and no key — but the
+ * transport it carries is the Cloudflare `AI` binding, which exists only on the
+ * Workers runtime. Off Workers `resolveEmbeddingProvider` returns `null` for
+ * it forever, so a switch the gate let the owner turn on would embed nothing,
+ * silently, on every Docker deployment. The sentence names the binding and the
+ * two ways out.
+ */
+export const SETTINGS_VECTOR_BINDING_NOTE = `${WORKERS_AI_LABEL} embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or choose another embedding provider.`;
+
+/**
+ * The same refusal where `EMBEDDING_PROVIDER` owns the selection (DW-281).
+ *
+ * {@link SETTINGS_VECTOR_BINDING_NOTE}'s second way out — "choose another
+ * embedding provider" — is advice the owner CANNOT follow when the environment
+ * forces `workers-ai`: every feeder takes `EMBEDDING_PROVIDER` ahead of the
+ * stored selection, so a different provider picked in the box changes nothing
+ * and the switch stays refused. Worse, this note rides on the provider SELECT
+ * itself, so the sentence would be telling the control to do the one thing it
+ * cannot. Naming the VARIABLE is what turns that way out back into an action:
+ * unset it FIRST, and then the select works again.
+ *
+ * What the sentence deliberately does NOT do is explain that the variable wins
+ * over the box — {@link settingsEnvProviderPinCopy} says exactly that, and it is
+ * already the provider row's hint whenever this note can appear at all (this
+ * wording is selected by an env-owned provider, which is the same state that
+ * pins the row), so the two ride on the same control and the owner would hear
+ * one fact twice. That is the same duplication the `"model"` exception in
+ * {@link vectorSearchFieldIssue} exists to prevent.
+ */
+export const SETTINGS_VECTOR_BINDING_ENV_NOTE = `${WORKERS_AI_LABEL} embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to choose another embedding provider.`;
+
+/**
+ * The environment's overrides of the FREE-TEXT boxes, said out loud.
+ *
+ * `EMBEDDING_MODEL` and `LLM_CUSTOM_BASE_URL` win at runtime and a save cannot
+ * move them, so without these an owner reads an EMPTY box beside a control that
+ * is somehow already satisfied, types a value into it, saves successfully, and
+ * nothing changes. Neither box is disabled, because its stored value is still
+ * what applies if the variable is ever unset and typing it now is a useful
+ * thing to do — which is exactly what the second half of this sentence
+ * promises, and why the sentence can carry the whole explanation on its own.
+ *
+ * `EMBEDDING_PROVIDER` is deliberately NOT one of these kinds (DW-507). Its row
+ * is a SELECT that the pin makes `aria-disabled` (DW-398), and the promise
+ * "what you save here applies only once that variable is unset" is one that row
+ * cannot keep: the pin refuses the save, and so does `PUT /api/settings`
+ * (DW-510). {@link settingsEnvProviderPinCopy} is that row's sentence instead —
+ * same first half, an honest second half — and
+ * {@link settingsEnvProviderInvalidCopy} covers the value this map could never
+ * have described at all.
+ *
+ * ONE sentence for both (DW-71). The endpoint's story is the embedding model's
+ * story with a different variable name: `getCustomBaseUrl()` takes
+ * `LLM_CUSTOM_BASE_URL` ahead of the store exactly as the embedding resolvers
+ * take `EMBEDDING_MODEL`, and the Custom base URL box shows the STORE. A second
+ * wording for the same fact would be two sentences to keep in step.
+ */
+const ENV_OVERRIDE_VARIABLES = {
+  model: "EMBEDDING_MODEL",
+  customBaseUrl: "LLM_CUSTOM_BASE_URL",
+} as const;
+
+export function settingsEnvOverrideCopy(
+  kind: keyof typeof ENV_OVERRIDE_VARIABLES,
+  value: string,
+): string {
+  const variable = ENV_OVERRIDE_VARIABLES[kind];
+  return `The environment sets ${variable}=${value}, and that wins at runtime. What you save here applies only once that variable is unset.`;
+}
+
+/** The one variable name the three sentences below are all about. */
+const EMBEDDING_PROVIDER_ENV = "EMBEDDING_PROVIDER";
+
+/**
+ * The PINNED embedding provider row's hint (DW-507).
+ *
+ * It shares its first half with {@link settingsEnvOverrideCopy} — one wording
+ * for "the environment set this and it wins at runtime" across every row that
+ * has to say it — and then tells the truth the shared second half cannot: this
+ * box is FIXED, not queued. Under the pin the select refuses the change
+ * (DW-398), and since DW-510 so does `PUT /api/settings`, so promising that
+ * what you save here applies later is promising a save that will not happen.
+ *
+ * It still says the variable wins, which is what
+ * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} and {@link NOTE_ON_OWNING_ROW} — the
+ * set {@link vectorSearchFieldIssue} suppresses notes by, holding `model` and,
+ * since DW-636, `provider` — both lean on to avoid saying it a second time.
+ */
+export function settingsEnvProviderPinCopy(value: string): string {
+  return `The environment sets ${EMBEDDING_PROVIDER_ENV}=${value}, and that wins at runtime. This box is fixed until that variable is unset.`;
+}
+
+/**
+ * `EMBEDDING_PROVIDER` names something that cannot embed (DW-508).
+ *
+ * `resolveEmbeddingProvider` refuses an unsupported override outright and
+ * `envEmbeddingProviderPair()` filters it to `null`, so before this sentence
+ * the owner's only signal was a server log: the row read as if no variable
+ * were set at all while nothing embedded. The sentence QUOTES the rejected
+ * value —
+ * a typo is invisible otherwise — and points at the environment, which is the
+ * only place it can be fixed.
+ *
+ * It describes WITHOUT pinning: the select stays editable on junk, per DW-398's
+ * boundary, because an unsupported value names no vendor whose credential a
+ * move could sabotage and the store is precisely what applies again the moment
+ * the variable is corrected.
+ */
+export function settingsEnvProviderInvalidCopy(value: string): string {
+  return `${EMBEDDING_PROVIDER_ENV} is set to unsupported value “${value}”. Nothing will embed until the environment is corrected.`;
+}
+
+/**
+ * The second sentence of a PROVIDER refusal the ENVIRONMENT owns (DW-636).
+ *
+ * The exact counterpart of {@link SETTINGS_VECTOR_ENV_MODEL_NOTE}, for the leg
+ * above it. `vectorSearchMissingLegs`' first leg returns on
+ * `!isEmbeddingProvider(v.provider)`, and where `providerOrigin` is `"env"` that
+ * value can only have come from `EMBEDDING_PROVIDER` — a FILTERED env provider
+ * always passes the predicate, so an env-owned provider leg is always a junk
+ * variable. Without this sentence the refusal read "Vector search needs an
+ * embedding provider … supply what is missing" on a deployment whose store held
+ * a complete, supported config: the only thing that could lift it was the
+ * variable, and the sentence named everything except the variable.
+ *
+ * It opens on "The provider" where the model note opens on "That value", and the
+ * difference is forced by the sentence each one RIDES ON. The model note follows
+ * a leg that quotes a wrong model id, so "that value" has something to point at;
+ * this one follows "Vector search needs an embedding provider before it can be
+ * turned on", which names an ABSENCE and offers no antecedent — "that value"
+ * there reads as a value the sentence never mentioned. Naming the provider makes
+ * the reference real without quoting the junk string a second time (the row's
+ * {@link settingsEnvProviderInvalidCopy} already quotes it).
+ *
+ * It NAMES the Embedding provider select rather than saying "here", for the same
+ * reason the model note does: it rides on the CHECKBOX's sentence, and "here"
+ * read from the checkbox would point at the checkbox. It says "unset or
+ * corrected" where the model note says only "unset", because an unsupported
+ * value is a typo as often as it is a decision — fixing the spelling is the
+ * likelier way out, and it is one the model note's variable does not have (any
+ * non-blank `EMBEDDING_MODEL` overrides).
+ *
+ * It does NOT restate "wins at runtime": on the provider ROW that fact is
+ * already carried by {@link settingsEnvProviderInvalidCopy}, which is why
+ * {@link vectorSearchFieldIssue} suppresses this note there.
+ */
+export const SETTINGS_VECTOR_PROVIDER_ENV_NOTE =
+  `The provider comes from ${EMBEDDING_PROVIDER_ENV}, so a provider chosen in the ` +
+  `Embedding provider select cannot lift this until that variable is unset or corrected.`;
+
+/**
+ * `PUT /api/settings` refuses to MOVE the embedding provider under the pin
+ * (DW-510).
+ *
+ * The select's pin is browser-side only, so a direct PUT, a stale tab or a CLI
+ * still reached the `embeddingProviderChanged` clear that deletes the stored
+ * embedding key and endpoint — the credential belonging to the very vendor the
+ * environment forces, destroyed by a request that could not change which vendor
+ * embeds. The route closes that bypass with this sentence.
+ *
+ * It names the VARIABLE **and its VALUE**, the same shape every other env
+ * sentence on this surface takes. The motivating case for the refusal is a
+ * STALE TAB: that owner's screen was rendered before the variable was set, so
+ * the row beside their select still reads
+ * {@link SETTINGS_VECTOR_PROVIDER_COPY} and this sentence is the ONLY place
+ * they learn the deployment is pinned — and "some variable is set" is not
+ * something they can act on, while "it is set to `workers-ai`" tells them both
+ * what is embedding and what unsetting would give back. A CLI caller is in the
+ * same position and has no row at all.
+ */
+export function settingsEnvProviderPinRefusalCopy(value: string): string {
+  return `The environment sets ${EMBEDDING_PROVIDER_ENV}=${value}, and that wins at runtime. The embedding provider cannot be changed until that variable is unset.`;
+}
+
+/**
+ * The MACHINE-READABLE name of the refusal above, on the wire (DW-628).
+ *
+ * `PUT /api/settings` sends it as `code` beside the `error` sentence, and it is
+ * the only refusal on this route that carries one. ADDITIVE, deliberately: the
+ * sentence is byte-identical to what it always was, so a client that ignores
+ * `code` — a stale tab, a CLI, any test stubbing the old body — behaves exactly
+ * as before, and {@link settingsRefusalPinsEmbeddingProvider} still answers off
+ * the sentence when no code arrives.
+ *
+ * A stable identifier and not a sentence: it exists so the browser can stop
+ * branching on English. Reword the copy and this keeps matching; that is the
+ * whole point of minting it.
+ */
+export const SETTINGS_ENV_PROVIDER_PIN_CODE = "embedding_provider_env_pinned";
+
+/**
+ * Is this refused save the env pin's? (DW-553, DW-628)
+ *
+ * TWO WAYS IN, and the CODE is the one to prefer.
+ * {@link SETTINGS_ENV_PROVIDER_PIN_CODE} is the fact the route states about
+ * itself, relayed verbatim by `saveWorkbenchSettings` and carrying no verdict
+ * meaning of its own — so a match on it survives any rewording of the copy.
+ *
+ * The SENTENCE stays a fallback rather than being retired, because a body
+ * without a code is a body this predicate still has to answer about: a tab
+ * loaded before the route learned to send one, and every existing client that
+ * stubs the old shape. That match is safe here, and only here, because the set
+ * is CLOSED AT BOTH ENDS. The route mints the sentence exclusively from
+ * `storedBefore.envEmbeddingProvider`, typed `EmbeddingProvider | null` and
+ * filtered through `isEmbeddingProvider` by `envEmbeddingProviderPair()` in
+ * `config.ts` — so every sentence the route can send is one of the four this
+ * function mints from {@link EMBEDDING_PROVIDERS} and compares against.
+ *
+ * EXACT EQUALITY over that enumeration, never a regex, a substring or a parse.
+ * A loose match would drag in {@link settingsEnvProviderPinCopy}, which shares
+ * the first half of the wording, and would go on matching a sentence somebody
+ * later rewrote into something this recovery is wrong for. Equality against a
+ * mint fails CLOSED: reword the copy with no code on the wire and the match
+ * simply stops, leaving the old behaviour rather than a re-seed nobody asked
+ * for.
+ *
+ * WHY THE SURFACE ASKS. The pin refuses a MOVE, and the draft that made the
+ * move has already had its endpoint and key blanked by
+ * {@link settingsDraftAfterEmbeddingProvider}. Without this, every retry
+ * re-sends the identical refused move for the rest of the session —
+ * {@link settingsDraftAfterEmbeddingPinRefusal} is the undo.
+ */
+export function settingsRefusalPinsEmbeddingProvider(refusal: {
+  message: string;
+  code?: string;
+}): boolean {
+  if (refusal.code === SETTINGS_ENV_PROVIDER_PIN_CODE) return true;
+  return EMBEDDING_PROVIDERS.some(
+    (provider) => settingsEnvProviderPinRefusalCopy(provider) === refusal.message,
+  );
+}
+
+/**
+ * Why an Ollama endpoint was thrown away — ONE sentence per source (DW-402).
+ *
+ * `getOllamaBaseUrl` refuses a value that is not an absolute `http(s)` URL and
+ * falls through to nothing, which is the honest resolution but a SILENT one:
+ * the only trace was a `logger.warn` line, so an owner who set
+ * `OLLAMA_BASE_URL=localhost:11434` read "no provider configured" beside a help
+ * panel advertising that very variable, and the settings page showed an empty
+ * endpoint box beside a `none` badge. Nothing on either surface said the value
+ * had been seen and rejected.
+ *
+ * So the sentence is a VALUE, minted here and used THREE ways: as the
+ * `warnOnceAbout` message, as `ProviderInfo.ollamaBaseUrlIssue` (the env leg)
+ * and as `EffectiveSettings.ollamaBaseUrlIssue` (the full ladder). One wording
+ * for the log and for both screens is what stops the server operator's line and
+ * the owner's line from drifting into two different explanations of one fact —
+ * the same reason {@link settingsEnvOverrideCopy} is one function for both of
+ * the free-text variables it covers.
+ *
+ * It lives HERE, not in `config.ts`, because two of the three readers are
+ * client components: this module is client-safe by its own header comment and
+ * `config.ts` is not, so importing the other way round would drag the config
+ * store into the browser bundle.
+ *
+ * WHAT TO SET INSTEAD is part of the sentence. "Not an absolute http(s) URL" is
+ * the rule, not the remedy, and the value that fails it is nearly always one
+ * scheme short — so the sentence shows the shape that would have been accepted
+ * rather than leaving the owner to infer it.
+ *
+ * THE EXAMPLE TRACKS `ProviderForm`'s PLACEHOLDER, which is the box this
+ * sentence renders directly beneath, and `README.md`'s provider table, which
+ * documents the same variable. Showing `http://localhost:11434` beside a field
+ * prompting `http://localhost:11434/api` would make the remedy and the example
+ * disagree about the path, on one screen, for one setting — so if that
+ * placeholder ever changes, this changes with it.
+ */
+export function ollamaBaseUrlRefusedCopy(
+  source: "env" | "config",
+  value: string,
+): string {
+  // The two sources are two different things to fix and the wording says which:
+  // the env leg names the VARIABLE, the store leg says "stored". Never both —
+  // `config.test.ts` partitions the warn lines on exactly those two tokens.
+  return source === "env"
+    ? `OLLAMA_BASE_URL is not an absolute http(s) URL (${value}), so it is ignored — set it to a full address such as http://localhost:11434/api.`
+    : `The stored Ollama endpoint is not an absolute http(s) URL (${value}), so it is ignored — save a full address such as http://localhost:11434/api.`;
+}
+
+/**
+ * What this deployment is EMBEDDING with, when that is not the model that is set
+ * (DW-274, DW-312).
+ *
+ * A DERIVED-SERVER fact, unlike everything else on this row: the environment
+ * sentence above says where a value came from, {@link vectorSearchFieldIssue}
+ * says why the vector switch will not turn on, and this says what the embed path
+ * is doing right now. All three can be true at once and each is a different
+ * question, so this composes with them rather than replacing either.
+ *
+ * NOT shared verbatim with `EmbeddingSettings.tsx`, which says the same thing on
+ * the flat `/settings` page. That one is JSX — a `<p>` beneath the field, with
+ * the model name in a `<span className="font-mono">` — and it can say "the model
+ * above" because it sits directly under a box that always shows the value it
+ * means. Here the sentence is a plain string joined into the row's own
+ * `aria-describedby` hint, after whatever else that hint already carries, and
+ * the box beside it shows the STORED model, which is EMPTY whenever
+ * `EMBEDDING_MODEL` owns the value. So this wording names "the model that is
+ * set" rather than pointing at a control, and carries no markup at all. Two
+ * surfaces, one fact, two sentences shaped for where they are read.
+ *
+ * What holds the WORDING together is
+ * `src/components/__tests__/embedding-substitution-copy-parity.test.tsx`
+ * (DW-336): it mounts the flat note, calls this function, asserts every SHARED
+ * clause against both, and compares them character-identical once "the model
+ * above" is normalized to "the model that is set" — with that one divergence
+ * pinned in both directions. It also pins the THIRD copy, `DEPLOY.md`'s block
+ * quote of this variant, against this function. Reword any of the three and it
+ * fails, which is what makes the duplication above safe to keep.
+ *
+ * What that suite does NOT hold is the render: it calls this function rather
+ * than mounting the canvas, so nothing there would fail if `SettingsCanvas.tsx`
+ * stopped joining the string into the model row's hint. That hop is pinned by
+ * `src/components/workbench/__tests__/settings-vector-namespace.test.tsx`,
+ * which restates the sentence by hand on purpose.
+ */
+export function settingsModelSubstitutedCopy(modelInEffect: string): string {
+  return (
+    `Not in effect. This deployment embeds with ${modelInEffect} — the ` +
+    "embedding provider cannot serve the model that is set, so it uses its own " +
+    "default instead. Vectors are tagged with the model that produced them, so " +
+    "an index built with a different model needs rebuilding."
+  );
+}
+
+/** Said where a key comes from the environment rather than from this store. */
+export function settingsEnvKeyCopy(providerName: string): string {
+  return `${providerName} supplies its API key from the environment; nothing needs to be stored here.`;
+}
+
+/**
+ * The two credentials whose env var the payload knows UNAMBIGUOUSLY (DW-66).
+ *
+ * {@link settingsEnvKeyCopy} is provider-shaped because the embedding key row
+ * genuinely has a vendor to name and several variables it could have come from
+ * — `envEmbeddingApiKeyProviders` answers WHICH vendor, not which variable.
+ * These two have the opposite shape: one variable each, belonging to one row,
+ * so naming it is the actionable half. An owner told "the environment supplies
+ * this" still has to go find out from where.
+ */
+const ENV_KEY_VARIABLES = {
+  customApiKey: "LLM_CUSTOM_API_KEY",
+  firecrawlApiKey: "FIRECRAWL_API_KEY",
+} as const;
+
+/**
+ * Said on a key row the ENVIRONMENT supplies (DW-66).
+ *
+ * First half shared with {@link settingsEnvOverrideCopy} and
+ * {@link settingsEnvProviderPinCopy} — one wording across every row that has to
+ * say "the environment set this and it wins at runtime". It does NOT borrow
+ * `settingsEnvProviderPinCopy`'s "this box is fixed": the box beside it is not
+ * fixed at all. A stored key is still accepted, still saved, and still the one
+ * that applies the moment the variable is unset.
+ *
+ * The SECOND half branches on `hasStoredKey`, because `secretRow` APPENDS this
+ * to the row's own state sentence and the two have to agree. With nothing
+ * stored the row reads "No key is stored." and "nothing needs to be stored
+ * here" completes it. With a key stored it reads "A key is stored." — after
+ * which "nothing needs to be stored here" contradicts the sentence it was just
+ * appended to and, worse, misdescribes what that stored key is for: it is not
+ * surplus, it is what applies the moment the variable is unset. So that case
+ * borrows {@link settingsEnvOverrideCopy}'s second half instead, which says
+ * exactly that.
+ *
+ * NEVER carries the value, unlike `settingsEnvOverrideCopy`: this is a secret,
+ * and AD-23 keeps it off the wire in both directions.
+ */
+export function settingsEnvKeyVariableCopy(
+  kind: keyof typeof ENV_KEY_VARIABLES,
+  hasStoredKey: boolean,
+): string {
+  const variable = ENV_KEY_VARIABLES[kind];
+  const second = hasStoredKey
+    ? "What you save here applies only once that variable is unset."
+    : "Nothing needs to be stored here.";
+  return `The environment sets ${variable}, and that wins at runtime. ${second}`;
+}
+
+/**
+ * External Sources: the optional Capture credential.
+ *
+ * REWORDED for Epic 6. It used to say the key was "stored for Deep Research",
+ * which is now false in a way that matters: Deep Research searches through
+ * Tavily / SerpApi / SearXNG (AD-18) and Firecrawl is not one of them, so an
+ * owner who stored only a Firecrawl key and read that sentence would believe
+ * Deep Research was configured and get a visible start refusal instead.
+ */
+export const SETTINGS_FIRECRAWL_COPY =
+  "Firecrawl is an optional Capture credential for fetching pages; it is not a Deep Research search provider.";
+
+// ---------------------------------------------------------------------------
+// Deep Research providers (Epic 6 / AD-18)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three selectable Deep Research search providers, in select order.
+ *
+ * Firecrawl is deliberately absent — see {@link SETTINGS_FIRECRAWL_COPY}. The
+ * vocabulary lives HERE rather than in `research-providers.ts` because this
+ * module is client-safe and `SettingsCanvas` renders the select; the kernel
+ * module imports the type back from here so there is one list, not two.
+ */
+export const RESEARCH_PROVIDERS = ["tavily", "serpapi", "searxng"] as const;
+
+export type ResearchProviderId = (typeof RESEARCH_PROVIDERS)[number];
+
+/** Tavily out of the box (`epic-6-context.md:23`). */
+export const DEFAULT_RESEARCH_PROVIDER: ResearchProviderId = "tavily";
+
+export function isResearchProviderId(value: unknown): value is ResearchProviderId {
+  return (
+    typeof value === "string" &&
+    (RESEARCH_PROVIDERS as readonly string[]).includes(value)
+  );
+}
+
+const RESEARCH_PROVIDER_LABELS: Record<ResearchProviderId, string> = {
+  tavily: "Tavily",
+  serpapi: "SerpApi",
+  searxng: "SearXNG",
+};
+
+export function researchProviderLabel(provider: ResearchProviderId): string {
+  return RESEARCH_PROVIDER_LABELS[provider];
+}
+
+/** SerpApi's default engine — today's hardcoded value, now editable. */
+export const DEFAULT_SERPAPI_ENGINE = "google";
+
+export const SETTINGS_RESEARCH_COPY =
+  "Deep Research searches with one provider at a time. Missing credentials for the selected provider fail the run visibly — no other provider is used in its place.";
+
+export const SETTINGS_RESEARCH_PROVIDER_LABEL = "Deep Research provider";
+
+export const SETTINGS_INVALID_RESEARCH_PROVIDER_COPY =
+  "Choose Tavily, SerpApi, or SearXNG as the Deep Research provider.";
+
+/**
+ * Said beside the select when the SELECTED provider carries no credential.
+ *
+ * A sentence rather than a disabled option: the owner may be selecting the
+ * provider precisely so they can then paste its key, and a select that refuses
+ * the row it is about to configure is a dead end.
+ */
+export function researchProviderUnconfiguredCopy(
+  provider: ResearchProviderId,
+): string {
+  const needed =
+    provider === "searxng"
+      ? "an instance URL"
+      : "an API key";
+  return `${researchProviderLabel(provider)} has no ${needed} yet, so Deep Research cannot start. Supply it below.`;
+}
+
+// ---------------------------------------------------------------------------
+// Intake and MinerU PDF (Stories 7.5 / 7.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * How PDFs the built-in extractor cannot read are handled.
+ *
+ * The vocabulary lives HERE, in the client-safe module, for the same reason
+ * {@link RESEARCH_PROVIDERS} does: `SettingsCanvas` renders the select in the
+ * browser, and `extract-settings.ts` — which reads the stored value through
+ * `loadConfig` and therefore cannot be imported by a browser bundle — imports
+ * the type and the list back from here. One list, not two.
+ *
+ * ORDERED PRIVATE-FIRST on purpose: `local` keeps documents on the machine,
+ * `cloud` does not.
+ */
+export type MinerUMode = "off" | "local" | "cloud" | "pipeline";
+
+export const MINERU_MODES: readonly MinerUMode[] = [
+  "off",
+  "local",
+  "cloud",
+  "pipeline",
+];
+
+export function isMinerUMode(value: unknown): value is MinerUMode {
+  return MINERU_MODES.includes(value as MinerUMode);
+}
+
+/**
+ * The mode a first enablement lands on.
+ *
+ * NOT `cloud`: the owner who has just ticked the box has not yet been asked
+ * whether their documents may leave the machine, so the answer cannot be
+ * "yes" by default.
+ */
+export const MINERU_FIRST_MODE: MinerUMode = "local";
+
+/** Where a local MinerU install listens when the owner has not said otherwise. */
+export const MINERU_DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8000";
+
+/**
+ * The warning beside a Cloud (or Pipeline) selection, in orange, BEFORE Save
+ * applies it.
+ *
+ * One constant so the pane and the test read the same sentence: the point of
+ * the warning is that it is the same words every time the owner meets this
+ * choice.
+ */
+export const MINERU_CLOUD_WARNING_COPY =
+  "Cloud mode uploads documents to MinerU. They leave this machine.";
+
+/**
+ * Does this mode send documents off the machine?
+ *
+ * ONLY `cloud`. `pipeline` was treated as leaving too, on the assumption that a
+ * MinerU-hosted mode was hiding behind the name — but the implementation says
+ * otherwise: `sidecar/mineru.mjs` sends `local` and `pipeline` to the SAME
+ * `POST /file_parse` on the owner's own MinerU server, differing only in the
+ * `backend` form field. Warning about an upload that does not happen is not the
+ * safe direction it looks like: an owner who is shown the orange sentence for a
+ * loopback request learns that the sentence does not mean what it says, and
+ * then discounts it on the one mode where it is true.
+ */
+export function mineruLeavesMachine(mode: MinerUMode): boolean {
+  return mode === "cloud";
+}
+
+/**
+ * What the Intake pane says about the inbound address, in its two states.
+ *
+ * INBOUND-ADDRESS ONLY, and the copy says so. This door is a Cloudflare Email
+ * Routing Worker forwarding to `POST /api/email/ingest`; it is not a connected
+ * mailbox, and an owner who read "email" here and went looking for an IMAP
+ * login would be looking for something this build deliberately does not have.
+ */
+export const SETTINGS_INTAKE_EMAIL_COPY =
+  "Mail sent to this address becomes Sources. It is a forwarding address, not a connected mailbox — nothing is read from your inbox.";
+export const SETTINGS_INTAKE_EMAIL_UNSET_COPY =
+  "No inbound address is configured yet.";
+export const SETTINGS_INTAKE_EMAIL_DISABLED_COPY =
+  "Inbound email is switched off, so mail sent to this address is refused.";
+export const SETTINGS_INTAKE_EMAIL_LABEL = "Inbound address";
+export const SETTINGS_INTAKE_COPY_ADDRESS = "Copy";
+export const SETTINGS_INTAKE_COPIED_COPY = "Address copied.";
+
+/**
+ * The heading over the accepted-format grid, and the sentence under it.
+ *
+ * The grid itself is derived from {@link INTAKE_FORMAT_GROUPS} rather than
+ * typed here — a hand-written list of formats beside a programmatic door is
+ * exactly the prose/inventory drift `prose-inventory-parity.test.ts` exists to
+ * catch, and this pane is the most tempting place in the app to write one.
+ */
+export const SETTINGS_INTAKE_FORMATS_HEADING = "Accepted files";
+/**
+ * THE THREE DOORS DO NOT ACCEPT THE SAME THINGS, and the sentence has to say
+ * so. It used to read "dropped on the Workbench, mailed in, or posted to the
+ * API" over a grid that includes images, video and audio — none of which the
+ * other two doors take: both gate on `isSupportedDocument`, whose allowlist is
+ * `DOCUMENT_FORMATS`, and a mailed PNG is silently counted as a skipped
+ * attachment. An owner reading the old sentence would have concluded their
+ * mail was lost.
+ */
+export const SETTINGS_INTAKE_FORMATS_COPY =
+  "Anything on this list can be dropped on the Workbench. Email and the API take the document formats only — images, video and audio arrive by drop.";
+
+/**
+ * What Intake says about Plaud (Story 7.6).
+ *
+ * THE UPLOAD IS THE WHOLE DOOR in this build, and the sentence says so rather
+ * than leaving the absence to be discovered. Story 7.6 asked for a connected
+ * account that lists and pulls recordings; Plaud publishes no account-level
+ * API for that — their own help centre says there is no public API, and the
+ * documented OAuth on `docs.plaud.ai` belongs to Plaud Embedded, a partner
+ * device/transcription platform with no "list my recordings" or "get my
+ * transcript" endpoint. The endpoints the community MCP servers use are
+ * undocumented internal web-app routes.
+ *
+ * Naming that here is the honest half. The dishonest half would have been a
+ * Connect button wired to a guessed contract: it would ask an owner for real
+ * credentials, and it would break the first time an internal route moved.
+ */
+export const SETTINGS_INTAKE_PLAUD_COPY =
+  "Plaud recordings arrive by upload — pick them with the Plaud button beside Sources, and they stay meeting-eligible for Todo Candidates. Connecting a Plaud account to list and pull recordings is not available: Plaud publishes no account API for it.";
+
+/** The `raw/parsed/` checkbox from the Intake mock. */
+export const SETTINGS_INTAKE_KEEP_PARSED_LABEL = "Keep extracted Markdown";
+export const SETTINGS_INTAKE_KEEP_PARSED_COPY =
+  "Also writes each extractor’s Markdown under raw/parsed/. The Source itself is kept either way.";
+
+/** The MinerU pane's standing explanation, above the mode control. */
+export const SETTINGS_MINERU_COPY =
+  "The built-in PDF extractor always runs first. MinerU is an optional second pass for PDFs it cannot read — scanned pages, dense tables, complex layouts.";
+
+export const SETTINGS_INVALID_MINERU_MODE_COPY =
+  "Choose Off, Local API, Cloud, or Pipeline for MinerU.";
+
+export const SETTINGS_MINERU_ENABLE_LABEL = "Use MinerU for PDFs";
+export const SETTINGS_MINERU_MODE_LABEL = "Mode";
+export const SETTINGS_MINERU_BASE_URL_LABEL = "Local API base URL";
+export const SETTINGS_MINERU_KEY_LABEL = "MinerU API key";
+
+export const SETTINGS_MINERU_OFF_COPY =
+  "MinerU is off. A PDF the built-in extractor cannot read fails visibly and keeps its bytes.";
+/** Covers Pipeline too — both post to the same local MinerU server. */
+export const SETTINGS_MINERU_LOCAL_COPY =
+  "Local API and Pipeline both post to your own MinerU server. Documents stay on this machine.";
+export const SETTINGS_MINERU_KEY_COPY =
+  "Cloud authenticates with a MinerU token.";
+
+/** Human labels for the four modes, in select order. */
+export function mineruModeLabel(mode: MinerUMode): string {
+  switch (mode) {
+    case "off":
+      return "Off";
+    case "local":
+      return "Local API";
+    case "cloud":
+      return "Cloud";
+    case "pipeline":
+      return "Pipeline";
+  }
+}
+
+/**
+ * The modes the select offers once MinerU is enabled.
+ *
+ * `off` is NOT among them: the checkbox is what turns the feature off, and a
+ * select that also carried `Off` would give the pane two controls for one
+ * state that could disagree with each other on screen.
+ */
+export const MINERU_ENABLED_MODES: readonly MinerUMode[] = [
+  "local",
+  "cloud",
+  "pipeline",
+];
+
+/** Interface: English only, no picker (`epic-1-context.md:29`). */
+export const SETTINGS_LANGUAGE_LABEL = "Language";
+export const SETTINGS_LANGUAGE_VALUE = "English";
+export const SETTINGS_LANGUAGE_COPY = "This build is English only.";
+
+// ---------------------------------------------------------------------------
+// The wire shape
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key on
+ * both sides of the route the store already has — the flat legacy fields keep
+ * their exact current wire shape, so `/settings` and `useSettings` keep working
+ * untouched.
+ */
+export const SETTINGS_ROUTE = "/api/settings";
+
+/**
+ * What `GET /api/settings` serves under `workbench`.
+ *
+ * NO KEY IS EVER HERE. `customApiKey`, `embeddingApiKey` and `firecrawlApiKey`
+ * are accepted by `PUT` and answered by three `has*ApiKey` booleans — AD-23 puts
+ * the keys in the kernel store, it does not put them back on the browser's
+ * screen. A field carrying a stored key would defeat the whole discipline, so
+ * the suite asserts the serialized body contains none.
+ */
+export interface WorkbenchSettingsPayload {
+  /**
+   * The WRITE PRECONDITION for the stored `AppConfig` these values came out of
+   * (DW-63) — the OPAQUE TOKEN `saveConfig` stamped into the config, never a
+   * hash of it, so nothing derived from the three stored API keys reaches this
+   * payload (see `readConfig` in `src/lib/config.ts`).
+   *
+   * OPTIONAL, and absence DEGRADES rather than fails (DW-199). The route always
+   * sends one, so a payload without it means something between the route and
+   * the browser dropped it — and the cost of the two answers is wildly
+   * asymmetric. Refusing the payload takes the whole canvas off screen and
+   * loses every unsaved edit on it, for a field the surface only needs at Save.
+   * Accepting it renders the settings, and the surface CLEARS the version it
+   * was holding rather than carrying a superseded one forward: the next save is
+   * then refused with the 428 sentence — "this could not be checked", which is
+   * what is actually true — and the draft stays. That is `PreviewColumn`'s
+   * convention for the same seam. Nothing here can clobber either way: no
+   * version means no unconditional write, because `checkWritePrecondition` has
+   * no such branch. This matches `isPreviewPayload`, which tolerates the same
+   * absence.
+   */
+  version?: string;
+  chatProvider: ProviderValue | null;
+  chatModel: string | null;
+  ingestProvider: ProviderValue | null;
+  ingestModel: string | null;
+  customBaseUrl: string | null;
+  /**
+   * Does the STORE hold a custom-endpoint key — never "is there a credential".
+   *
+   * The two used to be one boolean, the OR of `LLM_CUSTOM_API_KEY` and the
+   * stored value, and that made the row lie in a way pressing a button could
+   * not fix (DW-66): an env-only deployment read "A key is stored." and got a
+   * `Remove` that deletes nothing from the store, leaves the env var where it
+   * is, and comes back to the same sentence. `Remove` is gated on THIS boolean,
+   * so a stored-only field suppresses the control by construction — the split
+   * `hasEmbeddingApiKey` / `envEmbeddingApiKeyProviders` already runs on.
+   */
+  hasCustomApiKey: boolean;
+  /**
+   * Is `LLM_CUSTOM_API_KEY` set to something non-blank? (DW-66)
+   *
+   * Rides APART from the stored half above rather than folding into it, because
+   * the two answer different questions and only one of them has a `Remove`. A
+   * BOOLEAN, never the value (AD-23) — and unlike
+   * {@link WorkbenchSettingsPayload.envEmbeddingApiKeyProviders} it needs no
+   * vendor list: `LLM_CUSTOM_API_KEY` belongs to exactly one provider, the
+   * custom endpoint the owner pointed this deployment at.
+   *
+   * Env still WINS at runtime; `apiKeyForProvider("custom")` is unchanged. This
+   * pair is what the surface REPORTS, not what the resolver applies.
+   */
+  envCustomApiKey: boolean;
+  /** `null` means "no deadline", which is today's behaviour exactly. */
+  llmTimeoutSeconds: number | null;
+  /**
+   * The owner's STORED decision — never the effective one.
+   *
+   * `getVectorSearchSettings().enabled` intersects this with the predicate for
+   * CONSUMERS, but the editing surface must see what the store holds: the save
+   * body always carries this field, so serving the intersected value would let
+   * an unrelated edit (a timeout, say) silently rewrite a stored `true` to
+   * `false` the moment one leg was momentarily missing.
+   */
+  vectorSearchEnabled: boolean;
+  /**
+   * The EXISTING config keys, as STORED — these are what the owner edits.
+   * There is one embedding model, in one place.
+   */
+  embeddingProvider: EmbeddingProvider | null;
+  embeddingModel: string | null;
+  embeddingBaseUrl: string | null;
+  hasEmbeddingApiKey: boolean;
+  /**
+   * The model this deployment ACTUALLY embeds with (DW-274, DW-312).
+   *
+   * NOT editable and NOT a second embedding-model field: the row still edits
+   * `embeddingModel` above, and this only says what the resolver does with it.
+   * The server is the only place that can answer it — the rule is
+   * `embeddingModelMatchesProvider` applied over the env and the store together,
+   * inside `embeddings.ts`, which this client-safe module must not import — so
+   * the answer is SERVED rather than derived in the browser. `null` when
+   * nothing embeds at all, which is a different story from a substitution and
+   * is why the canvas guards on both fields rather than on the flag alone.
+   */
+  embeddingModelInEffect: string | null;
+  /**
+   * Is the model above being SUBSTITUTED on the embed path? (DW-274, DW-312)
+   *
+   * True only when a model is set, something is in effect, and they differ.
+   * False when nothing is set (nothing to override) and false when nothing
+   * embeds. Served rather than derived for the same reason as the field above,
+   * and served to THIS surface as well as to the flat `/settings` page because
+   * one deployment answering the same question two ways on two Settings screens
+   * is the gap DW-312 names. It is one boolean about the runtime and names
+   * nothing.
+   */
+  embeddingModelOverridden: boolean;
+  /**
+   * The ENVIRONMENT's overrides, which a save cannot change and which win at
+   * runtime.
+   *
+   * They are served separately from the stored fields above so the client can
+   * feed {@link canEnableVectorSearch} exactly what the route feeds it. Folding
+   * them into `embeddingModel` instead would either show an env value in an
+   * editable box (and persist it on the next save) or leave the checkbox
+   * permanently disabled saying "needs a model" for a model that is configured —
+   * which is precisely the client/server disagreement the "one rule, two
+   * callers" claim exists to rule out. No value here is a secret.
+   */
+  envEmbeddingProvider: EmbeddingProvider | null;
+  /**
+   * `EMBEDDING_PROVIDER` is SET but names nothing that can embed (DW-508).
+   *
+   * The field above is filtered through `isEmbeddingProvider`, so an
+   * unsupported value arrives there as `null` — indistinguishable, on the
+   * surface, from no variable at all, while `resolveEmbeddingProvider` refuses
+   * it and nothing embeds. This carries the rejected string so the row can say
+   * so; it never PINS the select (DW-398's boundary: an unsupported value names
+   * no vendor, so there is no credential a move could sabotage and the store is
+   * what applies once the variable is corrected).
+   *
+   * As a WIRE FIELD it is the exact mirror of {@link envResearchProviderInvalid}
+   * — same shape, same optionality, same reason for both. Their CONSUMERS are
+   * not mirrors and cannot be (DW-637): this one is JOINED back to the field
+   * above by {@link resolveEnvEmbeddingProvider}, because the gate's `provider`
+   * input is `string | null` and its first leg refuses whatever it does not
+   * recognise — so a junk value is both representable and useful there.
+   * {@link draftResearchProvider} returns a closed `ResearchProviderId` union
+   * whose consumers branch on the value, so a junk string has no representation
+   * to be joined INTO, and its half early-returns `false` instead.
+   */
+  envEmbeddingProviderInvalid?: string | null;
+  envEmbeddingModel: string | null;
+  /**
+   * `LLM_CUSTOM_BASE_URL`, when the deployment sets it (DW-71).
+   *
+   * It rides APART from the editable `customBaseUrl` above for the same reason
+   * `envEmbeddingModel` rides apart from `embeddingModel`: `getCustomBaseUrl()`
+   * takes the variable ahead of the store, so the two are different facts and
+   * the box has to keep showing the STORED one — that is the value a save moves
+   * and the value that applies the moment the variable is unset. Folding the env
+   * value into the box would show an unsaveable string in an editable control
+   * and persist it on the next save; leaving it out entirely is what let an
+   * owner type an endpoint, save it successfully, and change nothing.
+   *
+   * Not a secret: an endpoint is not a credential, and `LLM_CUSTOM_API_KEY`
+   * never crosses this boundary as a value — it is reported as the
+   * {@link WorkbenchSettingsPayload.hasCustomApiKey} /
+   * {@link WorkbenchSettingsPayload.envCustomApiKey} boolean pair and nothing
+   * else (DW-66).
+   */
+  envCustomBaseUrl: string | null;
+  /**
+   * WHICH providers the environment carries an embedding credential for, not
+   * whether it carries one at all: `OPENAI_API_KEY` is not a Google key, and a
+   * flat boolean let the gate pass on a credential the embed step would then
+   * resolve to `null`.
+   */
+  envEmbeddingApiKeyProviders: string[];
+  /**
+   * Can this DEPLOYMENT reach the Cloudflare `AI` binding? (DW-225)
+   *
+   * A RUNTIME fact, not a stored one, and the browser has no way to ask: it is
+   * `getWorkersAiBinding() !== null`, read once per request by the route and
+   * served here so the browser's half of the vector rule sees exactly what the
+   * route's half sees. Without it the switch turns on for a `workers-ai`
+   * deployment where `resolveEmbeddingProvider` always returns `null` — a switch
+   * that reads as on and embeds nothing, on every Docker deployment. It is not a
+   * secret and names nothing: it is one boolean about the runtime.
+   */
+  hasWorkersAiBinding: boolean;
+  firecrawlBaseUrl: string | null;
+  /**
+   * Does the STORE hold a Firecrawl key — the same split, for the same reason
+   * (DW-66). `getFirecrawlSettings().hasKey` still ORs the two halves, and is
+   * unchanged; this pair is what the row is allowed to say and to offer.
+   */
+  hasFirecrawlApiKey: boolean;
+  /** Is `FIRECRAWL_API_KEY` set to something non-blank? A boolean, not the key. */
+  envFirecrawlApiKey: boolean;
+  /**
+   * The STORED Deep Research provider — `null` means nothing was chosen, which
+   * reads as {@link DEFAULT_RESEARCH_PROVIDER} everywhere it is resolved.
+   *
+   * Stored and env ride APART for the same reason the embedding pair does:
+   * `RESEARCH_PROVIDER` wins at run time, so folding it into this box would
+   * show an unsaveable value in an editable control and persist it on the next
+   * save.
+   */
+  researchProvider: ResearchProviderId | null;
+  envResearchProvider: ResearchProviderId | null;
+  envResearchProviderInvalid?: string | null;
+  hasTavilyApiKey: boolean;
+  hasSerpApiKey: boolean;
+  serpApiEngine: string | null;
+  searxngBaseUrl: string | null;
+  envSearxngBaseUrl: string | null;
+  searxngCategories: string | null;
+  /**
+   * WHICH research providers the ENVIRONMENT already carries a credential for.
+   *
+   * A list rather than a boolean, on the `envEmbeddingApiKeyProviders`
+   * argument: `TAVILY_API_KEY` is not a SerpApi key, and a flat boolean would
+   * let the surface report a provider as configured when the selected one is
+   * not. `Remove` is never offered for a key on this list — the route cannot
+   * delete an environment variable.
+   */
+  envResearchProviders: ResearchProviderId[];
+  /**
+   * The inbound-email address Intake shows for copying, and whether the door is
+   * switched on (Story 7.5).
+   *
+   * SERVED, not stored here: the value lives in `email-ingest.ts`'s own index,
+   * which the inbound Worker's route and the legacy `/settings` page already
+   * read. Minting a second copy of it under `AppConfig` would be a second
+   * config store for one address — the exact fork `.yoyo/learnings.md` records
+   * — so the route loads it and passes it through, and this pane renders it
+   * read-only rather than editing it.
+   */
+  inboundEmailAddress: string | null;
+  inboundEmailEnabled: boolean;
+  /** Keep the extractor's Markdown under `raw/parsed/` beside the bytes. */
+  intakeKeepParsed: boolean;
+  /**
+   * The stored MinerU mode. `off` is both the default and what an unreadable
+   * stored value resolves to — see `extract-settings.ts`.
+   */
+  mineruMode: MinerUMode;
+  mineruLocalBaseUrl: string | null;
+  /** Whether a Cloud/Pipeline credential is stored. Never the key (AD-23). */
+  hasMinerUApiKey: boolean;
+  /**
+   * The loopback door's four facts (Story 8.1).
+   *
+   * NO TOKEN IS EVER HERE, on exactly the AD-23 rule the three provider keys
+   * follow: `hasLoopbackApiToken` is a presence boolean and `loopbackTokenSource`
+   * says WHERE the value in effect came from, which is the one thing the pane
+   * cannot derive — `LLM_WIKI_API_TOKEN` wins over the store, so a surface
+   * without this field would keep offering Generate as if pressing it changed
+   * what callers must send.
+   *
+   * `authRequired` is not among them because it is DERIVED — "the API is on and
+   * unauth is off" — and serving it as a fifth field would let the two disagree
+   * on screen.
+   */
+  apiEnabled: boolean;
+  allowUnauthenticated: boolean;
+  hasLoopbackApiToken: boolean;
+  loopbackTokenSource: LoopbackTokenSource;
+  /** Absolute `sidecar/mcp.mjs` for a client whose cwd is not the repo. */
+  loopbackMcpEntry?: string;
+  /** Fixed. There is no locale picker anywhere in this surface. */
+  language: typeof SETTINGS_LANGUAGE_VALUE;
+  /** `YOPEDIA_READONLY=1`: the save bar refuses before the route has to. */
+  readOnly: boolean;
+}
+
+/**
+ * Everything the payload carries EXCEPT the write precondition.
+ *
+ * `getWorkbenchSettings()` builds the values from the config cache; only the
+ * route holds the stored TOKEN, and it serves that same one string at the top
+ * level and here (DW-63). Splitting the type is what keeps the resolver unable
+ * to invent a second version that would have to agree with the route's.
+ */
+export type WorkbenchSettingsValues = Omit<WorkbenchSettingsPayload, "version">;
+
+/**
+ * What `PUT /api/settings` accepts under `workbench`.
+ *
+ * Every field is optional and ABSENT means "leave it alone". `null` and `""`
+ * both clear. The three secrets are the reason that distinction has to be exact:
+ * a save that quietly cleared a key the owner never touched would be the worst
+ * outcome on this surface.
+ */
+export interface WorkbenchSettingsPatch {
+  chatProvider?: string | null;
+  chatModel?: string | null;
+  ingestProvider?: string | null;
+  ingestModel?: string | null;
+  customBaseUrl?: string | null;
+  customApiKey?: string | null;
+  /**
+   * Deliberately wider than `number | null`.
+   *
+   * The box is text, and `Number("abc")` is `NaN` — which `JSON.stringify`
+   * serialises as `null`, i.e. as "clear the deadline", so a typo would have
+   * silently deleted a configured timeout and reported success.
+   * {@link settingsSaveBody} sends the RAW string in that case so
+   * {@link validateWorkbenchSettingsPatch} refuses it with a sentence, which is
+   * the only honest outcome.
+   */
+  llmTimeoutSeconds?: number | string | null;
+  vectorSearchEnabled?: boolean;
+  embeddingProvider?: string | null;
+  embeddingModel?: string | null;
+  embeddingBaseUrl?: string | null;
+  embeddingApiKey?: string | null;
+  firecrawlBaseUrl?: string | null;
+  firecrawlApiKey?: string | null;
+  researchProvider?: string | null;
+  tavilyApiKey?: string | null;
+  serpApiKey?: string | null;
+  serpApiEngine?: string | null;
+  searxngBaseUrl?: string | null;
+  searxngCategories?: string | null;
+  intakeKeepParsed?: boolean;
+  mineruMode?: string | null;
+  mineruLocalBaseUrl?: string | null;
+  /** Three-state exactly like the other secrets: absent keeps, `null` removes. */
+  mineruApiKey?: string | null;
+  apiEnabled?: boolean;
+  allowUnauthenticated?: boolean;
+  /**
+   * A freshly generated loopback token, three-state like the other secrets:
+   * absent KEEPS what is stored, `null` (or `""`) REMOVES it.
+   *
+   * The surface only ever sends a value it just minted with
+   * {@link newLoopbackApiToken}; there is no box to type one into, because a
+   * hand-typed credential the owner cannot read back is a credential they will
+   * lose.
+   */
+  loopbackApiToken?: string | null;
+  /**
+   * Skill enablement DECISIONS, id → boolean (Story 8.6).
+   *
+   * A PATCH of the map, not a replacement: the sidecar scans the filesystem and
+   * the kernel stores only what the owner decided, so a full replacement sent by
+   * a surface that had scanned a stale list would silently drop a decision about
+   * a Skill it had not seen yet. Merged key-by-key in
+   * {@link WorkbenchSettingsStored}'s writer.
+   */
+  skillEnablement?: Record<string, boolean>;
+}
+
+/**
+ * Is this parsed body actually a {@link WorkbenchSettingsPayload}?
+ *
+ * A 200 is not a promise about shape — an interstitial or a proxy can put valid
+ * JSON on one — and the canvas seeds a draft from these fields during render,
+ * where a non-string throws and takes the surface down instead of showing the
+ * one sentence a failed read is supposed to show.
+ */
+export function isWorkbenchSettingsPayload(
+  value: unknown,
+): value is WorkbenchSettingsPayload {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Record<string, unknown>;
+  const nullableString = (key: string) =>
+    payload[key] === null || typeof payload[key] === "string";
+  return (
+    // The precondition the next save sends back — checked only for TYPE when
+    // present (DW-199). Absent, `null` (the same absence spelled by a
+    // serializer) and `""` are all accepted: the surface renders, its version
+    // goes to "unknown", and a save with none is refused with the 428 sentence
+    // while the draft stays on screen. What is refused is a NUMBER or an object
+    // — something that would be sent back as `If-Match` and answered with a
+    // conflict the owner cannot explain. See
+    // {@link WorkbenchSettingsPayload.version}.
+    (payload.version === undefined ||
+      payload.version === null ||
+      typeof payload.version === "string") &&
+    nullableString("chatProvider") &&
+    nullableString("chatModel") &&
+    nullableString("ingestProvider") &&
+    nullableString("ingestModel") &&
+    nullableString("customBaseUrl") &&
+    nullableString("embeddingProvider") &&
+    nullableString("embeddingModel") &&
+    nullableString("embeddingBaseUrl") &&
+    nullableString("firecrawlBaseUrl") &&
+    nullableString("serpApiEngine") &&
+    nullableString("searxngBaseUrl") &&
+    nullableString("envSearxngBaseUrl") &&
+    (payload.envResearchProviderInvalid === undefined || nullableString("envResearchProviderInvalid")) &&
+    nullableString("searxngCategories") &&
+    // The two provider names are checked against the LIST, not merely for
+    // being strings: an unknown id would seed the select with a value it has
+    // no option for, and the box would then read as a provider this build
+    // cannot search with. `null` is a real state (nothing chosen → Tavily).
+    (payload.researchProvider === null ||
+      isResearchProviderId(payload.researchProvider)) &&
+    (payload.envResearchProvider === null ||
+      isResearchProviderId(payload.envResearchProvider)) &&
+    nullableString("envEmbeddingProvider") &&
+    // OPTIONAL, exactly as `envResearchProviderInvalid` above is: it was added
+    // after the payload shipped, and a required check would make every fixture
+    // and every older cached body invalid.
+    (payload.envEmbeddingProviderInvalid === undefined ||
+      nullableString("envEmbeddingProviderInvalid")) &&
+    nullableString("envEmbeddingModel") &&
+    nullableString("envCustomBaseUrl") &&
+    // REQUIRED, on the same argument `hasWorkersAiBinding` is required on
+    // (DW-312): the substitution note is guarded on BOTH of these, and neither
+    // absence has a safe reading. Defaulting the flag to `false` would silence
+    // a substitution that IS running — the one thing the note exists to say —
+    // and defaulting it to `true` would announce one that is not. `null` is
+    // accepted for the model name because it is a real state (nothing embeds),
+    // but `undefined` is not: it means the payload is not one.
+    nullableString("embeddingModelInEffect") &&
+    (payload.llmTimeoutSeconds === null ||
+      typeof payload.llmTimeoutSeconds === "number") &&
+    typeof payload.vectorSearchEnabled === "boolean" &&
+    typeof payload.hasCustomApiKey === "boolean" &&
+    // REQUIRED, both of them, on the `hasWorkersAiBinding` argument (DW-66).
+    // The env half is not decoration beside the stored half: a payload carrying
+    // `hasCustomApiKey: false` without it renders "No key is stored." beside a
+    // working `LLM_CUSTOM_API_KEY`, which is a WRONG answer rather than a
+    // degraded one — and defaulting the env flag to `true` would announce a
+    // variable nobody set. The route always sends both, so absence means the
+    // payload is not one.
+    typeof payload.envCustomApiKey === "boolean" &&
+    typeof payload.hasEmbeddingApiKey === "boolean" &&
+    typeof payload.embeddingModelOverridden === "boolean" &&
+    // REQUIRED as a boolean, unlike `version`: this one feeds the vector rule,
+    // and a missing value has no safe reading. Defaulting it to `true` would
+    // enable the switch on a deployment with no binding; defaulting it to
+    // `false` would refuse `workers-ai` on Workers itself. The route always
+    // sends it, so absence means the payload is not one.
+    typeof payload.hasWorkersAiBinding === "boolean" &&
+    Array.isArray(payload.envEmbeddingApiKeyProviders) &&
+    payload.envEmbeddingApiKeyProviders.every((p) => typeof p === "string") &&
+    typeof payload.hasFirecrawlApiKey === "boolean" &&
+    typeof payload.envFirecrawlApiKey === "boolean" &&
+    typeof payload.hasTavilyApiKey === "boolean" &&
+    typeof payload.hasSerpApiKey === "boolean" &&
+    Array.isArray(payload.envResearchProviders) &&
+    payload.envResearchProviders.every(isResearchProviderId) &&
+    typeof payload.readOnly === "boolean" &&
+    // Epic 7's two panes. The mode is checked against the LIST on the same
+    // argument the provider names are: an unknown value would seed a select
+    // with no matching option, and the pane would then read as a MinerU mode
+    // this build cannot run. The three booleans are required for the reason
+    // `hasWorkersAiBinding` is — `intakeKeepParsed` and `inboundEmailEnabled`
+    // both have consequences in both directions, so neither absence has a safe
+    // default.
+    nullableString("inboundEmailAddress") &&
+    typeof payload.inboundEmailEnabled === "boolean" &&
+    typeof payload.intakeKeepParsed === "boolean" &&
+    isMinerUMode(payload.mineruMode) &&
+    nullableString("mineruLocalBaseUrl") &&
+    typeof payload.hasMinerUApiKey === "boolean" &&
+    // Epic 8's pane. All four are REQUIRED, on the `hasWorkersAiBinding`
+    // argument and harder: these describe a NETWORK DOOR, and every absence has
+    // a reading that is worse than refusing the payload. Defaulting `apiEnabled`
+    // to `true` would draw an open door that is shut; defaulting
+    // `allowUnauthenticated` to `false` would hide the orange warning on a
+    // deployment that IS unauthenticated. There is no safe guess about a door.
+    typeof payload.apiEnabled === "boolean" &&
+    typeof payload.allowUnauthenticated === "boolean" &&
+    typeof payload.hasLoopbackApiToken === "boolean" &&
+    (payload.loopbackTokenSource === "env" ||
+      payload.loopbackTokenSource === "store" ||
+      payload.loopbackTokenSource === "none") &&
+    payload.language === SETTINGS_LANGUAGE_VALUE
+  );
+}
+
+/** Narrows a whole GET/PUT body to one carrying a usable `workbench` object. */
+export function workbenchSettingsFrom(value: unknown): WorkbenchSettingsPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = (value as Record<string, unknown>).workbench;
+  return isWorkbenchSettingsPayload(candidate) ? candidate : null;
+}
+
+// ---------------------------------------------------------------------------
+// The vector-search predicate — ONE rule, two callers
+// ---------------------------------------------------------------------------
+
+/** What the merged store looks like to the vector predicate and the validator. */
+export interface VectorSearchInputs {
+  /** The EXPLICIT embedding provider — never an auto-detected one. */
+  provider: string | null;
+  baseUrl: string | null;
+  model: string | null;
+  hasKey: boolean;
+  /**
+   * WHERE {@link model} came from, which decides who can act on a mismatch
+   * (DW-218/DW-223).
+   *
+   * `"env"` means `EMBEDDING_MODEL` supplied it — every feeder takes that
+   * override ahead of anything typed or stored, so the editable box is NOT the
+   * thing that is wrong and typing into it changes nothing. `"stored"` means the
+   * value is the one the box edits. The refusal appends
+   * {@link SETTINGS_VECTOR_ENV_MODEL_NOTE} for the first and marks the input
+   * `aria-invalid` only for the second.
+   *
+   * No default: a constructor that forgot it would silently claim the box is at
+   * fault for a value the owner cannot reach from here.
+   */
+  modelOrigin: "env" | "stored";
+  /**
+   * WHERE {@link provider} came from — the same question {@link modelOrigin}
+   * asks about the model, for the same reason (DW-281).
+   *
+   * `"env"` means `EMBEDDING_PROVIDER` supplied it, and every feeder takes that
+   * override ahead of the stored selection, so the Embedding provider select is
+   * NOT the thing that is wrong and choosing another provider in it changes
+   * nothing. `"stored"` means the value is the one that select edits. The
+   * binding refusal picks {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} for the
+   * first and {@link SETTINGS_VECTOR_BINDING_NOTE} for the second, and
+   * {@link vectorSearchFieldIssue} marks the select `aria-invalid` only for the
+   * second.
+   *
+   * No default, for the same reason {@link modelOrigin} has none: a constructor
+   * that forgot it would silently claim the select is at fault for a value the
+   * owner cannot reach from here.
+   */
+  providerOrigin: "env" | "stored";
+  /**
+   * Can this deployment reach the Cloudflare `AI` binding? (DW-225)
+   *
+   * TRI-STATE, and the third state is load-bearing. `null` means "not knowable
+   * here" — `getVectorSearchSettings()` runs inside `config.ts`, which cannot
+   * import `embeddings.ts` without a cycle — and the binding leg is NOT applied,
+   * which is exactly today's answer for that caller. The route reads
+   * `getWorkersAiBinding() !== null` once per request and the browser receives
+   * the boolean on the payload, so both halves of the one rule see the same
+   * fact.
+   */
+  hasWorkersAiBinding: boolean | null;
+}
+
+/**
+ * Embedding providers that carry their own transport and need no credential.
+ *
+ * `embeddings.ts` documents both as keyless (`embeddingApiKeyFor` returns `null`
+ * for them by design): `ollama` talks HTTP to a server that needs no credential,
+ * and `workers-ai` reaches Cloudflare through the `AI` binding. Demanding a key
+ * from either would make vector search UNREACHABLE for half the supported
+ * providers.
+ *
+ * THE ENDPOINT LEG IS EXEMPT FOR A DIFFERENT REASON SINCE DW-70, and the old
+ * one is no longer true: `ollama` now reads the stored `embeddingBaseUrl` in
+ * `_createEmbeddingModel` exactly like every other non-binding provider, so the
+ * "Embedding endpoint" field is NOT a value no code path reads. It stays exempt
+ * because that endpoint is OPTIONAL — with nothing saved, `createOllama()` is
+ * called with no argument and the SDK uses its own default, which is a working
+ * configuration for the common local install. `workers-ai` is exempt because its
+ * transport is the binding and no URL applies at all.
+ *
+ * The SET and the predicate are unchanged by that correction — turning vector
+ * search on demands no endpoint from either provider, exactly as before.
+ */
+const SELF_TRANSPORTING_EMBEDDING_PROVIDERS: ReadonlySet<string> = new Set([
+  "ollama",
+  "workers-ai",
+]);
+
+/**
+ * FR-56's "cannot turn on without endpoint + key + model", read against the
+ * provider that will actually do the embedding.
+ *
+ * The client disables the control with it; the route re-runs it over the MERGED
+ * config before writing. Two callers, one rule — and because the store's default
+ * is `false`, "vector search defaults off" is a property of the kernel rather
+ * than of a component that happens to render unchecked.
+ *
+ * Three legs, one of them new:
+ *
+ *  - An EXPLICIT embedding provider is required. `resolveEmbeddingProvider`'s
+ *    auto-detect branch consults env vars only, so without this leg an owner
+ *    could satisfy endpoint + model + stored key, turn vector search on, and
+ *    still resolve no embedding provider at all — a switch that reads as on and
+ *    embeds nothing.
+ *  - The MODEL is always required, for every provider, and the selected provider
+ *    must be able to SERVE it — {@link embeddingModelMatchesProvider}, the same
+ *    predicate `embeddings.ts`'s `resolveEmbeddingModelName` uses to decide
+ *    whether to honour a model id or drop it for the provider default. Its two
+ *    legs are asymmetric: under `workers-ai` the id must be one of the supported
+ *    Cloudflare embedding models (CATALOG membership, so an in-namespace id the
+ *    binding cannot serve is refused here rather than at `ai.run()` — DW-220),
+ *    and under every other provider it must simply sit OUTSIDE the `@cf/`
+ *    namespace. Without this leg the gate would accept a mismatch the resolver
+ *    then overrides, embedding with a model the owner never chose (DW-73).
+ *  - The KEY and the ENDPOINT are required only where the provider does not
+ *    supply them itself (see {@link SELF_TRANSPORTING_EMBEDDING_PROVIDERS}).
+ *  - The BINDING, for `workers-ai` only: being self-transporting means the
+ *    Cloudflare `AI` binding IS its transport, and off the Workers runtime there
+ *    is no such binding — `resolveEmbeddingProvider` returns `null` forever, so
+ *    the switch would read as on and embed nothing (DW-225). Applied only when
+ *    the caller actually knows; see
+ *    {@link VectorSearchInputs.hasWorkersAiBinding}.
+ *
+ * What this deliberately does NOT do is teach `hasEmbeddingSupport()` about it.
+ * Story 2.9 owns the ingest embed step and Story 3.4 the search merge; moving
+ * those here would rewrite `embeddings.test.ts` on behalf of two unwritten
+ * stories.
+ */
+export function canEnableVectorSearch(v: VectorSearchInputs): boolean {
+  return vectorSearchMissingLegs(v).length === 0;
+}
+
+/** Which control an unmet leg is about. See {@link VectorSearchLeg}. */
+export type VectorSearchLegField =
+  | "provider"
+  | "endpoint"
+  | "model"
+  | "key"
+  | "binding";
+
+/**
+ * One unmet leg, as the thing that is missing plus who owns it.
+ *
+ * A bare `string[]` could only ever produce ONE sentence, announced on ONE
+ * control — which is how the model complaint ended up as the vector checkbox's
+ * description while the embedding-model input that holds the wrong value carried
+ * nothing at all (DW-223). The `field` is what lets a second surface — the model
+ * row — ask for its own leg, and the `note` is what lets a refusal name the
+ * thing that OWNS it (`EMBEDDING_MODEL`, the Cloudflare `AI` binding) rather
+ * than only the shape the value should have had.
+ */
+export interface VectorSearchLeg {
+  /** The control this leg is about. */
+  field: VectorSearchLegField;
+  /** The noun phrase the refusal sentence lists, in leg order. */
+  phrase: string;
+  /**
+   * A second sentence naming what owns the problem, when the phrase alone
+   * cannot be acted on. Appended to the refusal, never substituted for it.
+   */
+  note?: string;
+}
+
+/** Which legs are unmet, in the order the sentence names them. */
+function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
+  if (!v.provider || !isEmbeddingProvider(v.provider)) {
+    return [
+      {
+        field: "provider",
+        phrase: "an embedding provider",
+        // Only when the environment owns the selection (DW-636), gated exactly
+        // as the model leg's note is gated on `modelOrigin` below. An env
+        // origin HERE implies a junk variable: a filtered `EMBEDDING_PROVIDER`
+        // always passes `isEmbeddingProvider`, so the only env value that can
+        // reach this leg is one the filter refused and the join carried through
+        // ({@link resolveEnvEmbeddingProvider}). Saying it for a STORED
+        // provider would send the owner to a variable that is not set, which is
+        // the mistake DW-218 fixed one leg down.
+        ...(v.providerOrigin === "env"
+          ? { note: SETTINGS_VECTOR_PROVIDER_ENV_NOTE }
+          : {}),
+      },
+    ];
+  }
+  const missing: VectorSearchLeg[] = [];
+  if (!SELF_TRANSPORTING_EMBEDDING_PROVIDERS.has(v.provider) && !v.baseUrl) {
+    missing.push({ field: "endpoint", phrase: "an endpoint" });
+  }
+  if (!v.model) {
+    missing.push({ field: "model", phrase: "a model" });
+  } else if (!embeddingModelMatchesProvider(v.provider, v.model)) {
+    // The SAME predicate `resolveEmbeddingModelName` applies, so the gate cannot
+    // refuse a combination the resolver would have honoured, or accept one it
+    // would silently override.
+    missing.push({
+      field: "model",
+      phrase:
+        v.provider === "workers-ai"
+          ? // NAMING the ids, not the namespace (DW-220): "in the @cf/ namespace"
+            // is wrong advice for `@cf/llava-hf/llava-1.5-7b-hf`, which already is
+            // — and which `ai.run()` refuses. The list comes from the catalog, so
+            // adding a model to the table adds it to this sentence.
+            `a supported ${WORKERS_AI_LABEL} model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")})`
+          : `a model id outside the ${WORKERS_AI_LABEL} ${WORKERS_AI_MODEL_PREFIX} namespace`,
+      // Only when the environment owns the value: naming the variable is what
+      // makes the sentence actionable, and saying it for a STORED mismatch would
+      // send the owner to a variable that is not set (DW-218).
+      ...(v.modelOrigin === "env" ? { note: SETTINGS_VECTOR_ENV_MODEL_NOTE } : {}),
+    });
+  }
+  if (!SELF_TRANSPORTING_EMBEDDING_PROVIDERS.has(v.provider) && !v.hasKey) {
+    missing.push({ field: "key", phrase: "an API key" });
+  }
+  // The transport leg for the one provider whose transport is a RUNTIME fact
+  // rather than a stored value (DW-225). `SELF_TRANSPORTING_EMBEDDING_PROVIDERS`
+  // exempts `workers-ai` from the endpoint and the key precisely because the
+  // binding supplies both — so where the binding is absent, nothing is left.
+  // `null` is "not knowable here" and applies nothing: see
+  // {@link VectorSearchInputs.hasWorkersAiBinding}.
+  if (v.provider === "workers-ai" && v.hasWorkersAiBinding === false) {
+    missing.push({
+      field: "binding",
+      phrase: "the Cloudflare AI binding",
+      // Which of the two ways out the owner can actually take depends on WHO
+      // owns the selection: with `EMBEDDING_PROVIDER` set, "choose another
+      // embedding provider" names an action the provider select cannot perform
+      // (DW-281).
+      note:
+        v.providerOrigin === "env"
+          ? SETTINGS_VECTOR_BINDING_ENV_NOTE
+          : SETTINGS_VECTOR_BINDING_NOTE,
+    });
+  }
+  return missing;
+}
+
+/**
+ * What is missing, as one sentence, for the provider actually selected. A
+ * refusal that only said "no" would leave the owner to guess which field was
+ * unhappy — and one that demanded a key from Ollama would send them looking for
+ * a credential that does not exist.
+ *
+ * THE UNTICKED BOX's hint, and since DW-330 nothing else. It says "…before it
+ * can be turned on", which is what a switch the owner has not ticked is asking
+ * about — and `validateWorkbenchSettingsPatch` no longer mints it, because every
+ * refusal it can reach is about a request asking to hold the flag ON. See
+ * {@link vectorSearchInactiveCopy}, which is that frame and the only one the
+ * route sends.
+ */
+export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
+  const missing = vectorSearchMissingLegs(v);
+  if (missing.length === 0) return "";
+  return withLegNotes(vectorSearchLegSentence(missing), missing);
+}
+
+/**
+ * The trailing ACTION clause of {@link vectorSearchInactiveCopy}, per surface.
+ *
+ * The only thing the two frames differ by, kept as a table rather than as a
+ * ternary inside the template so that the shared half of the sentence exists
+ * exactly once and cannot drift between them. A surface added to
+ * {@link SettingsSurface} without a clause here is a type error.
+ */
+const VECTOR_INACTIVE_ACTION = {
+  // The Workbench renders the switch beside this sentence, so the action is
+  // simply the switch.
+  workbench: "Turn it off, or supply what is missing.",
+  // `/settings` renders no switch, so naming one would be advice this surface
+  // cannot carry out. The pointer names the OTHER surface in full — see
+  // {@link settingsPointer} — because "Settings" alone is the page the owner is
+  // already on.
+  flat: `Supply what is missing, or turn the switch off in ${settingsPointer("embeddings")}.`,
+} satisfies Record<SettingsSurface, string>;
+
+/**
+ * What a switch that is already SWITCHED ON, over legs that are unmet, has to
+ * say (DW-279).
+ *
+ * The surface renders the box CHECKED — the payload serves the stored flag, and
+ * the draft carries whatever the owner has done to it since — and beside it
+ * {@link vectorSearchMissingCopy} said "before it can be turned ON", describing
+ * a state the surface is visibly not in. The owner reads a ticked box and a
+ * sentence about turning it on, and cannot tell what the box is even claiming.
+ *
+ * The sentence acknowledges the switch and then says what the inputs it was
+ * handed still need — not what the deployment is doing. TWO callers now say it,
+ * over different inputs, and the wording holds for both precisely because it
+ * makes no claim about the running deployment:
+ *
+ *   - The Embeddings surface, beside the checkbox (DW-279). Every term that
+ *     surface computes is DRAFT-derived, so an unsaved provider change would
+ *     make any claim about the running deployment false while the stored config
+ *     goes on working. Here the sentence is about the settings AS THEY NOW STAND
+ *     on screen; the save bar's standing sentence is the one place unsaved edits
+ *     are qualified, and it is already announced on this control.
+ *   - {@link validateWorkbenchSettingsPatch}, as a REFUSED SAVE's error string
+ *     (DW-308) — and since DW-330 the ONLY frame it can send, chosen from the
+ *     flag the REQUEST carries rather than from the one `baseline` held. That
+ *     flag is `true` for every path that reaches the refusal, which is the same
+ *     question the checkbox asks of the draft, so the two surfaces cannot
+ *     answer one draft with two sentences. The inputs are the post-merge config
+ *     the request asked for — what the store WOULD hold had the save landed —
+ *     so "switched on" is the flag the request is asking to hold and "it needs
+ *     …" is what the requested config would still be missing. Nothing is
+ *     written, so the running deployment is unchanged either way, which is what
+ *     keeps the same words honest here. The consumer need not be a browser: any
+ *     client of `PUT /api/settings` reads this string as the 400 body, and it is
+ *     self-contained — it names the unmet legs and the action (turning the
+ *     switch off) without depending on a save bar or on anything else rendered
+ *     beside it.
+ *
+ * Same legs, same notes, same order as the refusal — only the frame changes,
+ * and the action the owner actually has here (turning it off) is the one named.
+ *
+ * …which is why `surface` exists (DW-329). "Turn it off" is an instruction only
+ * an owner who can SEE the switch can follow, and the flat `/settings` page
+ * renders no vector control at all — so the sentence it shows, and the sentence
+ * the route hands back when a flat body is refused, say where the switch lives
+ * instead of telling the owner to flip one that is not there. Everything else
+ * is byte-identical between the two: the legs, their order, their notes and
+ * whether there is a sentence at all. The parameter DEFAULTS to the Workbench
+ * surface, so `SettingsCanvas` and every nested-body refusal are untouched.
+ */
+export function vectorSearchInactiveCopy(
+  v: VectorSearchInputs,
+  surface: SettingsSurface = "workbench",
+): string {
+  const missing = vectorSearchMissingLegs(v);
+  if (missing.length === 0) return "";
+  return withLegNotes(
+    `Vector search is switched on, but it needs ${vectorSearchLegList(missing)} before it can run. ${VECTOR_INACTIVE_ACTION[surface]}`,
+    missing,
+  );
+}
+
+/** One sentence plus every leg's note, in leg order, blanks dropped. */
+function withLegNotes(sentence: string, legs: readonly VectorSearchLeg[]): string {
+  return [sentence, ...legs.map((leg) => leg.note)]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join(" ");
+}
+
+/**
+ * The legs as a noun-phrase LIST, split out of {@link vectorSearchLegSentence}
+ * so the on-but-inactive sentence names exactly the same things in exactly the
+ * same order without restating how a list is punctuated.
+ */
+function vectorSearchLegList(legs: readonly VectorSearchLeg[]): string {
+  const phrases = legs.map((leg) => leg.phrase);
+  return phrases.length === 1
+    ? phrases[0]
+    : `${phrases.slice(0, -1).join(", ")} and ${phrases[phrases.length - 1]}`;
+}
+
+/** The one refusal sentence, without any leg's note. */
+function vectorSearchLegSentence(legs: readonly VectorSearchLeg[]): string {
+  return `Vector search needs ${vectorSearchLegList(legs)} before it can be turned on.`;
+}
+
+/** A control on the Embeddings surface that a leg can be ABOUT. */
+export type VectorSearchControl = "provider" | "endpoint" | "model" | "key";
+
+/**
+ * Which CONTROL an unmet leg reaches.
+ *
+ * Every leg but one maps to its namesake. The `binding` leg has no control of
+ * its own — nothing on this surface binds `ai` in `wrangler.jsonc` — so it maps
+ * to the PROVIDER select, which is the only thing here that can move it: a
+ * different embedding provider drops the leg entirely (DW-277).
+ *
+ * At most one leg reaches any control: the provider leg returns early from
+ * {@link vectorSearchMissingLegs} and so excludes the binding leg, and the
+ * model leg is produced once.
+ */
+const VECTOR_LEG_CONTROL = {
+  provider: "provider",
+  endpoint: "endpoint",
+  model: "model",
+  key: "key",
+  binding: "provider",
+} satisfies Record<VectorSearchLegField, VectorSearchControl>;
+
+/**
+ * What one FLAT TEXT FIELD of a settings `PUT` body means for the store
+ * (DW-305/DW-328).
+ *
+ * `model`, `structuredKnowledgeModel`, `ollamaBaseUrl` and `embeddingModel` are
+ * the same kind of value — an optional trimmed string a blank body clears — and
+ * the route asks this question about all four. It is ONE function rather than
+ * four branches because four hand-written copies are four chances to drift, and
+ * DW-305 was about exactly that drift.
+ *
+ * It lives HERE rather than in `route.ts` for the reason this module's header
+ * gives: a Next `route.ts` may export nothing but its HTTP verbs, so a decision
+ * typed into it can only ever be reached through a request — and the arm that
+ * matters most is the one no request can reach.
+ *
+ * - `undefined` — the field is not in the body: `ignore`, nothing happens to it.
+ * - `null`, `""`, whitespace-only — `delete`, a CLEAR.
+ * - any other string — `{ store }`, TRIMMED. Every reader (`getEffectiveProvider`,
+ *   the LLM call sites, the embed resolver, `getOllamaBaseUrl`) compares the
+ *   stored value literally, so a padded id is one nothing recognises.
+ * - ANY OTHER TYPE — `ignore`: the stored field is LEFT EXACTLY AS IT WAS.
+ *
+ * That last arm is the one DW-328 changed. Each field's type check answers 400
+ * for a non-string well above the merge, so nothing malformed reaches here; this
+ * is defence in depth BEHIND those doors, never a replacement for them. But the
+ * shape it used to have — `typeof x === "string" ? x.trim() : ""` and then
+ * `"" → delete` — pointed the fallback AT erasing a field the client never asked
+ * to clear, which is the worst possible reading of a body nobody meant. Leaving
+ * the field untouched is the only inert answer: a request the door should have
+ * refused now changes nothing rather than deleting something.
+ */
+export type FlatTextFieldAction = "ignore" | "delete" | { store: string };
+
+export function flatTextFieldAction(value: unknown): FlatTextFieldAction {
+  if (value === undefined) return "ignore";
+  if (value === null) return "delete";
+  if (typeof value !== "string") return "ignore";
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? "delete" : { store: trimmed };
+}
+
+/**
+ * Which vector legs a LEGACY FLAT body could have moved — the legs a refusal
+ * aimed at that surface is allowed to name (DW-303).
+ *
+ * The flat `/settings` page renders exactly ONE control the vector rule reads —
+ * the embedding model. There is no embedding-provider select, no embedding
+ * endpoint box and no embedding API-key box anywhere on it; the Workbench owns
+ * all three. So a refusal naming the endpoint or the key gives an owner on that
+ * page nothing to do, and {@link validateWorkbenchSettingsPatch} uses this set
+ * to suppress exactly those.
+ *
+ * PRESENCE, not value: a key the body carries is a move this request makes,
+ * whatever it moves the field TO — `null` (a clear) moves the leg just as a new
+ * id does. That is the API contract rather than a description of what the page
+ * sends; `useSettings` sends `embeddingModel` only when its box is non-empty and
+ * never sends `embeddingProvider` at all, so the provider half here serves
+ * direct API callers.
+ *
+ * Derived from {@link VECTOR_LEG_CONTROL} rather than hand-listed, which is why
+ * `embeddingProvider` claims the `binding` leg as well: the binding leg has no
+ * control of its own and maps to the provider select, so a body that can move
+ * the provider can move the binding leg too.
+ */
+export function flatMovableVectorLegs(body: {
+  embeddingProvider?: unknown;
+  embeddingModel?: unknown;
+}): ReadonlySet<VectorSearchLegField> {
+  const legs = new Set<VectorSearchLegField>();
+  const claim = (control: VectorSearchControl): void => {
+    for (const [field, owner] of Object.entries(VECTOR_LEG_CONTROL) as Array<
+      [VectorSearchLegField, VectorSearchControl]
+    >) {
+      if (owner === control) legs.add(field);
+    }
+  };
+  if (body.embeddingProvider !== undefined) claim("provider");
+  if (body.embeddingModel !== undefined) claim("model");
+  return legs;
+}
+
+/** Does this control hold a value at all? See {@link vectorSearchFieldIssue}. */
+function vectorControlHasValue(v: VectorSearchInputs, control: VectorSearchControl): boolean {
+  switch (control) {
+    case "provider":
+      return Boolean(v.provider);
+    case "endpoint":
+      return Boolean(v.baseUrl);
+    case "model":
+      return Boolean(v.model);
+    case "key":
+      return v.hasKey;
+  }
+}
+
+/**
+ * WHO owns this control's value — the environment, or the store this edits.
+ *
+ * A `switch` with NO default, like {@link vectorControlHasValue} above and for a
+ * sharper reason: `"stored"` is the answer that MARKS a control `aria-invalid`,
+ * so a control added to {@link VectorSearchControl} and quietly caught by a
+ * fallback would inherit "the owner is at fault" for a value they may not own.
+ * Exhaustiveness makes that a compile error instead.
+ */
+function vectorControlOrigin(
+  v: VectorSearchInputs,
+  control: VectorSearchControl,
+): "env" | "stored" {
+  switch (control) {
+    case "provider":
+      return v.providerOrigin;
+    case "model":
+      return v.modelOrigin;
+    case "endpoint":
+    case "key":
+      // Neither can produce an issue at all — both legs are pure presence tests,
+      // so `vectorSearchFieldIssue` has already returned `null` before it asks.
+      // The arms exist so the switch stays exhaustive, not because they are
+      // reachable through a real issue.
+      return "stored";
+  }
+}
+
+/**
+ * The legs whose note the OWNING ROW already carries in its own words.
+ *
+ * Both are env-override sentences about a variable the row names anyway —
+ * `EMBEDDING_MODEL` on the model row ({@link settingsEnvOverrideCopy}, DW-223)
+ * and `EMBEDDING_PROVIDER` on the provider row
+ * ({@link settingsEnvProviderInvalidCopy}, DW-636). A leg's note is only ever
+ * omitted from that leg's own control's hint; the checkbox's sentence, which
+ * has no row of its own to lean on, always carries every note.
+ *
+ * A SET of leg FIELDS rather than of controls, because `binding` shares the
+ * provider control and must keep its note — see {@link vectorSearchFieldIssue}.
+ */
+const NOTE_ON_OWNING_ROW = new Set<VectorSearchLegField>(["model", "provider"]);
+
+/**
+ * What ONE refusable control has to say about its own value, or `null` when it
+ * has nothing (DW-223, DW-277).
+ *
+ * The refusal used to be announced only as the vector checkbox's
+ * `aria-describedby`, while the control holding the wrong value carried no
+ * description and no `aria-invalid` — and the ordinary way into that state is
+ * changing the PROVIDER select, which touches neither the model box nor the
+ * switch. So each leg is offered separately here, to the control that OWNS it
+ * per {@link VECTOR_LEG_CONTROL}.
+ *
+ * ABSENCE IS NOT AN ISSUE. A control holding nothing holds no WRONG value, so a
+ * bare "needs a model" / "needs an endpoint" / "needs an API key" / "needs an
+ * embedding provider" leg produces no issue at all and the checkbox's one
+ * sentence carries it — otherwise a fresh deployment would render three boxes
+ * each repeating a leg already listed once. That silence is the rule's answer,
+ * not an omission: the endpoint and key legs are pure presence tests, so those
+ * two controls never produce an issue, and the provider select's standing
+ * {@link SETTINGS_VECTOR_PROVIDER_COPY} hint is already the complaint for an
+ * unset provider.
+ *
+ * `copy` is the leg's sentence plus the leg's NOTE, which names what owns the
+ * problem and rides on the owning control — except where the leg's OWN ROW
+ * already says the same thing about the same variable, which is
+ * {@link NOTE_ON_OWNING_ROW}: the `model` row carries
+ * {@link settingsEnvOverrideCopy} about `EMBEDDING_MODEL`, and the `provider`
+ * row carries {@link settingsEnvProviderInvalidCopy} about `EMBEDDING_PROVIDER`
+ * — an env-owned provider leg is a junk variable, so that sentence is always the
+ * one rendered beside it (DW-636). Restating it would put the variable's name
+ * twice in one hint.
+ *
+ * The exception is keyed on the LEG'S FIELD, not on the control: the `binding`
+ * leg also maps to the provider control per {@link VECTOR_LEG_CONTROL}, and its
+ * note ({@link SETTINGS_VECTOR_BINDING_ENV_NOTE} /
+ * {@link SETTINGS_VECTOR_BINDING_NOTE}) is the only place the two ways out of an
+ * unbound `workers-ai` are named — suppressing by control would delete it. That
+ * note is also why the provider row's env sentences matter here: it does not
+ * restate "wins at runtime" for the same reason.
+ *
+ * `invalid` is true only when the CONTROL'S OWN value is the wrong one — an
+ * origin of `"stored"`. An env-owned value is described without being marked,
+ * because marking a control the owner cannot fix from here is a dead end.
+ */
+export function vectorSearchFieldIssue(
+  v: VectorSearchInputs,
+  control: VectorSearchControl,
+): { copy: string; invalid: boolean } | null {
+  if (!vectorControlHasValue(v, control)) return null;
+  const leg = vectorSearchMissingLegs(v).find(
+    (entry) => VECTOR_LEG_CONTROL[entry.field] === control,
+  );
+  if (!leg) return null;
+  return {
+    copy: NOTE_ON_OWNING_ROW.has(leg.field)
+      ? vectorSearchLegSentence([leg])
+      : withLegNotes(vectorSearchLegSentence([leg]), [leg]),
+    invalid: vectorControlOrigin(v, control) === "stored",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Validation — re-run server-side over the merged config
+// ---------------------------------------------------------------------------
+
+/** Timeout bounds, in seconds. Integer only; `null` means no deadline. */
+export const LLM_TIMEOUT_MIN_SECONDS = 5;
+export const LLM_TIMEOUT_MAX_SECONDS = 3600;
+
+const PROVIDER_LIST = PROVIDER_INFO.map((p) => p.value).join(", ");
+
+export const SETTINGS_INVALID_PROVIDER_COPY = `A provider must be one of: ${PROVIDER_LIST}.`;
+export const SETTINGS_INVALID_EMBEDDING_PROVIDER_COPY = `An embedding provider must be one of: ${EMBEDDING_PROVIDERS.join(", ")}.`;
+export const SETTINGS_INVALID_MODEL_COPY = "A model must be a non-empty name.";
+export const SETTINGS_INVALID_URL_COPY =
+  "A base URL must be an absolute http or https address.";
+export const SETTINGS_INVALID_TIMEOUT_COPY = `The LLM timeout must be a whole number of seconds between ${LLM_TIMEOUT_MIN_SECONDS} and ${LLM_TIMEOUT_MAX_SECONDS}.`;
+/**
+ * The field's own hint. Both numerals are derived from the constants rather than
+ * typed, so the sentence cannot outlive the range it describes.
+ */
+export const SETTINGS_TIMEOUT_HINT_COPY = `Leave blank for no deadline. ${LLM_TIMEOUT_MIN_SECONDS}–${LLM_TIMEOUT_MAX_SECONDS} seconds.`;
+export const SETTINGS_INVALID_BODY_COPY = "Settings must be sent as an object.";
+export const SETTINGS_INVALID_SECRET_COPY = "An API key must be text.";
+export const SETTINGS_INVALID_FLAG_COPY = "Vector search must be on or off.";
+export const SETTINGS_INVALID_API_FLAG_COPY =
+  "The local API switches must be on or off.";
+export const SETTINGS_INVALID_SKILL_MAP_COPY =
+  "Skill enablement must be a map of skill id to on or off.";
+
+/**
+ * The floor for a stored loopback token.
+ *
+ * 24 characters — comfortably under {@link newLoopbackApiToken}'s 48 and well
+ * over anything a human would invent. It is a FLOOR, not a format: the door
+ * compares bytes, so a token from a password manager is as good as a generated
+ * one, and pinning a shape would refuse it.
+ */
+export const MIN_LOOPBACK_TOKEN_LENGTH = 24;
+
+export const SETTINGS_WEAK_API_TOKEN_COPY = `An API token must be at least ${MIN_LOOPBACK_TOKEN_LENGTH} characters. Use Generate.`;
+
+/**
+ * Absolute `http`/`https` only.
+ *
+ * A relative URL would be resolved against whatever host the SERVER happens to
+ * run on, which is never what an owner typing an endpoint means — and `file:`
+ * or `data:` would point the provider SDK at the deployment's own filesystem.
+ */
+export function isAbsoluteHttpUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "http:" || parsed.protocol === "https:";
+}
+
+export type WorkbenchSettingsValidation =
+  | { ok: true; patch: WorkbenchSettingsPatch }
+  | { ok: false; error: string };
+
+/**
+ * The stored state a patch is merged onto, as far as validation cares.
+ *
+ * The CONFIG fields are the ones a patch can move; the ENV fields are the ones
+ * it cannot and which win at runtime. Keeping them apart is what lets the merge
+ * below produce exactly the inputs the client produces from the payload — a
+ * single "effective model" field would make `{ embeddingModel: null }` look like
+ * a clear to the route and like nothing at all to the browser.
+ */
+export interface WorkbenchSettingsStored {
+  vectorSearchEnabled: boolean;
+  embeddingProvider: string | null;
+  embeddingBaseUrl: string | null;
+  embeddingModel: string | null;
+  hasEmbeddingApiKey: boolean;
+  envEmbeddingProvider: string | null;
+  /**
+   * The route's twin of {@link WorkbenchSettingsPayload.envEmbeddingProviderInvalid}
+   * — `EMBEDDING_PROVIDER` set to something `isEmbeddingProvider` refuses (DW-552).
+   *
+   * The same FACT, read from the same variable by the same
+   * `envEmbeddingProviderPair()` in `config.ts`, and differing from the payload
+   * twin only in being required rather than optional (see below). Both are
+   * shaped exactly like `envResearchProviderInvalid`; what that mirror does NOT
+   * extend to is their consumers — see the payload field's own note (DW-637).
+   *
+   * The route's half cannot refuse a raw value it does not carry. The field
+   * above is filtered, so a junk `EMBEDDING_PROVIDER=deepseek` arrives there as
+   * `null` and {@link mergedVectorInputs} used to fall THROUGH to the stored
+   * provider — answering `openai`, every leg met, while `getVectorSearchSettings`
+   * (which reads the variable raw, DW-509) answered `deepseek` with the gate
+   * refused. The two halves promised to be identical agreed with each other and
+   * both dissented from the runtime.
+   *
+   * REQUIRED, not optional, unlike the payload twin: exactly one constructor of
+   * this interface exists ({@link workbenchSettingsStored}), so requiring it
+   * makes an omission a compile error rather than a silent `undefined`. It is
+   * re-JOINED to the field above at the point of use and never folded into it —
+   * `envEmbeddingProvider` is what PINS the provider select, and an unsupported
+   * value names no vendor to pin (DW-398).
+   */
+  envEmbeddingProviderInvalid: string | null;
+  envEmbeddingModel: string | null;
+  /** See {@link WorkbenchSettingsPayload.envEmbeddingApiKeyProviders}. */
+  envEmbeddingApiKeyProviders: string[];
+  /**
+   * The RUNTIME half — see {@link WorkbenchSettingsPayload.hasWorkersAiBinding}.
+   *
+   * Two-state here, where {@link VectorSearchInputs} is tri-state: the route
+   * knows the answer, so there is no "not knowable" for this caller to spell.
+   */
+  hasWorkersAiBinding: boolean;
+}
+
+/**
+ * Validate one `workbench` patch, including the vector rule over the MERGE.
+ *
+ * Returns the patch rather than a bare `true` so the caller cannot forget to use
+ * the narrowed value, and one sentence rather than a field list because the
+ * surface shows the server's sentence verbatim.
+ *
+ * `stored` is what the patch is MERGED ONTO — for the route, the post-legacy-merge
+ * config, so an `embeddingModel` set by the flat field in the same request counts
+ * toward the gate. `baseline` is what the store held BEFORE the request, and it
+ * exists only to answer "did this request move anything the rule reads" (DW-219).
+ * The two differ exactly when a body carries both a flat legacy field and a
+ * `workbench` key: with one argument the flat move would be baked into BOTH
+ * sides of the comparison and would compare equal to itself, skipping the very
+ * gate the flat field was supposed to have entered. It defaults to `stored`, so
+ * a caller with no legacy path — every caller but the route — is unchanged.
+ *
+ * `baseline` has a SECOND job (DW-308): it picks which sentence a refusal
+ * carries. A request that turns the switch ON gets "…before it can be turned
+ * on"; a request against a switch the store already had ON gets the switched-on
+ * frame, because the save bar renders the refusal beside a box the payload
+ * still shows ticked. It decides WHICH sentence only — never WHETHER the gate
+ * refuses, which stays {@link canEnableVectorSearch} alone.
+ *
+ * `actionableLegs` is the set of vector legs the REQUESTING SURFACE can move —
+ * see {@link flatMovableVectorLegs} and the vector rule below. Omitted (the
+ * default) means "this surface reaches every control", which is today's
+ * behaviour and what every caller but the flat-only route path wants. An EMPTY
+ * set is its opposite, not its equal: it says the surface can move nothing, so
+ * only a configuration this request BROKE can produce a refusal.
+ */
+export function validateWorkbenchSettingsPatch(
+  value: unknown,
+  stored: WorkbenchSettingsStored,
+  baseline: WorkbenchSettingsStored = stored,
+  actionableLegs?: ReadonlySet<VectorSearchLegField>,
+): WorkbenchSettingsValidation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: SETTINGS_INVALID_BODY_COPY };
+  }
+  const patch = value as Record<string, unknown>;
+
+  for (const key of ["chatProvider", "ingestProvider"] as const) {
+    const raw = patch[key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    if (typeof raw !== "string" || !VALID_PROVIDERS.has(raw)) {
+      return { ok: false, error: SETTINGS_INVALID_PROVIDER_COPY };
+    }
+  }
+
+  {
+    const raw = patch.embeddingProvider;
+    if (!(raw === undefined || raw === null || raw === "")) {
+      if (typeof raw !== "string" || !isEmbeddingProvider(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_EMBEDDING_PROVIDER_COPY };
+      }
+    }
+  }
+
+  for (const key of ["chatModel", "ingestModel", "embeddingModel"] as const) {
+    const raw = patch[key];
+    // `null` is how a model is UNSET, and it is what `settingsSaveBody` sends
+    // for a box the owner emptied. A blank STRING is refused instead: a model is
+    // a name, "" is not one, and accepting it would make "clear this" and "I
+    // typed nothing" the same request — which is exactly the ambiguity the
+    // secrets' three states exist to avoid elsewhere.
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      return { ok: false, error: SETTINGS_INVALID_MODEL_COPY };
+    }
+  }
+
+  for (const key of [
+    "customBaseUrl",
+    "embeddingBaseUrl",
+    "firecrawlBaseUrl",
+    // The SearXNG instance is an endpoint like any other, and it rides the same
+    // absolute-http rule for the same reason: a relative value would be
+    // resolved against whatever host the deployment runs on, so a research run
+    // would search the deployment instead of the web.
+    "searxngBaseUrl",
+    // MinerU's Local API is reached by the SIDECAR, on the owner's machine —
+    // so a relative value would be resolved against nothing at all there. Same
+    // rule, same sentence.
+    "mineruLocalBaseUrl",
+  ] as const) {
+    const raw = patch[key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    if (typeof raw !== "string" || !isAbsoluteHttpUrl(raw.trim())) {
+      return { ok: false, error: SETTINGS_INVALID_URL_COPY };
+    }
+  }
+
+  {
+    const raw = patch.mineruMode;
+    // `null` and `""` read as `off`, which is the fail-closed default. An
+    // unrecognised mode is REFUSED rather than coerced: coercion would let a
+    // typo silently switch a configured extractor off, and storing it would
+    // leave the select showing a mode with no option row.
+    if (!(raw === undefined || raw === null || raw === "")) {
+      if (!isMinerUMode(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_MINERU_MODE_COPY };
+      }
+    }
+  }
+
+  if (patch.intakeKeepParsed !== undefined && typeof patch.intakeKeepParsed !== "boolean") {
+    return { ok: false, error: SETTINGS_INVALID_BODY_COPY };
+  }
+
+  for (const key of [
+    "customApiKey",
+    "embeddingApiKey",
+    "firecrawlApiKey",
+    "tavilyApiKey",
+    "serpApiKey",
+    "mineruApiKey",
+  ] as const) {
+    const raw = patch[key];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string") {
+      return { ok: false, error: SETTINGS_INVALID_SECRET_COPY };
+    }
+  }
+
+  {
+    const raw = patch.researchProvider;
+    // `null` and `""` both mean "no stored choice", which resolves to the
+    // default. Anything else has to be one of the three this build can search
+    // with — storing an unknown name would leave the select showing a provider
+    // with no option row and every run refusing.
+    if (!(raw === undefined || raw === null || raw === "")) {
+      if (!isResearchProviderId(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_RESEARCH_PROVIDER_COPY };
+      }
+    }
+  }
+
+  for (const key of ["serpApiEngine", "searxngCategories"] as const) {
+    const raw = patch[key];
+    // Free text with no vocabulary to check against: SerpApi adds engines and
+    // a SearXNG instance defines its own categories, so an allowlist here would
+    // refuse a value the owner's instance accepts. `null` clears; a blank
+    // string is refused for the same reason a blank model name is — "clear
+    // this" and "I typed nothing" must not be the same request.
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      return { ok: false, error: SETTINGS_INVALID_MODEL_COPY };
+    }
+  }
+
+  {
+    const raw = patch.llmTimeoutSeconds;
+    // `null` is the ONLY way to clear the deadline — `settingsSaveBody` sends it
+    // for an emptied box. `""` is refused with the rest of the non-numbers,
+    // because `applyWorkbenchSettings` ignores any string it is handed: letting
+    // `""` through would answer 200 for a request that changed nothing, which is
+    // the same silent no-op the raw-string path exists to prevent.
+    if (!(raw === undefined || raw === null)) {
+      if (
+        typeof raw !== "number" ||
+        !Number.isInteger(raw) ||
+        raw < LLM_TIMEOUT_MIN_SECONDS ||
+        raw > LLM_TIMEOUT_MAX_SECONDS
+      ) {
+        return { ok: false, error: SETTINGS_INVALID_TIMEOUT_COPY };
+      }
+    }
+  }
+
+  {
+    const raw = patch.vectorSearchEnabled;
+    if (raw !== undefined && typeof raw !== "boolean") {
+      return { ok: false, error: SETTINGS_INVALID_FLAG_COPY };
+    }
+  }
+
+  // Epic 8's door. Two switches, one secret and one map — checked HERE rather
+  // than in the route so the browser and the route refuse the same body with the
+  // same sentence, which is this module's whole reason for existing.
+  for (const key of ["apiEnabled", "allowUnauthenticated"] as const) {
+    const raw = patch[key];
+    if (raw !== undefined && typeof raw !== "boolean") {
+      return { ok: false, error: SETTINGS_INVALID_API_FLAG_COPY };
+    }
+  }
+
+  {
+    const raw = patch.loopbackApiToken;
+    // Three-state like the other secrets: absent keeps, `null` removes. A blank
+    // string is accepted as a REMOVE rather than refused, because unlike a model
+    // name there is no box here for a human to leave empty by accident — the
+    // only writer is Generate, and `""` can only be a serializer's `null`.
+    if (!(raw === undefined || raw === null)) {
+      if (typeof raw !== "string") {
+        return { ok: false, error: SETTINGS_INVALID_SECRET_COPY };
+      }
+      if (raw.trim().length > 0 && raw.trim().length < MIN_LOOPBACK_TOKEN_LENGTH) {
+        // A short token is refused rather than stored. This credential guards
+        // read access to the entire wiki over a port anything on the machine can
+        // reach, and a four-character one is worse than none: it reads as
+        // protection on the pane while being trivially guessable.
+        return { ok: false, error: SETTINGS_WEAK_API_TOKEN_COPY };
+      }
+    }
+  }
+
+  {
+    const raw = patch.skillEnablement;
+    if (raw !== undefined) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_SKILL_MAP_COPY };
+      }
+      for (const [id, on] of Object.entries(raw as Record<string, unknown>)) {
+        if (id.length === 0 || typeof on !== "boolean") {
+          return { ok: false, error: SETTINGS_INVALID_SKILL_MAP_COPY };
+        }
+      }
+    }
+  }
+
+  // The vector rule, evaluated over what the store will hold AFTER this patch
+  // lands — an endpoint set in the same request counts, and a key already in the
+  // store counts. The client disables the control with the same predicate; this
+  // is what makes it a rule rather than a disabled button.
+  //
+  // But only for a patch that actually MOVES something the rule reads (DW-219).
+  // `settingsSaveBody` sends `vectorSearchEnabled`, `embeddingProvider`,
+  // `embeddingModel` and `embeddingBaseUrl` on EVERY save, so re-running the
+  // whole rule whenever the merged flag is on answered 400 to a chat-model or
+  // timeout edit on any deployment already storing a mismatch — a surface the
+  // owner cannot leave, since the refusal names a field their edit never
+  // touched. "Touched" therefore cannot be read as key PRESENCE; it is a VALUE
+  // comparison of the merged inputs against the stored-only ones.
+  //
+  // Little escapes through the skip: `getVectorSearchSettings()` still
+  // intersects the stored flag with this same predicate, so a stored mismatch of
+  // PROVIDER, ENDPOINT, MODEL or KEY still reads as OFF to every consumer.
+  //
+  // The BINDING leg is the one exception, and it is deliberate rather than a
+  // hole. `getVectorSearchSettings()` passes `hasWorkersAiBinding: null` because
+  // it cannot know (see {@link VectorSearchInputs.hasWorkersAiBinding}), so a
+  // stored `workers-ai` flag on a deployment with no binding still reads as ON
+  // there. Nothing embeds on the strength of it: `resolveEmbeddingProvider`
+  // returns `null` with no binding, so the embed path refuses independently —
+  // which is exactly the disagreement the leg exists to report on the SURFACE,
+  // where the owner can act on it.
+  const enabled =
+    typeof patch.vectorSearchEnabled === "boolean"
+      ? patch.vectorSearchEnabled
+      : stored.vectorSearchEnabled;
+  if (enabled) {
+    const merged = mergedVectorInputs(patch as WorkbenchSettingsPatch, stored);
+    // What the store held BEFORE this request — `baseline`, not `stored`, so a
+    // flat legacy field moved earlier in the same request is a MOVE rather than
+    // part of the unchanged background. See the parameter's note.
+    const current = mergedVectorInputs({}, baseline);
+    const turningOn = !baseline.vectorSearchEnabled;
+    if (
+      (turningOn || !vectorInputsEqual(current, merged)) &&
+      !canEnableVectorSearch(merged)
+    ) {
+      // A refusal has to be one the requesting surface can DO something about
+      // (DW-303). The flat `/settings` page renders no embedding endpoint and no
+      // embedding key, so an owner editing the embedding model on a deployment
+      // whose stored config was already missing both used to be told to supply
+      // two boxes that do not exist there — and had no way to land the edit.
+      //
+      // Two questions, and the refusal survives either one:
+      //
+      //   - `canEnableVectorSearch(current)` — it WORKED before this request, so
+      //     this request broke it. That is always the request's business, and it
+      //     is what keeps DW-217 shut: switching `embeddingProvider` from
+      //     `ollama` to `openai` leaves the endpoint and key legs unmet even
+      //     though no flat field can supply either, and silently switching
+      //     effective vector search off is exactly the outcome the gate exists
+      //     to prevent.
+      //   - some unmet leg is one `actionableLegs` names, so the sentence points
+      //     at a control the surface actually shows.
+      //
+      // "Did this request break it" is asked about the CONFIGURATION, never by
+      // diffing leg SETS. `vectorSearchMissingLegs` early-returns the provider
+      // leg ALONE when the provider is absent or invalid — the remaining
+      // questions cannot be asked until a provider is chosen — so an
+      // already-broken baseline reports `[provider]` while the merge reports the
+      // legs that were hidden behind it, and a set diff reads every one of those
+      // as newly unmet. `canEnableVectorSearch` cannot be distorted that way.
+      //
+      // `turningOn` is exempt: a request that switches the flag ON is asking for
+      // vector search, and every leg is then its business.
+      //
+      // A FLAG rather than an early `ok: true`, so this function keeps ONE
+      // success exit. A second one here is harmless only for as long as nothing
+      // follows the vector rule — and the next check appended below it would be
+      // silently skipped for every scoped request.
+      let suppressed = false;
+      if (actionableLegs && !turningOn) {
+        const brokeIt = canEnableVectorSearch(current);
+        suppressed =
+          !brokeIt &&
+          !vectorSearchMissingLegs(merged).some((leg) => actionableLegs.has(leg.field));
+      }
+      if (!suppressed) {
+        return {
+          ok: false,
+          // ONE FRAME, chosen from the REQUEST's flag (DW-330).
+          //
+          // `enabled` — the request's own `vectorSearchEnabled` where it sends
+          // one, the stored flag where it does not — is the flag this refusal
+          // is about, and inside `if (enabled)` it is `true` by construction.
+          // So the switched-on frame is the only sentence the route can mint,
+          // and the ternary that used to choose one is gone rather than merely
+          // biased: there is no second answer left to give.
+          //
+          // WHY THE REQUEST AND NOT THE STORE. `SettingsCanvas` picks its
+          // checkbox hint from the DRAFT — the `vectorInactive`/`vectorBlocked`
+          // ternary on `values.vectorSearchEnabled` — and the draft is what the
+          // request carries. Framing from `baseline.vectorSearchEnabled` instead —
+          // which is what `turningOn` reads — made the two surfaces disagree
+          // about one draft: tick the box, then break a leg, and the ticked
+          // checkbox said "…is switched on, but it needs…" while the 400 the
+          // very same draft bought said "…before it can be turned on". The
+          // client half is the reference (DW-279 settled it there), so the
+          // route is aligned to it.
+          //
+          // `vectorSearchMissingCopy` is untouched and still exported: it is
+          // the hint beside an UNTICKED box, a state only the client can be in.
+          // It simply stops being a sentence this route can send.
+          //
+          // Which SENTENCE, never WHETHER: `canEnableVectorSearch` stays the one
+          // rule both callers answer identically about whether a situation is
+          // refused at all, and `turningOn` keeps its other two jobs above — the
+          // trigger and the scoping exemption — untouched by this.
+          //
+          // The frame asks a SECOND question, off the same one fact the fourth
+          // argument already carries (DW-329). "Turn it off" is an action only a
+          // surface that renders the switch can offer, and a scoped request is
+          // by definition one from the flat `/settings` page, which renders none
+          // — so it gets the clause that says where the switch lives.
+          // `actionableLegs === undefined` is the whole test: absent means a
+          // surface reaching every control, present means the flat page. No
+          // second parameter, because there is no second fact.
+          error: vectorSearchInactiveCopy(
+            merged,
+            actionableLegs === undefined ? "workbench" : "flat",
+          ),
+        };
+      }
+    }
+  }
+
+  return { ok: true, patch: patch as WorkbenchSettingsPatch };
+}
+
+/**
+ * Every key of {@link VectorSearchInputs}, as a value.
+ *
+ * `satisfies Record<keyof VectorSearchInputs, true>` is what makes this
+ * EXHAUSTIVE: a field added to the interface without being added here is a type
+ * error, where a plain `Array<keyof VectorSearchInputs>` would have accepted any
+ * subset and let a new input be silently skipped by the comparison below.
+ */
+const VECTOR_INPUT_KEYS = {
+  provider: true,
+  baseUrl: true,
+  model: true,
+  hasKey: true,
+  modelOrigin: true,
+  providerOrigin: true,
+  hasWorkersAiBinding: true,
+} satisfies Record<keyof VectorSearchInputs, true>;
+
+/**
+ * Does this request leave every input the vector rule reads exactly where it
+ * was?
+ *
+ * Field by field over {@link VECTOR_INPUT_KEYS}. Three of those fields cannot
+ * differ between the two sides TODAY — no patch can move `modelOrigin`,
+ * `providerOrigin` or `hasWorkersAiBinding`, which come from the environment and
+ * the runtime — so they are compared for completeness rather than because they
+ * vary. That is the point of the exhaustive list: the day one of them becomes
+ * patchable, this comparison already reads it.
+ */
+function vectorInputsEqual(a: VectorSearchInputs, b: VectorSearchInputs): boolean {
+  return (Object.keys(VECTOR_INPUT_KEYS) as Array<keyof VectorSearchInputs>).every(
+    (key) => a[key] === b[key],
+  );
+}
+
+/**
+ * Did the stored embedding provider MOVE? (DW-69/DW-72)
+ *
+ * The ONE definition of "switched", imported by every writer of the field:
+ * `applyWorkbenchSettings` (the `workbench` merge), the flat legacy branch of
+ * `PUT /api/settings`, {@link mergedVectorInputs} and the Workbench draft. A
+ * second copy is how the browser and the route drift apart, and a drift here
+ * means one of them keeps handing OpenAI's secret to Google.
+ *
+ * A VALUE comparison, never presence: `settingsSaveBody` sends
+ * `embeddingProvider` on EVERY save, so "the field is in the body" says nothing
+ * at all about whether the vendor changed. Both sides are trim-normalised
+ * first, so `"openai"`, `" openai "` and `"openai"` are one value, and `""`,
+ * `"   "` and `null` are all "nothing selected" — the auto-detect rung, which
+ * is a real move away from a named vendor and must clear like any other.
+ */
+export function embeddingProviderChanged(
+  previous: string | null,
+  next: string | null,
+): boolean {
+  const normalise = (value: string | null): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  return normalise(previous) !== normalise(next);
+}
+
+/**
+ * The `EMBEDDING_PROVIDER` override, RE-JOINED from the two fields it is served
+ * as (DW-552/DW-637).
+ *
+ * `getVectorSearchSettings` reads the variable RAW, so a value
+ * `isEmbeddingProvider` refuses still wins there and still fails the gate's
+ * first leg. Both wire halves carry that one variable split in two — filtered
+ * for the provider select's PIN, invalid beside it for the row's sentence — for
+ * a SURFACE reason only, because an unsupported value names no vendor to pin
+ * (DW-398). Joining them back is what makes the two feeders read the same
+ * variable the runtime does; before it, a junk `EMBEDDING_PROVIDER=deepseek`
+ * fell THROUGH to the stored provider and both halves waved a switch on that
+ * nothing embeds.
+ *
+ * FILTERED FIRST, so a supported value is unchanged in every existing situation.
+ * The two are exclusive as their one constructor produces them, so the `??` is a
+ * join and never a precedence question — but `WorkbenchSettingsPayload` is a
+ * WIRE type that does not enforce the exclusivity, and where a body carries
+ * both, this order is what makes the PIN win, matching `SettingsCanvas`'
+ * explicit guard on the same disagreement.
+ *
+ * `invalid` is taken as `string | null | undefined` because the payload's twin
+ * is OPTIONAL and the store's is REQUIRED: normalising that asymmetry HERE,
+ * once, is what let the two call sites spell the same join two different ways —
+ * the exact copy-drift shape DW-552 was about. The result is `null`, never
+ * `undefined`, because every caller reads `!== null` as "the environment owns
+ * this" and `undefined` is not "unset".
+ */
+export function resolveEnvEmbeddingProvider(
+  filtered: string | null,
+  invalid: string | null | undefined,
+): string | null {
+  return filtered ?? invalid ?? null;
+}
+
+/**
+ * What the vector legs look like once `patch` lands on `stored`.
+ *
+ * Module-private: the ONE public expression of this rule is
+ * {@link canEnableVectorSearch}, and this is the route's half of feeding it.
+ * The browser's half is {@link draftVectorInputs}, and the two are written to
+ * produce identical answers for identical situations — env override wins, then
+ * the patch, then what is stored.
+ */
+function mergedVectorInputs(
+  patch: WorkbenchSettingsPatch,
+  stored: WorkbenchSettingsStored,
+): VectorSearchInputs {
+  const resolve = (
+    next: string | null | undefined,
+    current: string | null,
+  ): string | null => {
+    if (next === undefined) return current;
+    if (next === null) return null;
+    const trimmed = next.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  // What the STORE will hold for the provider once this patch lands — the env
+  // override is deliberately NOT read here, because a variable no save can move
+  // cannot be what a save switched. The gate's `provider` below still takes the
+  // override; this local answers a different question.
+  const storedProviderAfter = resolve(patch.embeddingProvider, stored.embeddingProvider);
+  // …and whether that is a MOVE (DW-69/DW-72). `applyWorkbenchSettings` drops
+  // the stored key and the stored endpoint on exactly this condition, so the
+  // gate has to judge the config that will EXIST after the write. Counting them
+  // here would wave through a vector switch the route then refuses to honour —
+  // and the two legs it waved through belong to the previous vendor.
+  const switched = embeddingProviderChanged(stored.embeddingProvider, storedProviderAfter);
+  // The env override, through the ONE join both feeders share — see
+  // {@link resolveEnvEmbeddingProvider} for why it is a join and why the
+  // filtered field comes first (DW-552/DW-637).
+  const envProvider = resolveEnvEmbeddingProvider(
+    stored.envEmbeddingProvider,
+    stored.envEmbeddingProviderInvalid,
+  );
+  const provider = envProvider ?? storedProviderAfter;
+  const key = patch.embeddingApiKey;
+  const hasKey =
+    // An env credential counts only for the vendor it belongs to — and it is
+    // the NEW vendor's env key that counts, which this line already reads
+    // because `provider` above is the post-patch value.
+    (provider !== null && stored.envEmbeddingApiKeyProviders.includes(provider)) ||
+    (key === undefined
+      ? // The stored key stops counting across a switch: it is about to be
+        // deleted. A key supplied in THIS request still counts (the branch
+        // below), which is what lets one save both switch vendor and land the
+        // new credential.
+        !switched && stored.hasEmbeddingApiKey
+      : typeof key === "string" && key.trim().length > 0);
+  return {
+    provider,
+    // Same reading for the endpoint: across a switch the patch is the only
+    // source, so a request that switches vendor without naming an endpoint sees
+    // `null` rather than the old vendor's URL.
+    baseUrl: resolve(patch.embeddingBaseUrl, switched ? null : stored.embeddingBaseUrl),
+    model: stored.envEmbeddingModel ?? resolve(patch.embeddingModel, stored.embeddingModel),
+    hasKey,
+    // The same `??` the line above spells, read as a question about ORIGIN: the
+    // env override wins, so when there is one the model box is not what the gate
+    // is looking at.
+    modelOrigin: stored.envEmbeddingModel !== null ? "env" : "stored",
+    // The `??` on the `provider` line above, read the same way: with
+    // `EMBEDDING_PROVIDER` set, the select is not what the gate is looking at
+    // and "choose another provider" is advice it cannot follow (DW-281). Over
+    // the JOINED value, matching `getVectorSearchSettings`' own
+    // `providerOrigin: envProvider !== null ? "env" : "stored"` over its raw read.
+    providerOrigin: envProvider !== null ? "env" : "stored",
+    // A runtime fact no patch can move — it arrives on `stored` from the route.
+    hasWorkersAiBinding: stored.hasWorkersAiBinding,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The draft — what the surface holds while the owner is typing
+// ---------------------------------------------------------------------------
+
+/**
+ * The editable mirror of a {@link WorkbenchSettingsPayload}.
+ *
+ * Every non-secret field is a plain string (or a boolean), because that is what
+ * an `<input>`/`<select>` gives back and converting at the boundary rather than
+ * on every keystroke keeps a half-typed number from being rejected mid-word.
+ *
+ * The three SECRETS are `string | null` and carry three states:
+ *   - `""`   the owner has not touched it — omitted from the save body entirely
+ *   - a string  replace the stored key with this
+ *   - `null` the owner pressed Remove — sent as `null`, which the merge deletes
+ *
+ * A password input that shows nothing cannot tell "leave it alone" from "delete
+ * it", and a save that quietly cleared a key nobody touched would be the worst
+ * outcome on this surface. {@link settingsSaveBody} is where that lives, and it
+ * is a pure function the suite executes.
+ */
+export interface SettingsDraft {
+  chatProvider: string;
+  chatModel: string;
+  ingestProvider: string;
+  ingestModel: string;
+  customBaseUrl: string;
+  customApiKey: string | null;
+  llmTimeoutSeconds: string;
+  vectorSearchEnabled: boolean;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingBaseUrl: string;
+  embeddingApiKey: string | null;
+  firecrawlBaseUrl: string;
+  firecrawlApiKey: string | null;
+  /**
+   * The Deep Research provider select. `""` is "nothing chosen", which reads as
+   * {@link DEFAULT_RESEARCH_PROVIDER} — the same `""`-means-unset convention the
+   * other selects on this surface use.
+   */
+  researchProvider: string;
+  tavilyApiKey: string | null;
+  serpApiKey: string | null;
+  serpApiEngine: string;
+  searxngBaseUrl: string;
+  searxngCategories: string;
+  intakeKeepParsed: boolean;
+  /**
+   * The mode the pane is EDITING, `off` included.
+   *
+   * One field rather than a boolean plus a mode: the checkbox and the select
+   * are two controls over this single value, and storing them separately is
+   * how a surface ends up rendering "enabled" beside a mode of `off`.
+   */
+  mineruMode: MinerUMode;
+  mineruLocalBaseUrl: string;
+  mineruApiKey: string | null;
+  apiEnabled: boolean;
+  allowUnauthenticated: boolean;
+  /**
+   * A token the owner just GENERATED, in the same three states as the secrets
+   * above — {@link SECRET_UNTOUCHED} for "leave the stored one alone", a string
+   * for "store this", `null` for "remove it".
+   *
+   * Unlike the secrets it is DISPLAYED while it holds a value, because this is
+   * the only moment it can be: nothing serves it back after the save. The API +
+   * MCP category's copy says so on the pane, which is the only place it can.
+   */
+  loopbackApiToken: string | null;
+}
+
+/** Untouched — see {@link SettingsDraft}. */
+export const SECRET_UNTOUCHED = "";
+
+export function settingsDraftFromPayload(
+  payload: WorkbenchSettingsValues,
+): SettingsDraft {
+  return {
+    chatProvider: payload.chatProvider ?? "",
+    chatModel: payload.chatModel ?? "",
+    ingestProvider: payload.ingestProvider ?? "",
+    ingestModel: payload.ingestModel ?? "",
+    customBaseUrl: payload.customBaseUrl ?? "",
+    customApiKey: SECRET_UNTOUCHED,
+    llmTimeoutSeconds:
+      payload.llmTimeoutSeconds === null ? "" : String(payload.llmTimeoutSeconds),
+    vectorSearchEnabled: payload.vectorSearchEnabled,
+    embeddingProvider: payload.embeddingProvider ?? "",
+    embeddingModel: payload.embeddingModel ?? "",
+    embeddingBaseUrl: payload.embeddingBaseUrl ?? "",
+    embeddingApiKey: SECRET_UNTOUCHED,
+    firecrawlBaseUrl: payload.firecrawlBaseUrl ?? "",
+    firecrawlApiKey: SECRET_UNTOUCHED,
+    researchProvider: payload.researchProvider ?? "",
+    tavilyApiKey: SECRET_UNTOUCHED,
+    serpApiKey: SECRET_UNTOUCHED,
+    serpApiEngine: payload.serpApiEngine ?? "",
+    searxngBaseUrl: payload.searxngBaseUrl ?? "",
+    searxngCategories: payload.searxngCategories ?? "",
+    intakeKeepParsed: payload.intakeKeepParsed,
+    mineruMode: payload.mineruMode,
+    mineruLocalBaseUrl: payload.mineruLocalBaseUrl ?? "",
+    mineruApiKey: SECRET_UNTOUCHED,
+    apiEnabled: payload.apiEnabled,
+    allowUnauthenticated: payload.allowUnauthenticated,
+    loopbackApiToken: SECRET_UNTOUCHED,
+  };
+}
+
+/**
+ * The draft after the owner ticks or unticks "Use MinerU for PDFs".
+ *
+ * A pure rule for the same reason {@link settingsDraftAfterEmbeddingProvider}
+ * is one: it is a decision, not a control. Ticking lands on
+ * {@link MINERU_FIRST_MODE} — Local API, the mode that keeps documents on the
+ * machine — rather than on whatever the select happens to show, because the
+ * owner has not been asked about Cloud yet. Unticking goes to `off` and leaves
+ * the base URL and the key ALONE: they are not the enable state, and dropping
+ * a stored token because the owner paused the feature would make re-enabling
+ * it a credential hunt.
+ *
+ * A tick when the draft is ALREADY on an enabled mode is a no-op, which matters
+ * only for a redundant tick (a click the browser fired twice, a controlled
+ * checkbox re-asserting itself): it must not move a chosen Cloud back to Local
+ * behind the owner.
+ *
+ * UNTICK-THEN-RE-TICK DOES land back on Local, and that is not a contradiction
+ * of the line above — the untick wrote `off` into the draft, so the re-tick is
+ * a first enablement and takes the first-enablement rule. Losing a Cloud
+ * selection that way is the safe direction to be wrong in, and the draft is not
+ * saved until the owner presses Save, so nothing has been applied either way.
+ */
+export function settingsDraftAfterMinerUEnabled(
+  draft: SettingsDraft,
+  enabled: boolean,
+): SettingsDraft {
+  if (!enabled) return { ...draft, mineruMode: "off" };
+  if (draft.mineruMode !== "off") return draft;
+  return { ...draft, mineruMode: MINERU_FIRST_MODE };
+}
+
+/**
+ * Does the DRAFT's MinerU selection send documents off the machine?
+ *
+ * Read off the draft, not the payload: the orange warning has to appear when
+ * the owner PICKS Cloud, before Save applies it — that is the whole acceptance
+ * criterion. A predicate over the stored value would show the warning only
+ * after the upload it is warning about was already possible.
+ */
+export function draftMinerULeavesMachine(draft: SettingsDraft): boolean {
+  return mineruLeavesMachine(draft.mineruMode);
+}
+
+/**
+ * The draft after the owner moves the embedding provider select (DW-69/DW-72).
+ *
+ * A pure rule rather than a `set("embeddingProvider", …)` in the component,
+ * because it is the SAME rule the store applies: when the value moves, the
+ * endpoint and the key belong to the previous vendor and are dropped. Here they
+ * are dropped from the DRAFT, which is what makes the surface honest —
+ * {@link settingsSaveBody} sends `embeddingBaseUrl` on every save, so a draft
+ * still holding the old vendor's endpoint would write it straight back into the
+ * store the moment `applyWorkbenchSettings` had cleared it, and the fix would
+ * hold on the API path while failing on the surface the owner actually uses.
+ *
+ * The key returns to {@link SECRET_UNTOUCHED} rather than to `null`: `null` is
+ * "Remove", and the owner did not press Remove — the STORE's own clear is what
+ * drops the stored key, and the field is simply back to untouched so a
+ * credential typed for the new vendor before saving still rides. A value the
+ * owner had typed for the vendor being left behind goes the same way, and so
+ * does a pending Remove: neither was about the vendor now selected.
+ *
+ * `payload` is what the STORE holds, and it is why this takes three arguments
+ * rather than two. The draft is not the only reference point: switching away
+ * and BACK within one draft ends on the stored vendor, whose endpoint and key
+ * were never touched — so the boxes are RESTORED to the payload's values rather
+ * than left blank. Leaving them blank would send `embeddingBaseUrl: null` on
+ * the next save and DELETE a stored endpoint the stored provider never moved
+ * away from, which is exactly the byte-identical-preservation promise the
+ * fourth acceptance criterion makes. The key half already behaved this way for
+ * free — {@link draftEmbeddingKeyStored} reports the stored key again the moment
+ * the draft returns to the payload's provider — and this makes the endpoint half
+ * symmetric with it.
+ *
+ * So there are three answers, not two: same value as the draft already holds
+ * (nothing moves), back to the STORED vendor (restore), any other vendor
+ * (blank).
+ */
+export function settingsDraftAfterEmbeddingProvider(
+  draft: SettingsDraft,
+  next: string,
+  payload: WorkbenchSettingsValues,
+): SettingsDraft {
+  if (!embeddingProviderChanged(draft.embeddingProvider, next)) {
+    return { ...draft, embeddingProvider: next };
+  }
+  // Back where the STORE is: the stored pair is the new vendor's own, because
+  // the new vendor IS the stored one. Restoring is what a freshly seeded draft
+  // would hold, so the surface shows the same thing a reload would.
+  const returning = !embeddingProviderChanged(payload.embeddingProvider, next);
+  return {
+    ...draft,
+    embeddingProvider: next,
+    embeddingBaseUrl: returning ? payload.embeddingBaseUrl ?? "" : "",
+    // Always untouched, in BOTH directions: the stored key is reported through
+    // `draftEmbeddingKeyStored` rather than held here, and anything the owner
+    // typed belonged to the vendor being left.
+    embeddingApiKey: SECRET_UNTOUCHED,
+  };
+}
+
+/**
+ * The draft after `PUT /api/settings` refused the move under the env pin
+ * (DW-553).
+ *
+ * The undo of {@link settingsDraftAfterEmbeddingProvider}'s blanking, and
+ * nothing more. That rule cleared the endpoint and un-touched the key because
+ * the move was going to happen; the route has now said it is not, so the three
+ * embedding legs go back to exactly what {@link settingsDraftFromPayload}
+ * seeds them with — the values the surface is HOLDING, which is the store's own
+ * answer to the read this draft came from.
+ *
+ * WITHOUT IT the surface is stuck: the draft still names the vendor the pin
+ * refuses, so the next Save re-sends the identical refused move, and the only
+ * escape is a reload that destroys every other unsaved edit. With it, Save is
+ * immediately usable again for the rest of the draft.
+ *
+ * EXACTLY THREE FIELDS. Every other edit on the surface — a timeout, a model, a
+ * research key — is untouched by the refusal and must survive it: a refused
+ * save is never allowed to be the thing that loses an edit. And the version is
+ * not this rule's business either; an arrived refusal applied nothing, so the
+ * held one is still current ({@link verdictClearsHeldVersion}).
+ *
+ * IT ADOPTS NOTHING NEW. `envEmbeddingProvider` is the fact the refusal is
+ * ABOUT, and it is deliberately not written into the payload from here: the
+ * surface may only show store state it was actually SERVED, and a stale tab's
+ * payload says `null` because that is what the read answered. The next read is
+ * what corrects it.
+ */
+export function settingsDraftAfterEmbeddingPinRefusal(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): SettingsDraft {
+  return {
+    ...draft,
+    // The same three expressions `settingsDraftFromPayload` uses, so a
+    // re-seeded draft and a freshly loaded one agree field for field.
+    embeddingProvider: payload.embeddingProvider ?? "",
+    embeddingBaseUrl: payload.embeddingBaseUrl ?? "",
+    embeddingApiKey: SECRET_UNTOUCHED,
+  };
+}
+
+/**
+ * Does the STORED embedding key still count for the vendor this draft selects?
+ * (DW-69/DW-72)
+ *
+ * `payload.hasEmbeddingApiKey` alone answers "the store holds a key", which was
+ * the misreport: it kept the row saying "A key is stored." and kept `Remove` on
+ * screen for a credential the very next save deletes. The predicate the surface
+ * needs is "a key is stored FOR WHAT THIS DRAFT SELECTS", and that is the
+ * stored boolean intersected with the one switch test.
+ *
+ * The same fact the route's `mergedVectorInputs` reads, so the browser's half of
+ * the vector rule and the route's half answer identically for one draft.
+ */
+export function draftEmbeddingKeyStored(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  return (
+    payload.hasEmbeddingApiKey &&
+    !embeddingProviderChanged(payload.embeddingProvider, draftText(draft.embeddingProvider))
+  );
+}
+
+/**
+ * Have the two fields the SUBSTITUTION NOTE describes moved since seeding?
+ * (DW-337)
+ *
+ * The note — {@link settingsModelSubstitutedCopy} — is the one thing on the
+ * embedding model row that is payload-derived, and it has to be: the
+ * substitution is the resolver applying `embeddingModelMatchesProvider` over the
+ * env and the store together, which only the server can evaluate. It states what
+ * this deployment is embedding with RIGHT NOW, which is a fact the browser
+ * cannot compute and must not guess.
+ *
+ * That is exactly why it is the one thing on that row that has to YIELD to the
+ * draft. The row's other two sentences — the env override note and the vector
+ * gate's complaint — are draft-derived, so the moment an owner corrects the
+ * model the whole row speaks about what they just typed, EXCEPT the note, which
+ * goes on describing the pre-edit server state in the present tense: "Not in
+ * effect. This deployment embeds with …" about a model the owner has already
+ * replaced. Two freshness contracts on one row, and no way for a reader to tell
+ * which sentence belongs to which. The fix is not to recompute the note in the
+ * browser — that would be inventing a server fact — it is to withhold it while
+ * its subject is something the server has not seen, and let a landed save
+ * re-seed the payload and bring it back.
+ *
+ * IDENTITY, not the whole row: `embeddingModel` and `embeddingProvider` are the
+ * two fields the resolver's answer is a function of. The endpoint and the key
+ * change how the vendor is reached, not which model resolves, so an edit to
+ * either leaves the note as true as it was.
+ *
+ * AND THE MODEL LEG ONLY COUNTS WHEN THE STORE OWNS THE MODEL.
+ * `embeddingModelAnswer` takes `getEmbeddingModelOverride()` in preference to
+ * the stored value, so with `EMBEDDING_MODEL` set the editable box is not what
+ * resolves at all — the substitution the server reported stays exactly true no
+ * matter what is typed there, and withholding the note would hide a still-true
+ * fact from the owner while they edit a box that is not the one in play. This is
+ * the same reading {@link draftVectorInputs} already applies with
+ * `payload.envEmbeddingModel ?? draftText(draft.embeddingModel)` and reports as
+ * `modelOrigin`, so the row's three sentences answer to one precedence rule.
+ *
+ * The PROVIDER leg takes no such qualifier. `EMBEDDING_PROVIDER` pins the select
+ * outright — `aria-disabled` plus a handler that commits nothing — so under an
+ * env-owned provider the draft field cannot move in the first place, and a term
+ * guarding against it would be unreachable rather than merely redundant.
+ *
+ * Compared against `settingsDraftFromPayload(payload)` rather than against the
+ * payload itself — the shape {@link settingsDirty} already uses, and for the
+ * same reason: "typed a value and undid it" is correctly clean, and `null` on
+ * the payload seeds as `""` on the draft, so a blank box over an unset field
+ * must not read as an edit.
+ */
+export function draftEmbeddingIdentityDirty(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  const seeded = settingsDraftFromPayload(payload);
+  const modelMoved =
+    payload.envEmbeddingModel === null &&
+    draft.embeddingModel !== seeded.embeddingModel;
+  return modelMoved || draft.embeddingProvider !== seeded.embeddingProvider;
+}
+
+/**
+ * Has anything moved since the draft was seeded?
+ *
+ * Compared against the draft the PAYLOAD would produce rather than against the
+ * payload itself, so "typed a value and deleted it again" is correctly not
+ * dirty, and a secret left at `""` never is.
+ */
+export function settingsDirty(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  const seeded = settingsDraftFromPayload(payload);
+  return (Object.keys(seeded) as Array<keyof SettingsDraft>).some(
+    (key) => draft[key] !== seeded[key],
+  );
+}
+
+/**
+ * What `Save` actually sends.
+ *
+ * Non-secret fields always ride, with `""` normalised to `null` so clearing a
+ * field is expressible at all. The three secrets ride only when the owner
+ * touched them: `""` is omitted entirely, so a save that only changed the
+ * timeout carries no `*ApiKey` field and cannot disturb a stored key.
+ */
+export function settingsSaveBody(draft: SettingsDraft): WorkbenchSettingsPatch {
+  const seconds = draftText(draft.llmTimeoutSeconds);
+  const patch: WorkbenchSettingsPatch = {
+    chatProvider: draftText(draft.chatProvider),
+    chatModel: draftText(draft.chatModel),
+    ingestProvider: draftText(draft.ingestProvider),
+    ingestModel: draftText(draft.ingestModel),
+    customBaseUrl: draftText(draft.customBaseUrl),
+    // A blank box is "no deadline". A box holding something that is not a finite
+    // number is NOT silently blanked — the raw string rides, and the validator
+    // refuses it with a sentence. `Number("abc")` would be `NaN`, which
+    // `JSON.stringify` writes as `null`, i.e. as a request to CLEAR the stored
+    // deadline: a typo deleting a setting and reporting success.
+    llmTimeoutSeconds: seconds === null ? null : numberOrRaw(seconds),
+    vectorSearchEnabled: draft.vectorSearchEnabled,
+    embeddingProvider: draftText(draft.embeddingProvider),
+    embeddingModel: draftText(draft.embeddingModel),
+    embeddingBaseUrl: draftText(draft.embeddingBaseUrl),
+    firecrawlBaseUrl: draftText(draft.firecrawlBaseUrl),
+    researchProvider: draftText(draft.researchProvider),
+    serpApiEngine: draftText(draft.serpApiEngine),
+    searxngBaseUrl: draftText(draft.searxngBaseUrl),
+    searxngCategories: draftText(draft.searxngCategories),
+    intakeKeepParsed: draft.intakeKeepParsed,
+    // `off` rides as the literal string, not as `null`. Clearing the key would
+    // read back as "never decided", and `getWorkbenchSettings` resolves an
+    // absent value to `off` anyway — but an owner who switched MinerU off
+    // should be recorded as having done it.
+    mineruMode: draft.mineruMode,
+    mineruLocalBaseUrl: draftText(draft.mineruLocalBaseUrl),
+    // Both switches ride on every save, like `vectorSearchEnabled`: they are
+    // booleans with no "unset" state, and omitting one would make "I switched
+    // the door off" indistinguishable from "I edited a model".
+    apiEnabled: draft.apiEnabled,
+    allowUnauthenticated: draft.allowUnauthenticated,
+  };
+  // Secrets ride only when the owner touched them — see `secretPatchValue`.
+  const custom = secretPatchValue(draft.customApiKey);
+  if (custom !== undefined) patch.customApiKey = custom;
+  const embedding = secretPatchValue(draft.embeddingApiKey);
+  if (embedding !== undefined) patch.embeddingApiKey = embedding;
+  const firecrawl = secretPatchValue(draft.firecrawlApiKey);
+  if (firecrawl !== undefined) patch.firecrawlApiKey = firecrawl;
+  const tavily = secretPatchValue(draft.tavilyApiKey);
+  if (tavily !== undefined) patch.tavilyApiKey = tavily;
+  const serpapi = secretPatchValue(draft.serpApiKey);
+  if (serpapi !== undefined) patch.serpApiKey = serpapi;
+  const mineru = secretPatchValue(draft.mineruApiKey);
+  if (mineru !== undefined) patch.mineruApiKey = mineru;
+  const loopback = secretPatchValue(draft.loopbackApiToken);
+  if (loopback !== undefined) patch.loopbackApiToken = loopback;
+  return patch;
+}
+
+/**
+ * Does the SELECTED research provider have a credential, counting env and store?
+ *
+ * The browser's half of the same question `resolveResearchProvider` answers on
+ * the kernel side, and it exists so the surface can say so BEFORE a run refuses:
+ * the select is the one control that decides which credential matters, and a
+ * "configured" light driven by "any provider has a key" would report green for
+ * a deployment whose every research run fails.
+ *
+ * SearXNG's credential is its instance URL, not a key — a public instance needs
+ * no token, so requiring one would refuse the provider's normal deployment.
+ */
+export function draftResearchProviderConfigured(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  // An EARLY RETURN where the embedding half JOINS instead (DW-637). The two
+  // wire fields are mirrors; their consumers cannot be. `draftVectorInputs`
+  // carries a junk `EMBEDDING_PROVIDER` through
+  // {@link resolveEnvEmbeddingProvider} because `VectorSearchInputs.provider` is
+  // `string | null` and the gate's first leg refuses anything it does not
+  // recognise — the value is representable, and reporting it is what makes the
+  // refusal actionable. Here {@link draftResearchProvider} returns a closed
+  // `ResearchProviderId` and every consumer below branches on it
+  // (`=== "searxng"`, tavily vs serpApi key selection), so a junk string has
+  // nowhere to go; and this function's only output is a boolean, so "refused"
+  // and "unconfigured" are the same answer. `false` IS the join, collapsed.
+  if (payload.envResearchProviderInvalid) return false;
+  const provider = draftResearchProvider(draft, payload);
+  if (provider === "searxng") {
+    const value = payload.envSearxngBaseUrl ?? draftText(draft.searxngBaseUrl);
+    if (!value) return false;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+  const typed = secretPatchValue(
+    provider === "tavily" ? draft.tavilyApiKey : draft.serpApiKey,
+  );
+  // `null` is a pending Remove, and it un-configures the provider even though
+  // the store still holds the key — the save that follows deletes it, and a row
+  // that keeps saying "configured" until reload is the same misreport
+  // `draftEmbeddingKeyStored` closed for the embedding key.
+  if (typed === null) return payload.envResearchProviders.includes(provider);
+  if (typed !== undefined) return true;
+  const stored = provider === "tavily" ? payload.hasTavilyApiKey : payload.hasSerpApiKey;
+  return stored || payload.envResearchProviders.includes(provider);
+}
+
+/**
+ * WHICH provider a draft resolves to — env override, then the select, then the
+ * default. The same precedence the kernel applies, so the surface and the run
+ * cannot disagree about which provider is about to be used.
+ */
+export function draftResearchProvider(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): ResearchProviderId {
+  if (payload.envResearchProvider !== null) return payload.envResearchProvider;
+  const chosen = draftText(draft.researchProvider);
+  return isResearchProviderId(chosen) ? chosen : DEFAULT_RESEARCH_PROVIDER;
+}
+
+/** Trim-and-null: a box holding only whitespace holds nothing. */
+function draftText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** A finite number, or the raw text so the validator can name the problem. */
+function numberOrRaw(value: string): number | string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : value;
+}
+
+/**
+ * What a secret draft field contributes to the patch, or `undefined` for "omit
+ * it entirely".
+ *
+ * `null` is Remove and rides as `null`. A non-blank string is a replacement. A
+ * WHITESPACE-ONLY string is untouched, exactly like `""`: without that, holding
+ * the space bar in a key field would send `"   "`, which the merge trims to
+ * empty and therefore DELETES — a stored credential destroyed by a stray
+ * keystroke, with a success message.
+ */
+export function secretPatchValue(value: string | null): string | null | undefined {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * May the vector control be enabled from the DRAFT the owner is looking at?
+ *
+ * The same predicate the route re-runs, fed from the draft plus the stored
+ * presence boolean — a key already in the store counts even though the field
+ * shows nothing, which is precisely what the boolean is for.
+ */
+export function draftCanEnableVectorSearch(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  return canEnableVectorSearch(draftVectorInputs(draft, payload));
+}
+
+/**
+ * The BROWSER's half of feeding {@link canEnableVectorSearch}, written to answer
+ * identically to the route's half for identical situations: the env override
+ * wins, then what the owner has typed, then what is stored.
+ */
+export function draftVectorInputs(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): VectorSearchInputs {
+  // The SAME join the route's `mergedVectorInputs` performs, as one expression
+  // rather than two spellings of it (DW-552/DW-637) — including the `null`
+  // normalisation this half needs because its `envEmbeddingProviderInvalid` is
+  // optional on the wire.
+  const envProvider = resolveEnvEmbeddingProvider(
+    payload.envEmbeddingProvider,
+    payload.envEmbeddingProviderInvalid,
+  );
+  const provider = envProvider ?? draftText(draft.embeddingProvider);
+  const typed = secretPatchValue(draft.embeddingApiKey);
+  const hasKey =
+    // An env credential counts only for the vendor it belongs to — the same
+    // reading the route's `mergedVectorInputs` applies.
+    (provider !== null && payload.envEmbeddingApiKeyProviders.includes(provider)) ||
+    (typed === undefined
+      ? // The stored key counts only for the vendor the draft still selects —
+        // the same reading the route's `mergedVectorInputs` applies to
+        // `stored.hasEmbeddingApiKey` across a switch (DW-69/DW-72).
+        draftEmbeddingKeyStored(draft, payload)
+      : typeof typed === "string" && typed.length > 0);
+  return {
+    provider,
+    // No switch test needed on THIS half: the box itself is blanked the moment
+    // the select moves ({@link settingsDraftAfterEmbeddingProvider}), so the
+    // draft never holds the previous vendor's endpoint to begin with.
+    baseUrl: draftText(draft.embeddingBaseUrl),
+    model: payload.envEmbeddingModel ?? draftText(draft.embeddingModel),
+    hasKey,
+    // Same reading as the route's `mergedVectorInputs`: the override wins, so
+    // with one set the editable box is not the value being checked.
+    modelOrigin: payload.envEmbeddingModel !== null ? "env" : "stored",
+    // The same reading of the `provider` line above that the route's
+    // `mergedVectorInputs` applies — both halves must read the same origin, or
+    // they answer differently for the same deployment. Over the JOINED value,
+    // so a refused `EMBEDDING_PROVIDER` still says the environment owns the
+    // selection and "choose another provider" is not the advice given.
+    providerOrigin: envProvider !== null ? "env" : "stored",
+    // Served on the payload precisely because the browser cannot ask.
+    hasWorkersAiBinding: payload.hasWorkersAiBinding,
+  };
+}
+
+/**
+ * The vector inputs as the STORE holds them — no draft in play (DW-327).
+ *
+ * The flat `/settings` page edits none of the vector fields but must still be
+ * able to SAY what state they are in, and the only honest answer there is the
+ * stored one: there is no draft on that page for any of them.
+ *
+ * COMPOSED from the two functions the Workbench already uses rather than
+ * derived afresh, because a freshly seeded draft IS the stored state — every
+ * field of {@link settingsDraftFromPayload} is the payload's own value, and the
+ * three secrets seed to {@link SECRET_UNTOUCHED}, which
+ * {@link draftVectorInputs} reads as "whatever the store has". So the flat page
+ * cannot disagree with a just-loaded Workbench about which legs are unmet, and
+ * a change to the env-override precedence lands in both at once.
+ */
+export function storedVectorInputs(
+  payload: WorkbenchSettingsValues,
+): VectorSearchInputs {
+  return draftVectorInputs(settingsDraftFromPayload(payload), payload);
+}
+
+// ---------------------------------------------------------------------------
+// The one settings client
+// ---------------------------------------------------------------------------
+//
+// Same technique `workbench-preview.ts` uses: `fetch` is a parameter, so the
+// node suite drives both functions with a stub and never opens a socket. The
+// route URL is named once here rather than typed into a component, so a
+// Workbench component never carries a literal `/api/` string.
+
+/** The subset of a `Response` these functions read. */
+export interface SettingsResponseLike {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+}
+
+/** The subset of `fetch` these functions call. The global satisfies it. */
+export type SettingsFetch = (
+  url: string,
+  init?: {
+    signal?: AbortSignal;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+) => Promise<SettingsResponseLike>;
+
+/**
+ * The reason a caller passes to `controller.abort()` when its own DEADLINE
+ * fired, as opposed to the surface unmounting.
+ *
+ * Both stop the same request through the same controller, and without a way to
+ * tell them apart every abort reads as "superseded" — so the caller stays
+ * silent, `loading` is never cleared, and a hung request shows `Loading…` for
+ * the rest of the session. That is precisely the state a deadline exists to
+ * prevent, so the two reasons must produce different outcomes. Same mechanism
+ * `workbench-preview.ts` uses for the Preview's read.
+ */
+export const SETTINGS_TIMEOUT_REASON = "settings-request-timeout";
+
+/**
+ * What a settings read produced.
+ *
+ * `stale` is deliberately its own outcome rather than a flavour of `failed`: an
+ * unmounted surface has nothing to tell anyone, and setting state from it would
+ * warn about updating a component that is gone. A DEADLINE abort is the
+ * opposite case — nothing else is coming, so it must NOT be silent — and
+ * resolves to `failed`.
+ */
+export type SettingsFetchResult =
+  | { status: "ok"; payload: WorkbenchSettingsPayload }
+  | { status: "stale" }
+  | { status: "failed" };
+
+/** Which kind of abort was this? See {@link SETTINGS_TIMEOUT_REASON}. */
+function abortOutcome(signal: AbortSignal): SettingsFetchResult {
+  return signal.reason === SETTINGS_TIMEOUT_REASON
+    ? { status: "failed" }
+    : { status: "stale" };
+}
+
+/**
+ * Read the stored settings.
+ *
+ * Every failure — a 404 from the owner gate, a 500, an unparseable body, a
+ * transport error, a blown deadline — resolves to the SAME `failed`, because the
+ * route deliberately grants no existence oracle and the surface must not be able
+ * to invent one.
+ */
+export async function fetchWorkbenchSettings(
+  options: { signal?: AbortSignal; fetchImpl?: SettingsFetch } = {},
+): Promise<SettingsFetchResult> {
+  const send = options.fetchImpl ?? fetch;
+  const signal = options.signal;
+  try {
+    const response = await send(SETTINGS_ROUTE, {
+      ...(signal ? { signal } : {}),
+    });
+    if (signal?.aborted) return abortOutcome(signal);
+    if (!response.ok) return { status: "failed" };
+    const body: unknown = await response.json();
+    if (signal?.aborted) return abortOutcome(signal);
+    const payload = workbenchSettingsFrom(body);
+    return payload ? { status: "ok", payload } : { status: "failed" };
+  } catch {
+    // No message is derived here at all: a transport string is vocabulary no
+    // Copy table contains and that the owner cannot act on.
+    return signal?.aborted ? abortOutcome(signal) : { status: "failed" };
+  }
+}
+
+/**
+ * WHICH of the three failures a save was, in ONE field (DW-558).
+ *
+ * Three states, and exactly three: a pair of independent booleans could spell a
+ * fourth that nothing produces and nothing means. Each name states a different
+ * FACT about what is known, and each carries its own instruction about the
+ * version the caller is holding — which is the only thing on that surface that
+ * can silently become a lie. {@link verdictClearsHeldVersion} is that
+ * instruction, in code rather than in prose.
+ *
+ * THREE names here where `PreviewSaveResult` (in `workbench-preview.ts`) has a
+ * single `unconfirmed` boolean. Deliberate on both sides, and not an unfinished
+ * migration in either: that client has exactly ONE legal error state to tell
+ * apart, because a 2xx whose body will not parse is still a landed save there.
+ * This one re-seeds its draft from the answered payload, so an arrived-but-
+ * unusable 2xx is a third fact with a duty of its own.
+ */
+export type SettingsSaveVerdict =
+  /**
+   * NOTHING WAS APPLIED, as far as this client can tell: an arrived refusal —
+   * including this route's own 503, which declines before merging anything —
+   * or a thrown cause that is not an unconfirmed one.
+   *
+   * The caller KEEPS the version it was holding: no write landed, so it is
+   * still current, and dropping it would buy a precondition refusal on the next
+   * save for nothing.
+   */
+  | "refused"
+  /**
+   * NOTHING IS KNOWN about this save — see `WriteFailure.unconfirmed`. The
+   * caller must keep every edit on screen AND clear the version it was
+   * holding, because the stored config may already have moved past it; it
+   * must never tell the owner the settings were not saved.
+   */
+  | "unconfirmed"
+  /**
+   * The answer ARRIVED and its body yielded no payload — a 2xx that failed
+   * to parse, or that parsed to something shapeless. One fact, one branch.
+   *
+   * The caller must clear the version it was holding, exactly as it does
+   * for `unconfirmed` and for the same reason: a 2xx is no proof the route
+   * did NOT run, so the stored config may already have moved past it and the
+   * next save would be refused as a conflict. That refusal flatly states the
+   * save was not applied and attributes the change to somewhere else —
+   * when the change it is describing may be the owner's own save, one
+   * moment earlier. Clearing it re-seeds instead.
+   *
+   * What is KNOWN is only that something answered. Whether the patch landed
+   * is precisely what the missing payload leaves open — which is why the
+   * sentence is {@link SETTINGS_SAVE_UNREADABLE_COPY} and not
+   * {@link SETTINGS_SAVE_FAILED_COPY} (DW-554): a result that clears the held
+   * version because the route MAY have run cannot also state that it did not.
+   *
+   * Still not `unconfirmed`, and still its own name. That verdict says
+   * NOTHING came back; this one says something did and had no settings in it.
+   * The two share an action — clear the held version — and differ in what the
+   * owner is told and in what they do about it. And still not this route's own
+   * 503, which is an arrived refusal that applied nothing and whose held
+   * version is therefore current.
+   */
+  | "unreadable";
+
+export type SettingsSaveResult =
+  | { status: "ok"; payload: WorkbenchSettingsPayload }
+  | {
+      status: "error";
+      message: string;
+      /**
+       * Which failure this is. `"refused"` — nothing was applied, so KEEP the
+       * held version. `"unconfirmed"` — nothing came back, so CLEAR it.
+       * `"unreadable"` — a 2xx yielded no payload, so CLEAR it.
+       *
+       * {@link SettingsSaveVerdict} states each one's fact in full and
+       * {@link verdictClearsHeldVersion} is the rule a caller runs rather than
+       * re-derives. Repeated here because per-member documentation on a
+       * string-literal union does not reach a caller's hover.
+       *
+       * REQUIRED and singular: a construction site must NAME one of the three,
+       * so no verdict can be forgotten into a silent default and no combination
+       * of fields is left that spells a fourth state.
+       */
+      verdict: SettingsSaveVerdict;
+      /**
+       * The server's own machine-readable name for THIS refusal, relayed
+       * verbatim (DW-628). Optional because most refusals carry none, and
+       * because a client stubbing the old body sends none at all.
+       *
+       * A RELAY, not a state. It carries no verdict meaning and nothing here
+       * interprets it: {@link verdictClearsHeldVersion} never reads it, and it
+       * is not part of the three-state space `verdict` spells. A consumer that
+       * recognises a particular code — {@link settingsRefusalPinsEmbeddingProvider}
+       * is the only one — reads it as a hint about WHICH refusal arrived, never
+       * about whether anything was applied.
+       *
+       * Present ONLY when `verdict` is `"refused"`. A gateway status and a
+       * thrown cause both mean the outcome is unknown, and a proxy that put a
+       * `code` in its own body must not be able to make an unknown outcome look
+       * like a named refusal.
+       */
+      code?: string;
+    };
+
+/**
+ * Does this verdict oblige the caller to CLEAR the version it is holding?
+ *
+ * The rule lives beside the type it is about, and is an exhaustive `switch` on
+ * purpose: the `never` default fails to COMPILE the moment a fourth verdict is
+ * added without answering this question. A caller that tests two names by hand
+ * — or negates `"refused"` — cannot fail that way. It hands a new verdict one
+ * of the two answers silently, and whichever way it is written one of those
+ * answers is the dangerous one: keeping a version the store may have moved past
+ * buys a 412 that flatly denies a save that landed.
+ *
+ * WHAT it does not decide: the sentence. The two clearing verdicts say
+ * different things to the owner, which is why they stay two names rather than
+ * becoming one boolean here — see {@link SettingsSaveVerdict}.
+ */
+export function verdictClearsHeldVersion(verdict: SettingsSaveVerdict): boolean {
+  switch (verdict) {
+    case "refused":
+      // Nothing was applied — an arrived refusal, this route's own 503, or a
+      // thrown cause that is not an unconfirmed one — so the held version is
+      // still current and dropping it would buy a precondition refusal for
+      // nothing.
+      return false;
+    case "unconfirmed":
+    case "unreadable":
+      // TWO different facts, one action (DW-427): either way the stored config
+      // may already have moved past the held version, and a 2xx from an
+      // intermediary is no proof the route did not run.
+      return true;
+    default: {
+      // Not reachable, and that is the point: a member added to the union with
+      // no `case` of its own lands here and fails to type-check, so the new
+      // verdict must state its own answer instead of inheriting one.
+      const _exhaustive: never = verdict;
+      return _exhaustive;
+    }
+  }
+}
+
+/** A save that FAILED — the error member of {@link SettingsSaveResult}. */
+type SettingsSaveFailure = Extract<SettingsSaveResult, { status: "error" }>;
+
+/**
+ * The error result a {@link WriteFailure} produces — the ONE place its
+ * `unconfirmed` flag becomes a verdict.
+ *
+ * A helper rather than a ternary typed twice because "which branch produced it"
+ * is exactly the wrong thing to key on: {@link refusedWriteFailure} itself
+ * answers `unconfirmed: true` on a gateway status, so the refusal branch and
+ * the outer catch can each yield either verdict. The verdict follows the
+ * failure, and this is where that stays true.
+ *
+ * `"unreadable"` is not among its answers: it belongs to the one branch that
+ * read a 2xx through to an empty payload, and that branch states it directly.
+ */
+function failedSave(failure: WriteFailure): SettingsSaveFailure {
+  return {
+    status: "error",
+    message: failure.message,
+    verdict: failure.unconfirmed ? "unconfirmed" : "refused",
+  };
+}
+
+/**
+ * Write one `workbench` patch.
+ *
+ * Resolves on a refusal rather than throwing, because the caller's only correct
+ * response is to keep every edit on screen and show the message. ONLY a
+ * server-supplied `{ error }` sentence is relayed; a thrown error shows the one
+ * fixed fallback (see {@link SETTINGS_SAVE_FAILED_COPY}).
+ *
+ * …EXCEPT when nothing answered at all (DW-376). A fired deadline, a dropped
+ * connection and a gateway status ({@link UNCONFIRMED_STATUSES}) are not
+ * refusals: the patch may have landed, so they answer `verdict: "unconfirmed"`
+ * and the ONE sentence `workbench-request` owns, composed from `action`. The
+ * fallback is not shown there: it says the settings were NOT saved, which
+ * nobody knows.
+ *
+ * THIS ROUTE'S OWN 503 IS NOT ONE OF THEM. `PUT /api/settings` answers 503 with
+ * `CONFIG_UNREADABLE_COPY` when the store cannot be read, and refuses before
+ * merging anything — an arrived verdict about a write that did not land, so its
+ * sentence is relayed and the caller keeps the version it is holding.
+ *
+ * A 200 whose body carries no usable `workbench` object is an ERROR, not a
+ * success: the caller re-seeds its draft from that object, and treating a
+ * shapeless 200 as landed would clear the dirty flag over values nobody
+ * confirmed were stored. It is the ONE branch that answers
+ * `verdict: "unreadable"` (DW-427), and it carries a THIRD sentence of its own
+ * — {@link SETTINGS_SAVE_UNREADABLE_COPY} — because neither of the other two is
+ * true of it (DW-554). The fallback would claim the save failed, which is the
+ * claim this branch contradicts by clearing the held version; the unknown-
+ * outcome sentence would claim nothing came back, when something did. What is
+ * unknown here is the outcome AND the version, and only a reload settles it.
+ */
+export async function saveWorkbenchSettings(
+  patch: WorkbenchSettingsPatch,
+  options: {
+    signal?: AbortSignal;
+    fetchImpl?: SettingsFetch;
+    fallback?: string;
+    /** The phrase the UNKNOWN-outcome sentence is composed from. */
+    action?: string;
+    /**
+     * The {@link WorkbenchSettingsPayload.version} the draft was SEEDED from,
+     * sent as `If-Match` (DW-63). `PUT /api/settings` requires it and answers
+     * 428 without one, so omitting it is a refusal rather than a blind write —
+     * the two Settings surfaces write the same file and would otherwise put
+     * each other's fields back.
+     */
+    version?: string;
+  } = {},
+): Promise<SettingsSaveResult> {
+  const send = options.fetchImpl ?? fetch;
+  const fallback = options.fallback ?? SETTINGS_SAVE_FAILED_COPY;
+  const action = options.action ?? SETTINGS_SAVE_ACTION;
+  try {
+    const response = await send(SETTINGS_ROUTE, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.version ? { [IF_MATCH_HEADER]: formatIfMatch(options.version) } : {}),
+      },
+      body: JSON.stringify({ workbench: patch }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        error?: unknown;
+        code?: unknown;
+      } | null;
+      const served = typeof body?.error === "string" ? body.error.trim() : "";
+      // The server's own name for this refusal, relayed untouched (DW-628).
+      // Read exactly like `served` — a string or nothing — so a number, an
+      // object or a `code` on an HTML error page simply is not one.
+      const code = typeof body?.code === "string" ? body.code.trim() : "";
+      // The message has ONE owner, in `workbench-request`: a gateway's status
+      // wins over whatever it put in the body, and every other status relays the
+      // server's sentence exactly as before. {@link failedSave} turns that same
+      // failure into the verdict, so a gateway status still reads as unknown
+      // here rather than as a refusal.
+      //
+      // What this branch never answers is `"unreadable"`. A refusal STATUS
+      // arrived, so nothing was applied and the held version is untouched —
+      // including on this route's own 503, which refuses before merging
+      // anything. That says nothing about the body: the parse above is
+      // deliberately unguarded, so a refusal body that dies mid-read lands here
+      // too, with `served` empty and the fallback shown (pinned since DW-557).
+      // Either way no 2xx payload was lost, which is the only thing
+      // `"unreadable"` is about.
+      const failure = failedSave(
+        refusedWriteFailure(response.status, served, action, fallback),
+      );
+      // ONLY on an ARRIVED refusal. `refusedWriteFailure` answers `unconfirmed`
+      // for a gateway status whatever the body said, and that verdict means the
+      // outcome is unknown — attaching a code there would let an intermediary's
+      // body name a refusal that may never have happened. The verdict decides,
+      // not the status list, so the two cannot drift.
+      return code && failure.verdict === "refused" ? { ...failure, code } : failure;
+    }
+    // Two different failures hide behind one `response.json()`, and they get
+    // opposite verdicts (DW-408).
+    //
+    // A body that PARSES BADLY — truncated JSON, or an HTML page from something
+    // sitting in front of the route — is still the ROUTE's arrived answer: the
+    // status line came back, so the patch's outcome is known and only the
+    // ability to re-seed the draft is lost. That is precisely the shapeless-200
+    // branch below, and `workbenchSettingsFrom(null)` is already `null`, so
+    // answering `null` lands it there and makes an arrived answer EXPLICIT
+    // rather than something the thrown fallback happened to get right.
+    //
+    // A body read that DIES MID-STREAM — an abort, a `TypeError` off a dropped
+    // socket — is the same missing confirmation as any other unconfirmed cause,
+    // and is rethrown to the outer catch untouched. That distinction is not
+    // cosmetic: it decides which sentence the owner reads, because the unknown
+    // outcome is what `unconfirmed` composes and a status line that arrived must
+    // never be described as silence.
+    //
+    // What the two halves SHARE is the held version, and that is what the
+    // third verdict says (DW-427). Either way nothing usable came back, and a
+    // 2xx from an intermediary is no proof the route did NOT run — so keeping
+    // the version risks a 412 on the next save, which asserts outright that it
+    // was not applied and attributes the change to somewhere else, when the
+    // change it is describing may be the owner's own. Clearing it yields the
+    // 428 instead, which claims only that the save could not be checked — true
+    // either way. The arrived half therefore answers `verdict: "unreadable"`
+    // below, and `SettingsCanvas.save` clears on it and on `"unconfirmed"`
+    // alike — through {@link verdictClearsHeldVersion}, which is where that
+    // "either verdict" now lives as a rule rather than as a pair of names
+    // typed at the call site.
+    const body: unknown = await response.json().catch((cause: unknown) => {
+      if (unconfirmedCause(cause)) throw cause;
+      return null;
+    });
+    const payload = workbenchSettingsFrom(body);
+    // A shapeless 200 is an answer that ARRIVED, and that is the whole of what
+    // is known. Whether the ROUTE itself ran — and rotated the version this
+    // caller is holding — is precisely what the missing payload leaves open,
+    // which is why the verdict below is `"unreadable"` rather than `ok`, and
+    // why its sentence claims no outcome (DW-554).
+    return payload
+      ? { status: "ok", payload }
+      : {
+          status: "error",
+          // NOT `fallback` (DW-554). That sentence says the settings were not
+          // saved, and this is the one branch whose whole point is that nobody
+          // knows — the caller is being told to drop the version it holds
+          // because the route may well have run. Its own sentence says what
+          // arrived, what is unknown, and the one thing that resolves it.
+          message: SETTINGS_SAVE_UNREADABLE_COPY,
+          verdict: "unreadable",
+        };
+  } catch (cause) {
+    // Deliberately discards the cause's message — see the docblock — but not the
+    // FACT it carries: an abort and a `TypeError` mean the patch may have landed.
+    // No 2xx body was READ THROUGH to a verdict on any path that reaches here —
+    // the guarded `.catch` above keeps the arrived-but-unreadable ones on their
+    // own branch — so `"unreadable"` is not among the verdicts this return
+    // gives, and {@link failedSave} has no way to produce it.
+    return failedSave(thrownWriteFailure(cause, action, fallback));
+  }
+}

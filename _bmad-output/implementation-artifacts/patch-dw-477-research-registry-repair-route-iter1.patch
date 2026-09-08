@@ -1,0 +1,726 @@
+diff --git a/_bmad-output/implementation-artifacts/spec-dw-477-research-registry-repair-route.md b/_bmad-output/implementation-artifacts/spec-dw-477-research-registry-repair-route.md
+new file mode 100644
+index 00000000..f454b9dc
+--- /dev/null
++++ b/_bmad-output/implementation-artifacts/spec-dw-477-research-registry-repair-route.md
+@@ -0,0 +1,121 @@
++---
++title: 'Research registry: an owner-only quarantine-and-restart repair route for a wedged registry'
++type: 'feature'
++created: '2026-08-29'
++status: 'in-review'
++review_loop_iteration: 0
++followup_review_recommended: false
++context: []
++warnings: [oversized]
++deferred: []
++baseline_revision: '249fc69455a9556f0c11d8ffc2477add23d7663c'
++---
++
++<intent-contract>
++
++## Intent
++
++**Problem:** DW-477. Since DW-297/DW-476 an unreadable research registry refuses at BOTH read sites (`parseRegistry`, `src/lib/research-projects.ts:264-275`), which is the intended fail-closed behaviour — but it wedges the tenant: every research door 500s, including the deletes that could shrink the file, and the refusal body carries no remediation, unlike the lease equivalent at `research-runtime.ts:896` ("Repair the lease state, then retry."). The owner has no in-product way out.
++
++**Approach:** Add the missing half — an owner-only `POST /api/research/repair` that moves an UNREADABLE registry aside to a timestamped quarantine key (the shape `review-queue.ts`'s `quarantine` already uses), starts a fresh empty registry and returns the quarantined path. Name that route in the two refusal messages `parseRegistry` throws, and pin by test that a READABLE registry is never quarantined.
++
++## Boundaries & Constraints
++
++**Always:**
++- A READABLE registry is NEVER quarantined and NEVER overwritten. The repair re-parses through the same shared `parseRegistry` and refuses to act when it succeeds — that is the whole safety property, and it must be pinned by test for a healthy registry, an empty-list registry and a tombstoned one.
++- An ABSENT registry (ENOENT) is not a repair either: there is nothing wedged and nothing to quarantine. Answer the same "nothing to repair" refusal, never a fresh write.
++- The quarantine copy is written FIRST and the fresh registry only after it lands. If the quarantine write throws, the stored registry stays byte-identical and the door answers 500 — losing the unreadable bytes is the one outcome this route must never produce.
++- "Unreadable" is any throw out of `parseRegistry`, `JSON.parse`'s raw `SyntaxError` included — truncated bytes are exactly the case that needs this route. A storage read fault (anything but ENOENT) is NOT unreadable: rethrow it so the door answers 500 without touching anything.
++- The registry replacement is a CAS (`writeFileIfMatch` against the etag from the same read) under `withFileLock(lockKey(owner))`, the shape `applyResearchProjectMutation` already uses. A lost CAS throws the existing busy sentence rather than blind-writing.
++- The repair is a WRITE: it is gated read-only at the door with `READ_ONLY_REFUSAL.researchMutate` and in the kernel with `assertWritable(READ_ONLY_REFUSAL.researchMutate)` — the DW-385 pairing `createResearchProject`/`deleteResearchProject` already use. Reuse that constant, do not mint a new sentence: repairing is "change my research", the capability its docblock already groups.
++- Owner-only means the door's own principal: `getPrincipal()` or 401, then `principal.handle` as the owner. The tenant path is derived from the handle, so no caller can name another tenant's registry.
++- The two `parseRegistry` messages keep their existing leading sentence verbatim and gain the route hint as a SUFFIX — the current suites substring-match those sentences and must keep passing.
++- The refusal stays a plain `Error` (500). A wrong-shaped stored file is still a server fault; naming a remediation route does not make it the caller's input.
++
++**Block If:**
++- The repair cannot be made to leave a readable registry untouched on every path (i.e. any ordering exists where a parse succeeds and bytes are still replaced). That is the intent's explicit pin and cannot be traded away unattended.
++
++**Never:**
++- Do not build UI. The intent's deliverable is the route plus the message that names it; a Research Panel affordance is a separate change.
++- Do not loosen `parseRegistry`, skip bad rows, or make any read path fall back to empty. DW-297's "unreadable is not empty" ruling stands; this route is the recovery, not a retreat from it.
++- Do not delete the quarantined copy, prune old ones, or reap them on a schedule. The copy is the tenant's only remaining handle on the bytes.
++- Do not add a new `READ_ONLY_REFUSAL` key, and do not add a `ClientInputError`/403 branch to the new catch that nothing can throw (the door gates `isReadOnly()` ahead of the try, the same reason that branch was rejected for `/api/research/[id]`).
++- Do not change `research-concurrency.ts`'s lease messages, `MAX_PROJECTS`, `serializeProjects`, or any existing door's status codes.
++
++## I/O & Edge-Case Matrix
++
++| Scenario | Input / State | Expected Output / Behavior | Error Handling |
++|----------|--------------|---------------------------|----------------|
++| Non-list registry | stored bytes `{"projects":[]}` | 200 `{ repaired: true, quarantinedPath }`; quarantine holds the original bytes verbatim; registry now `[]` and reads as no projects | No error expected |
++| Bad-element registry | stored bytes `[{}]` | same as above | No error expected |
++| Truncated bytes | stored bytes `[{"id":` (raw `SyntaxError`) | same as above — a `JSON.parse` fault is unreadable too | No error expected |
++| Healthy registry | rows the app itself wrote | 409 "nothing to repair"; NO quarantine written, stored bytes byte-identical | Refusal, not an exception |
++| Empty-list registry | stored bytes `[]` | 409, bytes byte-identical | Refusal, not an exception |
++| Tombstoned registry | rows incl. `deleteRequested: true` | 409, bytes byte-identical — a hidden row is still readable | Refusal, not an exception |
++| Absent registry | no file at the tenant path | 409, and no file is created | Refusal, not an exception |
++| Quarantine write fails | unreadable bytes, quarantine write throws | 500; registry bytes byte-identical, no fresh registry written | storage `Error` → 500 |
++| Lost CAS | unreadable bytes, `writeFileIfMatch` returns false | 500 carrying the existing busy sentence | plain `Error` → 500 |
++| Read-only deployment | `YOPEDIA_READONLY` set | 403 `READ_ONLY_REFUSAL.researchMutate`, before any read or write | Gate, not an exception |
++| Unauthenticated | no principal | 401 "Sign in required." | Gate, not an exception |
++| Refusal names the route | any door reading a wedged registry | the 500 body carries the original sentence AND `POST /api/research/repair` | plain `Error` → 500 |
++
++</intent-contract>
++
++## Code Map
++
++- `src/lib/research-projects.ts` -- the whole library change. `parseRegistry` (`:264-275`) throws the two sentences to extend; its long docblock (`:228-263`) currently states at `:255-258` "With no repair route (deliberately out of scope), that index is the operator's only handle" — that clause is now FALSE and must be rewritten to point at the route, not merely appended to. `projectPath` (`:128-132`) and `lockKey` (`:134-136`) are the path/lock helpers to reuse. `serializeProjects` (`:304-306`) is how `[]` must be written. `applyResearchProjectMutation` (`:339-364`) is the CAS shape to mirror (`readFileWithEtag` → `writeFileIfMatch`, `lastError` = `"Research projects were busy; retry the request."`). `deleteResearchProject` (`:651-656`) is the `assertWritable(READ_ONLY_REFUSAL.researchMutate)` precedent, gated BEFORE the lock.
++- `src/lib/review-queue.ts:397-402` -- the quarantine shape to follow verbatim: `writeFile(\`${path}.corrupt-${Date.now()}\`, raw)`. Its own copies already land beside `tenants/{tenant}/review-queue.json` (`queuePath`, `:87-91`), so a sibling `research-projects.json.corrupt-*` in the same directory is established precedent. DIFFERENCE to carry: there quarantine is best-effort (`logger.warn` and continue) because it is a side effect of a read; here it is the operation itself, so a failed write must PROPAGATE.
++- `src/lib/research-runtime.ts:896` -- the remediation-sentence precedent the intent names ("Research queue state could not be read. Repair the lease state, then retry.") — match that register: one short imperative sentence after the diagnosis.
++- `src/app/api/research/route.ts:65-79` -- the door shape to copy: `getPrincipal()` → 401, then `if (isReadOnly())` → 403 with `READ_ONLY_REFUSAL.<key>` imported (never re-typed), then the try. Its catch (`:137-146`) is the classification comment to NOT duplicate here (nothing in the repair path throws `ClientInputError`).
++- `src/app/api/research/[id]/route.ts` -- sibling door; `POST /api/research/repair` is a STATIC segment so Next.js routes it ahead of `[id]`, and `[id]` has no POST anyway. Read-only 403 shape at `:17-22`.
++- `src/lib/storage/types.ts:76-81, 138-176, 268-311` -- `FileWithEtag.etag` is a non-null `string`; `writeFile` is atomic-from-the-caller's-view (a throw means the bytes never landed); `writeFileIfMatch(path, content, etag)` returns `boolean`.
++- `src/lib/__tests__/research-projects.test.ts` -- store suite (node project) and the home for the repair rows. `registryPath` (`:21-23`), `seedRawRegistry` (`:27-32`), `seedRow` (`:34-48`), `seedProjects` (`:57-67`, `{ tombstoned }`). The `a registry that is not a list` block (`:301-385`) and `a registry whose elements are not research projects` block (`:387+`) are the table-driven patterns to extend; the `vi.spyOn(storage, "writeFile"/"writeFileIfMatch"/"writeFileIfAbsent")` "never wrote" proof at `:328-347` is the shape for the readable-registry rows.
++- `src/lib/__tests__/research-route.test.ts:1-60, 110-170` -- the door-test recipe: `vi.mock("@/lib/auth")`, `vi.mock("@/lib/research-projects", importOriginal)`, handler imported directly, `READ_ONLY_REFUSAL` asserted by constant. Its `savedReadOnly`/`YOPEDIA_READONLY` save-restore (`:55-60`) is how the read-only row is driven.
++- `src/lib/__tests__/read-only-copy-parity.test.ts:269-299` -- the "newly gated doors serve their own constant, not a literal" table; the new route file belongs in it as `["research/repair/route.ts", "researchMutate"]`.
++- `src/lib/__tests__/middleware-write-gate.test.ts:33-73` -- read-only evidence: only the listed service-token routes are exempt from the Clerk write gate, so `/api/research/repair` needs no entry and must not gain one.
++
++## Tasks & Acceptance
++
++**Execution:**
++- `src/lib/research-projects.ts` -- add a module-private repair-hint constant and suffix it onto BOTH `parseRegistry` throws, keeping each existing sentence verbatim as the prefix -- the existing suites substring-match those sentences, and the refusal is the only place an operator learns the route exists.
++- `src/lib/research-projects.ts` -- export `repairResearchRegistry(owner)` returning a discriminated `{ quarantined: true; path: string } | { quarantined: false }`: `assertWritable(READ_ONLY_REFUSAL.researchMutate)` first, then under `withFileLock(lockKey(owner))` read with `readFileWithEtag` (ENOENT → `{ quarantined: false }`, any other read fault rethrown), try `parseRegistry` and return `{ quarantined: false }` when it SUCCEEDS, otherwise `writeFile` the raw bytes to `` `${path}.corrupt-${Date.now()}` `` and only then `writeFileIfMatch(path, serializeProjects([]), etag)`, throwing the existing busy sentence on a lost CAS -- quarantine-before-replace is what makes a failed copy leave the bytes intact, and returning a union rather than throwing lets the door answer 409 without message matching.
++- `src/lib/research-projects.ts` -- rewrite the now-false clause in `parseRegistry`'s docblock ("With no repair route (deliberately out of scope)…") to name the route as the recovery and keep the index's role, and document on `repairResearchRegistry` why a readable registry is refused, why the quarantine is written first, and why the copy is never pruned.
++- `src/app/api/research/repair/route.ts` -- new `POST` handler: 401 without a principal, 403 with `READ_ONLY_REFUSAL.researchMutate` (imported, never re-typed) when `isReadOnly()`, then `repairResearchRegistry(principal.handle)` → 200 `{ repaired: true, quarantinedPath }` or 409 `{ error: <nothing-to-repair sentence> }`, with a plain 500 `{ error: getErrorMessage(error) }` catch -- 409 because the request conflicts with the registry's actual state, the same code `/api/research/[id]` uses for "cannot be edited".
++- `src/lib/__tests__/research-projects.test.ts` -- add a `repairResearchRegistry` describe covering every matrix row that is a library concern: quarantine-and-restart for a non-list, a bad-element and a truncated registry (quarantine file holds the original bytes, registry reads empty afterwards); refusal with byte-identical bytes and no write spy called for a healthy, an empty-list, a tombstoned and an absent registry; a failed quarantine write leaving the registry untouched; a lost CAS surfacing the busy sentence; and a row proving both `parseRegistry` messages name `POST /api/research/repair`.
++- `src/lib/__tests__/research-repair-route.test.ts` -- new door suite following the `research-route.test.ts` recipe: 401 unauthenticated, 403 read-only asserted against `READ_ONLY_REFUSAL.researchMutate`, 200 with the quarantined path, 409 when the store reports nothing to repair, and 500 on a storage `Error`.
++- `src/lib/__tests__/read-only-copy-parity.test.ts` -- add `["research/repair/route.ts", "researchMutate"]` to the newly-gated-doors table -- the new door must serve the constant, not a re-typed sentence.
++
++**Acceptance Criteria:**
++- Given a tenant whose stored registry is unreadable, when the owner posts to the repair route and then reads the panel door, then the read succeeds with no projects and the original bytes are recoverable verbatim from the returned quarantined path.
++- Given any registry the app itself wrote, when the repair route is posted for that owner, then nothing is quarantined, nothing is written, and the stored bytes are byte-identical.
++- Given the full suite, when `pnpm test` runs, then it passes with no new failures relative to the baseline revision.
++
++## Spec Change Log
++
++## Review Triage Log
++
++## Design Notes
++
++Why a discriminated union instead of a throw for "nothing to repair": the door has to tell a refusal apart from a fault, and the only alternatives are a new error class (the intent needs none) or message matching (the anti-pattern DW-296 deleted from this very module's doors).
++
++Why quarantine BEFORE the CAS replace, stated as the ordering rule:
++
++```ts
++// The copy is the tenant's only remaining handle on these bytes, so it lands
++// first and its failure propagates. Replacing first and copying after would
++// turn one storage hiccup into permanent loss of the very file the owner came
++// here to rescue. A quarantine copy orphaned by a lost CAS is harmless — it is
++// a duplicate of bytes another repair already saved.
++await storage.writeFile(quarantinePath, read.content);
++const wrote = await storage.writeFileIfMatch(path, serializeProjects([]), read.etag);
++```
++
++The read-only pairing is deliberate: a read-only deployment refuses the repair even though the registry is wedged. That is correct and not a dead end — read-only is an operator-chosen deployment state, and the fix is to leave it, not to carve an exception into the one gate DW-385 exists to make unconditional.
++
++## Verification
++
++**Commands:**
++- `pnpm exec vitest run --project node src/lib/__tests__/research-projects.test.ts src/lib/__tests__/research-repair-route.test.ts src/lib/__tests__/research-route.test.ts src/lib/__tests__/research-run-route.test.ts src/lib/__tests__/read-only-copy-parity.test.ts` -- expected: all rows pass, including the new ones
++- `pnpm exec tsc --noEmit` -- expected: no errors
++- `pnpm lint` -- expected: no new errors
++- `pnpm test` -- expected: no new failures against `249fc69455a9556f0c11d8ffc2477add23d7663c` (the dom-project `localStorage` suites are a known pre-existing red on this branch)
+diff --git a/src/app/api/research/repair/route.ts b/src/app/api/research/repair/route.ts
+new file mode 100644
+index 00000000..f7e4ea78
+--- /dev/null
++++ b/src/app/api/research/repair/route.ts
+@@ -0,0 +1,61 @@
++/**
++ * `POST /api/research/repair` — the owner's way out of a wedged registry (DW-477).
++ *
++ * An unreadable `research-projects.json` refuses at both read sites, so every
++ * research door 500s for that tenant — the deletes that could shrink the file
++ * included. This door quarantines the unreadable bytes and starts a fresh empty
++ * registry, and it is the door `parseRegistry`'s two refusals name.
++ *
++ * A STATIC segment, so Next.js routes it ahead of the sibling `[id]` (which has
++ * no POST in any case) — `repair` can never be read as a project id.
++ *
++ * Owner-only means the door's own principal: the tenant path is derived from
++ * `principal.handle` inside the store, so there is no field a caller could set
++ * to name another tenant's registry.
++ */
++import { NextResponse } from "next/server";
++import { getPrincipal } from "@/lib/auth";
++import { isReadOnly } from "@/lib/config";
++import { getErrorMessage } from "@/lib/errors";
++import { READ_ONLY_REFUSAL } from "@/lib/read-only";
++import { repairResearchRegistry } from "@/lib/research-projects";
++
++/**
++ * The 409 body. 409 rather than 200-with-a-flag because the request conflicts
++ * with the registry's actual state — the code `/api/research/[id]` already uses
++ * for "this cannot be edited" — and rather than 400 because the caller sent
++ * nothing wrong.
++ */
++const NOTHING_TO_REPAIR =
++  "The research projects file reads fine; there is nothing to repair.";
++
++export async function POST() {
++  const principal = await getPrincipal();
++  if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
++  // Deployment read-only (DW-294/DW-385). Ordered after the 401 so a signed-out
++  // caller still learns it is signed out, and before the store call so nothing
++  // is read or written on a deployment about to refuse. `repairResearchRegistry`
++  // gates in the kernel on the same sentence for a direct library caller.
++  if (isReadOnly()) {
++    return NextResponse.json(
++      { error: READ_ONLY_REFUSAL.researchMutate },
++      { status: 403 },
++    );
++  }
++  try {
++    // A discriminated union, not a message match: the door has to tell a
++    // refusal from a fault, and DW-296 deleted message matching from this
++    // module's doors for good.
++    const result = await repairResearchRegistry(principal.handle);
++    if (!result.quarantined) {
++      return NextResponse.json({ error: NOTHING_TO_REPAIR }, { status: 409 });
++    }
++    return NextResponse.json({ repaired: true, quarantinedPath: result.path });
++  } catch (error) {
++    // No `ClientInputError` branch: nothing on this path throws one — the body
++    // is not read at all, and the store's only throws are the storage fault and
++    // the busy sentence. A dead 400 branch was rejected for `/api/research/[id]`
++    // for the same reason.
++    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
++  }
++}
+diff --git a/src/lib/__tests__/read-only-copy-parity.test.ts b/src/lib/__tests__/read-only-copy-parity.test.ts
+index 5d6a990a..e055843d 100644
+--- a/src/lib/__tests__/read-only-copy-parity.test.ts
++++ b/src/lib/__tests__/read-only-copy-parity.test.ts
+@@ -291,6 +291,10 @@ describe("client refusal copy mirrors the server's", () => {
+       // door, keeps its own literal, and is pinned by value above.
+       ["settings/route.ts", "settingsSave"],
+       ["settings/rebuild-embeddings/route.ts", "embeddingRebuild"],
++      // DW-477 — the registry repair door. It reuses `researchMutate` rather
++      // than minting a sentence of its own: repairing is "change my research",
++      // the capability that key already groups.
++      ["research/repair/route.ts", "researchMutate"],
+     ] as const) {
+       const source = await routeSource(route);
+       expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);
+diff --git a/src/lib/__tests__/research-projects.test.ts b/src/lib/__tests__/research-projects.test.ts
+index 78bf2884..bd5af218 100644
+--- a/src/lib/__tests__/research-projects.test.ts
++++ b/src/lib/__tests__/research-projects.test.ts
+@@ -10,10 +10,12 @@ import {
+   filterResearchProjects,
+   getResearchProject,
+   listResearchProjects,
++  repairResearchRegistry,
+   updateResearchProject,
+   updateResearchProjectIf,
+ } from "../research-projects";
+ import { ClientInputError } from "../errors";
++import { READ_ONLY_REFUSAL } from "../read-only";
+ import { _resetLocks } from "../lock";
+ import { _resetStorage, getStorage } from "../storage";
+ import { tenantForOwner } from "../wiki";
+@@ -420,8 +422,8 @@ describe("research projects", () => {
+ 
+       // A plain Error, NOT a ClientInputError: a wrong-shaped stored file is a
+       // server fault (500), the same rule the non-array throw already states.
+-      // The INDEX is part of the contract: with no repair route, it is the
+-      // operator's only handle on a registry that refuses every door.
++      // The INDEX is part of the contract: it is what points an operator at the
++      // bad row inside the copy `POST /api/research/repair` quarantines.
+       await expect(listResearchProjects("alice")).rejects.toThrow(
+         "Research project entry 0 is invalid.",
+       );
+@@ -604,4 +606,191 @@ describe("research projects", () => {
+     expect([first, second].filter(Boolean)).toHaveLength(1);
+     expect((await listResearchProjects("alice"))[0]?.status).toBe("collecting");
+   });
++
++  /**
++   * DW-477. Refusing an unreadable registry (DW-297/DW-476) is right, but on
++   * its own it wedges the tenant: every research door 500s, the deletes that
++   * could shrink the file included. `repairResearchRegistry` is the missing
++   * half — quarantine the bytes, start a fresh empty registry — and the rows
++   * below pin the property that makes it safe to name in a 500 body: a registry
++   * that PARSES is never quarantined and never overwritten.
++   */
++  describe("repairResearchRegistry", () => {
++    /** Every `.corrupt-*` sibling beside the tenant's registry. */
++    async function quarantineFiles(owner: string): Promise<string[]> {
++      const dir = path.dirname(registryPath(owner));
++      const entries = await fs.readdir(dir).catch(() => [] as string[]);
++      return entries.filter((name) => name.includes(".corrupt-"));
++    }
++
++    it.each([
++      ["a non-list registry", '{"projects":[{"id":"seed-0"}]}'],
++      ["a bad-element registry", JSON.stringify([{}])],
++      // A raw `SyntaxError` out of `JSON.parse` — truncated bytes are exactly
++      // the case this route exists for, and they never reach the shape checks.
++      ["truncated bytes", '[{"id":'],
++    ])("quarantines %s and starts a fresh empty one", async (_label, raw) => {
++      await seedRawRegistry("alice", raw);
++
++      const result = await repairResearchRegistry("alice");
++
++      expect(result).toEqual({ quarantined: true, path: expect.stringContaining(".corrupt-") });
++      if (!result.quarantined) throw new Error("unreachable");
++      // The original bytes are recoverable VERBATIM from the returned path —
++      // the tenant's only remaining handle on them.
++      expect(await fs.readFile(path.join(tmpDir, result.path), "utf-8")).toBe(raw);
++      // …and every door reads again, as a tenant with no projects.
++      expect(await listResearchProjects("alice")).toEqual([]);
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe("[]");
++    });
++
++    it.each([
++      // Rows the app itself wrote.
++      ["a healthy registry", JSON.stringify([seedRow(0), seedRow(1)], null, 2)],
++      ["an empty-list registry", "[]"],
++      // A hidden row is still a READABLE row: soft-deleted is not corrupt.
++      ["a tombstoned registry", JSON.stringify([seedRow(0, { deleteRequested: true })], null, 2)],
++    ])("refuses to touch %s", async (_label, raw) => {
++      await seedRawRegistry("alice", raw);
++      const storage = getStorage();
++      const spies = [
++        vi.spyOn(storage, "writeFile"),
++        vi.spyOn(storage, "writeFileIfMatch"),
++        vi.spyOn(storage, "writeFileIfAbsent"),
++      ];
++
++      try {
++        // The repair re-parses through the SAME helper every read goes through,
++        // so there is no ordering in which a parse succeeds and bytes are still
++        // replaced. That is the whole safety property.
++        expect(await repairResearchRegistry("alice")).toEqual({ quarantined: false });
++        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
++      } finally {
++        for (const spy of spies) spy.mockRestore();
++      }
++
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
++      expect(await quarantineFiles("alice")).toEqual([]);
++    });
++
++    it("refuses an absent registry without creating one", async () => {
++      // Nothing is wedged and there is nothing to quarantine, so the answer is
++      // the same refusal — never a fresh write that invents a file the tenant
++      // never had.
++      expect(await repairResearchRegistry("alice")).toEqual({ quarantined: false });
++
++      await expect(fs.readFile(registryPath("alice"), "utf-8")).rejects.toThrow();
++      expect(await quarantineFiles("alice")).toEqual([]);
++    });
++
++    it("rethrows a storage read fault that is not ENOENT, touching nothing", async () => {
++      const raw = JSON.stringify([{}]);
++      await seedRawRegistry("alice", raw);
++      const storage = getStorage();
++      const read = vi
++        .spyOn(storage, "readFileWithEtag")
++        .mockRejectedValue(new Error("EIO: i/o error, read"));
++      const writes = [vi.spyOn(storage, "writeFile"), vi.spyOn(storage, "writeFileIfMatch")];
++
++      try {
++        // A provider hiccup is not a corrupt file; quarantining bytes that were
++        // never read would be the worse outcome.
++        await expect(repairResearchRegistry("alice")).rejects.toThrow("EIO: i/o error, read");
++        for (const spy of writes) expect(spy).not.toHaveBeenCalled();
++      } finally {
++        read.mockRestore();
++        for (const spy of writes) spy.mockRestore();
++      }
++
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
++    });
++
++    it("leaves the unreadable bytes intact when the quarantine write fails", async () => {
++      const raw = JSON.stringify([{}]);
++      await seedRawRegistry("alice", raw);
++      const storage = getStorage();
++      const write = vi.spyOn(storage, "writeFile").mockRejectedValue(new Error("disk full"));
++      const cas = vi.spyOn(storage, "writeFileIfMatch");
++
++      try {
++        // Quarantine-before-replace is what makes this survivable: the copy
++        // lands first and its failure PROPAGATES, so the fresh registry is
++        // never written over bytes nothing saved.
++        await expect(repairResearchRegistry("alice")).rejects.toThrow("disk full");
++        expect(cas).not.toHaveBeenCalled();
++      } finally {
++        write.mockRestore();
++        cas.mockRestore();
++      }
++
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
++    });
++
++    it("surfaces the busy sentence when the CAS replace is lost", async () => {
++      const raw = JSON.stringify([{}]);
++      await seedRawRegistry("alice", raw);
++      const storage = getStorage();
++      const cas = vi.spyOn(storage, "writeFileIfMatch").mockResolvedValue(false);
++
++      try {
++        // The EXISTING sentence, not a new one: this is the same contention
++        // `applyResearchProjectMutation` already reports.
++        await expect(repairResearchRegistry("alice")).rejects.toThrow(
++          "Research projects were busy; retry the request.",
++        );
++      } finally {
++        cas.mockRestore();
++      }
++
++      // A quarantine copy orphaned by a lost CAS is harmless — a duplicate of
++      // bytes another repair already saved — and the registry is untouched.
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
++    });
++
++    it("refuses on a read-only deployment before reading or writing anything", async () => {
++      // DW-385 stays unconditional: a read-only deployment refuses the repair
++      // even while the registry is wedged. Leaving read-only is the fix.
++      const raw = JSON.stringify([{}]);
++      await seedRawRegistry("alice", raw);
++      const storage = getStorage();
++      const touched = [
++        vi.spyOn(storage, "readFileWithEtag"),
++        vi.spyOn(storage, "writeFile"),
++        vi.spyOn(storage, "writeFileIfMatch"),
++      ];
++      const saved = process.env.YOPEDIA_READONLY;
++      process.env.YOPEDIA_READONLY = "1";
++
++      try {
++        await expect(repairResearchRegistry("alice")).rejects.toThrow(
++          READ_ONLY_REFUSAL.researchMutate,
++        );
++        for (const spy of touched) expect(spy).not.toHaveBeenCalled();
++      } finally {
++        if (saved === undefined) delete process.env.YOPEDIA_READONLY;
++        else process.env.YOPEDIA_READONLY = saved;
++        for (const spy of touched) spy.mockRestore();
++      }
++
++      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
++    });
++
++    it.each([
++      ["a non-list registry", '{"projects":[]}', "Research projects file is not a list."],
++      ["a bad-element registry", JSON.stringify([{}]), "Research project entry 0 is invalid."],
++    ])("names the repair route in the %s refusal", async (_label, raw, sentence) => {
++      await seedRawRegistry("alice", raw);
++
++      // The refusal is the ONLY place an operator learns the route exists — the
++      // wedged registry 500s every door that could have shown it. Each keeps
++      // its leading diagnosis verbatim and gains the hint as a suffix.
++      await expect(listResearchProjects("alice")).rejects.toThrow(sentence);
++      await expect(listResearchProjects("alice")).rejects.toThrow(
++        "POST /api/research/repair",
++      );
++      await expect(listResearchProjects("alice")).rejects.toThrow(
++        `${sentence} Repair it with POST /api/research/repair, then retry.`,
++      );
++    });
++  });
+ });
+diff --git a/src/lib/__tests__/research-repair-route.test.ts b/src/lib/__tests__/research-repair-route.test.ts
+new file mode 100644
+index 00000000..302ae061
+--- /dev/null
++++ b/src/lib/__tests__/research-repair-route.test.ts
+@@ -0,0 +1,132 @@
++/**
++ * `POST /api/research/repair` — the door onto DW-477's registry repair.
++ *
++ * The `research-route.test.ts` recipe: `@/lib/auth` mocked, the store mocked
++ * over its real module so only `repairResearchRegistry` is a stub, the handler
++ * imported directly. What is pinned here is the door's own mapping — 401, the
++ * read-only 403 asserted against the CONSTANT, 200 with the quarantined path,
++ * 409 for "nothing to repair" and 500 for a storage fault — not the store's
++ * behaviour, which `research-projects.test.ts` owns against real bytes.
++ */
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
++vi.mock("@/lib/research-projects", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("@/lib/research-projects")>();
++  return { ...actual, repairResearchRegistry: vi.fn() };
++});
++
++import { POST } from "@/app/api/research/repair/route";
++import { getPrincipal } from "@/lib/auth";
++import { READ_ONLY_REFUSAL } from "@/lib/read-only";
++import { repairResearchRegistry } from "@/lib/research-projects";
++
++const mockedPrincipal = vi.mocked(getPrincipal);
++const mockedRepair = vi.mocked(repairResearchRegistry);
++
++describe("POST /api/research/repair", () => {
++  let savedReadOnly: string | undefined;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    savedReadOnly = process.env.YOPEDIA_READONLY;
++    // Cleared rather than inherited: a value exported in a developer's shell
++    // would otherwise turn every case below into a 403.
++    delete process.env.YOPEDIA_READONLY;
++    mockedPrincipal.mockResolvedValue({ handle: "alice" } as Awaited<
++      ReturnType<typeof getPrincipal>
++    >);
++  });
++
++  afterEach(() => {
++    if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
++    else process.env.YOPEDIA_READONLY = savedReadOnly;
++  });
++
++  it("401s an unauthenticated caller without reaching the store", async () => {
++    mockedPrincipal.mockResolvedValue(null);
++
++    const response = await POST();
++
++    expect(response.status).toBe(401);
++    expect(await response.json()).toEqual({ error: "Sign in required." });
++    expect(mockedRepair).not.toHaveBeenCalled();
++  });
++
++  it("403s a read-only deployment with the shared researchMutate sentence", async () => {
++    // Deliberate: a read-only deployment refuses the repair even though the
++    // registry is wedged. Read-only is an operator-chosen state, and the fix is
++    // to leave it, not to carve an exception into the one unconditional gate.
++    process.env.YOPEDIA_READONLY = "1";
++
++    const response = await POST();
++
++    expect(response.status).toBe(403);
++    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
++    expect(mockedRepair).not.toHaveBeenCalled();
++  });
++
++  it("still 401s an unauthenticated caller on a read-only deployment", async () => {
++    // The gate sits AFTER the 401, so a signed-out caller learns it is signed
++    // out rather than being told about a deployment state it cannot see.
++    process.env.YOPEDIA_READONLY = "1";
++    mockedPrincipal.mockResolvedValue(null);
++
++    expect((await POST()).status).toBe(401);
++    expect(mockedRepair).not.toHaveBeenCalled();
++  });
++
++  it("200s with the quarantined path, repairing the door's OWN principal", async () => {
++    mockedRepair.mockResolvedValue({
++      quarantined: true,
++      path: "tenants/alice/research-projects.json.corrupt-1700000000000",
++    });
++
++    const response = await POST();
++
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({
++      repaired: true,
++      quarantinedPath: "tenants/alice/research-projects.json.corrupt-1700000000000",
++    });
++    // Owner-only: the tenant comes from the principal, never from the request,
++    // so no caller can name another tenant's registry.
++    expect(mockedRepair).toHaveBeenCalledWith("alice");
++  });
++
++  it("409s when the store reports nothing to repair", async () => {
++    // A readable (or absent) registry is a CONFLICT with the request, not a
++    // fault and not bad input — the code `/api/research/[id]` already uses for
++    // "this cannot be edited".
++    mockedRepair.mockResolvedValue({ quarantined: false });
++
++    const response = await POST();
++
++    expect(response.status).toBe(409);
++    expect(await response.json()).toEqual({
++      error: "The research projects file reads fine; there is nothing to repair.",
++    });
++  });
++
++  it("500s a storage failure", async () => {
++    // A failed quarantine write is the case: the store propagates rather than
++    // replacing bytes nothing saved, and the door reports the fault verbatim.
++    mockedRepair.mockRejectedValue(new Error("disk full"));
++
++    const response = await POST();
++
++    expect(response.status).toBe(500);
++    expect(await response.json()).toEqual({ error: "disk full" });
++  });
++
++  it("500s the busy sentence rather than classifying it as caller input", async () => {
++    mockedRepair.mockRejectedValue(new Error("Research projects were busy; retry the request."));
++
++    const response = await POST();
++
++    expect(response.status).toBe(500);
++    expect(await response.json()).toEqual({
++      error: "Research projects were busy; retry the request.",
++    });
++  });
++});
+diff --git a/src/lib/research-projects.ts b/src/lib/research-projects.ts
+index 8675eab7..093d5e95 100644
+--- a/src/lib/research-projects.ts
++++ b/src/lib/research-projects.ts
+@@ -1,7 +1,7 @@
+ import { ClientInputError, isEnoent } from "./errors";
+ import { withDurableLock, withFileLock } from "./lock";
+ import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
+-import { getStorage } from "./storage";
++import { type FileWithEtag, getStorage } from "./storage";
+ import { tenantForOwner, validateTenant } from "./wiki";
+ import { hasResearchSlot } from "./research-concurrency";
+ 
+@@ -251,24 +251,43 @@ function isResearchProject(value: unknown): value is ResearchProject {
+  * steps: the cap would clear against the short count and the next write would
+  * serialize the survivors, silently dropping the skipped rows off disk for
+  * good. Refusing loses nothing — the projects are not gone, they are
+- * unreadable — so the message below carries the INDEX of the first bad row.
+- * With no repair route (deliberately out of scope), that index is the
+- * operator's only handle on a registry that now refuses every read and every
+- * write for the tenant.
++ * unreadable — so the message below carries the INDEX of the first bad row,
++ * which is what an operator inspecting the file starts from.
++ *
++ * REFUSING IS NOT A DEAD END (DW-477). Both sentences below carry
++ * {@link REPAIR_HINT}, naming {@link repairResearchRegistry}'s door — the
++ * owner-only `POST /api/research/repair` that moves the unreadable bytes to a
++ * timestamped quarantine key and starts a fresh empty registry. The index stays
++ * in the message because it is still the fastest way to find the bad row in the
++ * quarantined copy; the route is what gets the tenant's other doors answering
++ * again. Naming the route does NOT loosen this helper: a registry that parses
++ * is still read verbatim, and the repair refuses to touch one.
+  *
+  * The throw is a plain `Error` on purpose — a wrong-shaped stored file is a
+  * server fault (500), never a `ClientInputError`. Matches `parseSlots` in
+  * `research-concurrency.ts`, which refuses a non-array lease file and an
+  * invalid lease entry the same way.
+  */
++/**
++ * The remediation clause both {@link parseRegistry} refusals carry (DW-477).
++ *
++ * A SUFFIX, never a rewrite: the existing sentences are what several suites and
++ * any operator runbook substring-match, so each keeps its leading diagnosis
++ * verbatim and gains one short imperative after it — the register
++ * `research-runtime`'s "Repair the lease state, then retry." already set. The
++ * refusal is the only place an operator learns the route exists, because the
++ * wedged registry 500s every door that could have shown it.
++ */
++const REPAIR_HINT = " Repair it with POST /api/research/repair, then retry.";
++
+ function parseRegistry(raw: string): ResearchProject[] {
+   const parsed: unknown = JSON.parse(raw);
+   if (!Array.isArray(parsed)) {
+-    throw new Error("Research projects file is not a list.");
++    throw new Error(`Research projects file is not a list.${REPAIR_HINT}`);
+   }
+   const bad = parsed.findIndex((entry) => !isResearchProject(entry));
+   if (bad !== -1) {
+-    throw new Error(`Research project entry ${bad} is invalid.`);
++    throw new Error(`Research project entry ${bad} is invalid.${REPAIR_HINT}`);
+   }
+   return parsed;
+ }
+@@ -370,6 +389,95 @@ async function lockedMutation<T>(
+   return withFileLock(lockKey(owner), () => applyResearchProjectMutation(owner, mutate));
+ }
+ 
++/** What {@link repairResearchRegistry} did, told apart without message matching. */
++export type ResearchRegistryRepair =
++  | { quarantined: true; path: string }
++  | { quarantined: false };
++
++/**
++ * Quarantine an UNREADABLE registry and start a fresh empty one (DW-477).
++ *
++ * The missing half of DW-297/DW-476. Refusing an unreadable registry at both
++ * read sites is right — the projects are not gone, they are unreadable — but it
++ * wedges the tenant: every research door 500s, the deletes that could shrink
++ * the file included, so the owner had no in-product way out. This is that way
++ * out, and `POST /api/research/repair` is the door onto it.
++ *
++ * WHY A READABLE REGISTRY IS REFUSED, and why that is the whole safety
++ * property. The repair re-parses through the SAME {@link parseRegistry} every
++ * read goes through, and returns `{ quarantined: false }` the moment it
++ * succeeds. So there is no ordering in which a parse succeeds and the bytes are
++ * still replaced — a healthy registry, an empty-list one and a fully tombstoned
++ * one all leave here byte-identical with nothing written. An owner who guesses
++ * at this route while nothing is wrong loses nothing; that is what makes it
++ * safe to name in a 500 body.
++ *
++ * An ABSENT registry (ENOENT) is not a repair either: nothing is wedged and
++ * there is nothing to quarantine, so it answers the same "nothing to repair"
++ * rather than writing a fresh file the tenant never had. A storage read fault
++ * that is NOT ENOENT is rethrown untouched — a provider hiccup is not a corrupt
++ * file, and treating it as one would quarantine bytes that were never read.
++ *
++ * "UNREADABLE" INCLUDES `JSON.parse`'s raw `SyntaxError`. Truncated bytes are
++ * exactly the case this route exists for, and they never reach the shape
++ * checks.
++ *
++ * WHY THE QUARANTINE IS WRITTEN FIRST. See the ordering note at the write
++ * below. WHY THE COPY IS NEVER PRUNED: it is the tenant's only remaining handle
++ * on those bytes. Nothing here deletes an older `.corrupt-*` sibling, and no
++ * schedule reaps them — a repair that tidied away the previous rescue would
++ * turn a second wedge into permanent loss of the first.
++ *
++ * Read-only gated in the KERNEL as well as at the door (DW-385), reusing
++ * {@link READ_ONLY_REFUSAL.researchMutate}: repairing is "change my research",
++ * the capability that sentence already groups. A read-only deployment therefore
++ * refuses the repair even while the registry is wedged — read-only is an
++ * operator-chosen state, and the fix is to leave it, not to carve the one
++ * unconditional gate open.
++ */
++export async function repairResearchRegistry(owner: string): Promise<ResearchRegistryRepair> {
++  // Deployment read-only (DW-385), FIRST — ahead of the lock and of any read,
++  // the shape `deleteResearchProject` uses.
++  assertWritable(READ_ONLY_REFUSAL.researchMutate);
++  const storage = getStorage();
++  const path = projectPath(owner);
++  return withFileLock(lockKey(owner), async () => {
++    let read: FileWithEtag;
++    try {
++      read = await storage.readFileWithEtag(path);
++    } catch (error) {
++      // ENOENT is "nothing to repair"; anything else is a storage fault and
++      // must surface as a 500 without a byte being touched.
++      if (isEnoent(error)) return { quarantined: false };
++      throw error;
++    }
++    let readable = true;
++    try {
++      parseRegistry(read.content);
++    } catch {
++      // Any throw at all, `JSON.parse`'s own `SyntaxError` included.
++      readable = false;
++    }
++    if (readable) return { quarantined: false };
++    // The copy is the tenant's only remaining handle on these bytes, so it lands
++    // first and its failure propagates. Replacing first and copying after would
++    // turn one storage hiccup into permanent loss of the very file the owner came
++    // here to rescue. A quarantine copy orphaned by a lost CAS is harmless — it is
++    // a duplicate of bytes another repair already saved. The key shape is
++    // `review-queue.ts`'s, so both stores' quarantines read the same beside their
++    // originals under `tenants/<t>/`.
++    const quarantinePath = `${path}.corrupt-${Date.now()}`;
++    await storage.writeFile(quarantinePath, read.content);
++    // CAS against the etag from the read above, so a concurrent writer that
++    // fixed the file between the two is not blind-written over. The existing
++    // busy sentence rather than a new one — this is the same contention
++    // `applyResearchProjectMutation` reports.
++    const wrote = await storage.writeFileIfMatch(path, serializeProjects([]), read.etag);
++    if (!wrote) throw new Error("Research projects were busy; retry the request.");
++    return { quarantined: true, path: quarantinePath };
++  });
++}
++
+ export async function listResearchProjects(owner: string): Promise<ResearchProject[]> {
+   return (await readProjects(owner)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+ }

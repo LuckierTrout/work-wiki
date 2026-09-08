@@ -18,9 +18,8 @@ import {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
+  checkDisputedPages,
   buildSummary,
   parseLLMJsonArray,
   extractCrossRefSlugs,
@@ -29,6 +28,8 @@ import {
   parseMissingConceptResponse,
   parseIncompleteCoverageResponse,
 } from "./lint-checks";
+import { getOwnerHandle } from "./owner";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 /** Severity ordering from most to least severe. */
 const SEVERITY_RANK: Record<LintIssue["severity"], number> = {
@@ -56,9 +57,8 @@ export {
   checkUnmigratedPages,
   checkDuplicateEntities,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
+  checkDisputedPages,
   ALL_CHECK_TYPES,
 };
 
@@ -92,7 +92,7 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
     const indexSlugs = new Set(indexPages.map((p) => p.slug));
 
     // Run lightweight checks in parallel
-    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, unresolvedDiscussions, disputedPages, supersedesDangling] = await Promise.all([
+    const [orphans, stale, empty, crossRefs, brokenLinks, stalePages, lowConfidence, unmigratedPages, duplicateEntities, uncitedClaims, supersedesDangling, disputedPages] = await Promise.all([
       enabledChecks.has("orphan-page")
         ? checkOrphanPages(diskSlugs, indexSlugs)
         : [],
@@ -123,32 +123,34 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
       enabledChecks.has("uncited-claims")
         ? checkUncitedClaims()
         : [],
-      enabledChecks.has("unresolved-discussions")
-        ? checkUnresolvedDiscussions(diskSlugs)
+      enabledChecks.has("supersedes-dangling")
+        ? checkSupersededDangling(diskSlugs)
         : [],
       enabledChecks.has("disputed-page")
         ? checkDisputedPages()
-        : [],
-      enabledChecks.has("supersedes-dangling")
-        ? checkSupersededDangling(diskSlugs)
         : [],
     ]);
 
     // Contradiction + missing-concept + incomplete-coverage detection all require
     // LLM calls but are independent read-only checks, so run them in parallel.
+    // Resolve Purpose ONCE for this lint operation. All three LLM-backed checks
+    // receive the same immutable string even if purpose.md is edited while the
+    // checks are in flight; the next lint run resolves fresh.
+    const owner = getOwnerHandle();
+    const workspaceGuidance = owner ? await buildWorkspaceGuidance(owner) : "";
     const [contradictions, missingConcepts, incompleteCoverage] = await Promise.all([
       enabledChecks.has("contradiction")
-        ? checkContradictions(diskSlugs)
+        ? checkContradictions(diskSlugs, workspaceGuidance)
         : [],
       enabledChecks.has("missing-concept-page")
-        ? checkMissingConceptPages(diskSlugs)
+        ? checkMissingConceptPages(diskSlugs, workspaceGuidance)
         : [],
       enabledChecks.has("incomplete-coverage")
-        ? checkIncompleteCoverage(diskSlugs)
+        ? checkIncompleteCoverage(diskSlugs, workspaceGuidance)
         : [],
     ]);
 
-    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...unresolvedDiscussions, ...disputedPages, ...supersedesDangling, ...contradictions, ...missingConcepts, ...incompleteCoverage];
+    let issues = [...orphans, ...stale, ...empty, ...crossRefs, ...brokenLinks, ...stalePages, ...lowConfidence, ...unmigratedPages, ...duplicateEntities, ...uncitedClaims, ...supersedesDangling, ...disputedPages, ...contradictions, ...missingConcepts, ...incompleteCoverage];
 
     // Filter by minimum severity
     if (minSeverityRank > 0) {

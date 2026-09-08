@@ -1,0 +1,842 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { WikiWorkbench } from "@/components/WikiWorkbench";
+import {
+  WorkbenchDataProvider,
+  type WorkbenchData,
+} from "@/components/workbench/WorkbenchData";
+import { wikiOptionLabel } from "@/lib/wiki-scenarios";
+import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
+import { WIKI_EMPTY_COPY, WIKI_UNAVAILABLE_COPY } from "@/lib/workbench-tree";
+import type { WikiRecord } from "@/lib/wikis";
+
+/**
+ * The Wiki canvas, MOUNTED (DW-15).
+ *
+ * `create-wiki-ui.test.ts` reads this component's source and counts literals in
+ * it, which is the right tool for "does the file still enumerate five scenarios"
+ * and the wrong one for "does Cancel write nothing". Every assertion below is
+ * made on the outermost surface instead: what is on screen, and what requests
+ * were issued. A rewrite that keeps `applyTemplate` but wires `onConfirm` past
+ * the dialog, or that drops `confirmDisabled`, leaves the source scan green and
+ * fails here.
+ *
+ * The card takes no props (DW-174): every render below hands it its wikis
+ * through a `WorkbenchDataProvider`, the same seam `page.tsx` uses.
+ */
+
+const { router } = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+const refresh = router.refresh;
+
+/**
+ * The id is deliberately one that percent-encoding CHANGES. `applyTemplate`
+ * builds its URL with `encodeURIComponent(current.id)`, and against a tidy
+ * `wiki-1` that call could be deleted with every assertion still green — while
+ * a real id carrying a slash would silently address a different route.
+ */
+const WIKI: WikiRecord = {
+  id: "wiki 1/2",
+  name: "Acme",
+  scenario: "business",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+const ENCODED_ID = "wiki%201%2F2";
+
+/** The card's whole data input, defaulted to "nothing else loaded". */
+function data(
+  wikis: readonly WikiRecord[],
+  currentWikiId: string | null,
+  registryUnavailable = false,
+): WorkbenchData {
+  return {
+    wikis,
+    currentWikiId,
+    registryUnavailable,
+    knowledge: [],
+    knowledgeUnavailable: false,
+    files: [],
+    filesUnavailable: false,
+    filesTruncated: false,
+    dataVersion: 0,
+    readOnly: false,
+  };
+}
+
+/** The card under the provider, exactly as `page.tsx` composes it. */
+function mount(
+  wikis: readonly WikiRecord[],
+  currentWikiId: string | null,
+  registryUnavailable = false,
+) {
+  return render(
+    <WorkbenchDataProvider value={data(wikis, currentWikiId, registryUnavailable)}>
+      <WikiWorkbench />
+    </WorkbenchDataProvider>,
+  );
+}
+
+/**
+ * The subset of `Response` the shared `send` helper reads — `status` included,
+ * because its failure fallback interpolates it and a fake without one renders
+ * "Request failed (undefined)" at the owner with no test the wiser.
+ */
+function answer(body: unknown, { ok = true, status = 200 } = {}) {
+  return { ok, status, json: async () => body } as unknown as Response;
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  refresh.mockClear();
+  fetchMock = vi.fn(async () => answer({ wiki: WIKI }));
+  vi.stubGlobal("fetch", fetchMock);
+});
+
+afterEach(() => {
+  // FIRST: vitest runs afterEach hooks in reverse registration order, so the
+  // setup file's `cleanup()` lands after this one. Unmounting here tears the
+  // tree down while `fetch` is still stubbed.
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+/** `toBeDisabled` is a jest-dom matcher and this repo installs no jest-dom. */
+function button(name: string): HTMLButtonElement {
+  return screen.getByRole("button", { name }) as HTMLButtonElement;
+}
+
+/**
+ * Resolved through the DOM, exactly as `wiki-canvas-read-only.test.tsx` does it:
+ * an id nothing renders describes nothing, and the attribute alone cannot tell
+ * the two apart. The joined LIST is what this card now writes, so the resolution
+ * has to walk every id rather than look one up.
+ */
+function describedByText(element: Element): string {
+  return (element.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+    .join(" ");
+}
+
+function openTemplateDialog() {
+  mount([WIKI], WIKI.id);
+  fireEvent.click(screen.getByRole("button", { name: "Change template" }));
+  return screen.getByRole("dialog", { name: "Change Scenario Template" });
+}
+
+describe("Change template confirm gate", () => {
+  it("disables Overwrite while the dialog still shows the wiki's own scenario", () => {
+    openTemplateDialog();
+
+    expect(button("Overwrite").disabled).toBe(true);
+    expect(
+      screen.getByText("Pick a different template to overwrite this wiki."),
+    ).toBeTruthy();
+  });
+
+  it("tells the owner in the RENDERED dialog which half of the overwrite is recoverable", () => {
+    // `create-wiki-ui.test.ts` pins this sentence by reading WikiWorkbench.tsx
+    // as text, which is the right tool for "is the sentence still written" and
+    // no tool at all for "does the owner see it". The same scan passes with the
+    // paragraph hoisted out of the dialog subtree or put behind a condition
+    // that never fires — and the owner would then confirm the most destructive
+    // operation on the canvas without being told that the Schema comes back
+    // from History while purpose.md and the Workspace Purpose do not.
+    const dialog = openTemplateDialog();
+
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      "The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered.",
+    );
+  });
+
+  it("names the wiki the overwrite acts on, in the pickers' own spelling", () => {
+    // DW-284, on DW-148's premise. Nothing enforces unique wiki names, so a
+    // body reading "…the Workspace Purpose for this wiki" is IDENTICAL whichever
+    // wiki is active — on the confirm that rewrites purpose.md and the Workspace
+    // Purpose with nothing kept. A same-named TWIN is mounted alongside so the
+    // disambiguation is load-bearing: a body naming only `Acme` would satisfy a
+    // laxer assertion and still leave the owner guessing.
+    const twin: WikiRecord = {
+      id: "wiki 3/4",
+      name: WIKI.name,
+      scenario: "reading",
+      createdAt: "2026-02-02T00:00:00.000Z",
+      updatedAt: "2026-02-02T00:00:00.000Z",
+    };
+    mount([WIKI, twin], WIKI.id);
+    fireEvent.click(button("Change template"));
+    const dialog = screen.getByRole("dialog", { name: "Change Scenario Template" });
+
+    // The head, the target and the first words of the tail in ONE string. The
+    // seam matters as much as the name: the JSX carries an explicit `{" "}`
+    // between "for" and the <strong>, and dropping it renders "…Purpose
+    // forAcme — …" with every source-side head/target/tail pin still green.
+    // Collapsing runs of whitespace cannot put that space back, so this is the
+    // assertion that sees it.
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      `Workspace Purpose for ${wikiOptionLabel(WIKI)} — a purpose you wrote in Settings`,
+    );
+    // The twin is not named, so the sentence cannot be read as being about it.
+    expect(dialog.textContent).not.toContain(twin.id.slice(0, 8));
+    expect(dialog.textContent).not.toContain("for this wiki");
+  });
+
+  it("enables Overwrite once a different scenario is picked", () => {
+    openTemplateDialog();
+
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+
+    expect(button("Overwrite").disabled).toBe(false);
+  });
+
+  it("writes NOTHING when the confirm is cancelled", () => {
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // The claim is that no request was issued, so the observation is the spy's
+    // call count — not a state flag the component happens to expose.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("posts the picked scenario to the wiki's template route on confirm", async () => {
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/wikis/${ENCODED_ID}/template`);
+    expect(url).not.toContain(WIKI.id);
+    expect(init.method).toBe("POST");
+    // The route parses the body as JSON; without this header it does not.
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    // Asserted at the COMPONENT boundary, not only in the helper's own unit
+    // test: what is under test here is that this card still goes through
+    // `send` (DW-175). Swapping it for a bare `fetch` keeps the URL, the method
+    // and the body identical — the signal is the only thing that disappears,
+    // and with it the deadline that stops a hung overwrite stranding `busy`.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(JSON.parse(String(init.body))).toEqual({ scenario: "research" });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a gateway that gave up as an unknown outcome, never as a status code", async () => {
+    // The ordinary shape of a route that dies before it can answer: an HTML
+    // error page. `send` reads the body with `.json().catch(() => ({}))`, and
+    // without that catch this rejects with a SyntaxError that reaches nobody —
+    // the dialog would sit on "Working…" with no message.
+    //
+    // It used to read `Request failed (502)`: a string in no Copy table, naming
+    // the transport rather than the thing that failed, and — worse — reported as
+    // a FAILURE. A 502 comes from a proxy that either never reached this route
+    // or never got its verdict, so the template may in fact have been applied
+    // (DW-374). This card composes no verdict of its own; widening the shared
+    // classifier is what put the honest sentence here.
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    } as unknown as Response);
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("apply the template");
+    expect(alert.textContent).toContain("unknown");
+    expect(alert.textContent).not.toContain("502");
+    expect(alert.textContent).not.toContain("Request failed");
+    expect(
+      screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
+    ).toBe(true);
+    // …and the screen is reconciled rather than left describing a template that
+    // may already have been overwritten.
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+  });
+
+  it("keeps the dialog open and shows the failure inside it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Template write failed." }, { ok: false, status: 409 }),
+    );
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "reading" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Template write failed.");
+    // Inside the overlay — the backdrop covers everything rendered behind it.
+    expect(
+      screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
+    ).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("names the status code when the failure body carries no message", async () => {
+    // A route that dies before it can shape a body is the ordinary 500, and the
+    // owner still has to be told something other than "undefined".
+    fetchMock.mockResolvedValueOnce(answer({}, { ok: false, status: 500 }));
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "general" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Request failed (500)");
+    expect(
+      screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
+    ).toBe(true);
+  });
+
+  it("guards a 2xx whose body carries no wiki at all (DW-256)", async () => {
+    // The one failure a green request makes look like success. Closing the
+    // dialog and refreshing on this would paint the OLD template back as if the
+    // overwrite had landed, with nothing on screen saying it had not.
+    fetchMock.mockResolvedValueOnce(answer({}));
+    openTemplateDialog();
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    const alert = await screen.findByRole("alert");
+    // The operation's OWN sentence, not create's and not rename's.
+    expect(alert.textContent).toBe("Couldn’t apply the template.");
+    const dialog = screen.getByRole("dialog", { name: "Change Scenario Template" });
+    expect(dialog.contains(alert)).toBe(true);
+    expect(refresh).not.toHaveBeenCalled();
+    // The card behind it is intact — no blank render.
+    expect(screen.getByText(WIKI.name)).toBeTruthy();
+    // …and the confirm is pressable again rather than stranded on "Working…".
+    expect(button("Overwrite").disabled).toBe(false);
+  });
+});
+
+describe("Create Wiki", () => {
+  it("writes NOTHING when the dialog is cancelled from the empty state", () => {
+    mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
+  });
+
+  it("posts the picked scenario and asks for the server render that carries it", async () => {
+    mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Research/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/wikis");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    // The deadline, observed where the component hands it over — see the
+    // re-template test above for why the URL and body cannot stand in for it.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: "Research",
+      scenario: "research",
+    });
+    // Deliberately NOT optimistic (DW-174): the provider is the card's single
+    // source, so the new record reaches it only through the server render
+    // `router.refresh()` asks for. Until then the empty state is still the
+    // truth, exactly as `WikiSwitcher.create` already documents for the header.
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
+    expect(screen.queryByText(WIKI.name)).toBeNull();
+  });
+
+  it("shuts its own door until the server render lands", async () => {
+    // The card is not optimistic, so on success `WIKI_EMPTY_COPY` and its primary
+    // action are STILL on screen for the length of the refresh — and the
+    // sentence is already false. Nothing enforces unique wiki names, so a
+    // second press there seeds a SECOND wiki and makes it active, moving every
+    // prompt onto its template.
+    const view = render(
+      <WorkbenchDataProvider value={data([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+    fireEvent.click(button("Create Wiki"));
+    fireEvent.click(button("Create"));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const opener = button("Create Wiki");
+    expect(opener.disabled).toBe(true);
+
+    // Pressed anyway — no dialog, and no second POST.
+    fireEvent.click(opener);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // A server render LANDING is what reopens it, whatever it says. This one
+    // answers without the new wiki — a refresh that lost the race — and the
+    // owner still gets their button back rather than a control dead forever.
+    view.rerender(
+      <WorkbenchDataProvider value={data([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+    await waitFor(() => expect(button("Create Wiki").disabled).toBe(false));
+  });
+
+  it("lands the keyboard on the card heading once the empty state goes", async () => {
+    // `useDialogA11y` only reaches `fallbackFocusRef` when the opener is
+    // already detached at close time, and with optimism gone it is NOT: the
+    // dialog closes over a `Create Wiki` button that is still mounted, focus is
+    // restored to it, and only then does the arriving server render take it
+    // away — dropping the keyboard user on <body> with no dialog left to blame.
+    render(
+      <WorkbenchDataProvider value={data([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+    const opener = button("Create Wiki");
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.click(button("Create"));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const heading = screen.getByRole("heading", { name: "Wiki" });
+    // The move is an effect that runs after the dialog's own focus restore, so
+    // it is waited for rather than read immediately.
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    // Not the opener the refresh is about to unmount.
+    expect(document.activeElement).not.toBe(opener);
+  });
+
+  it("keeps the dialog open and shows the failure inside it", async () => {
+    // `create()`'s catch. The overlay's backdrop covers everything this
+    // component renders behind it, so a message put anywhere else is a message
+    // the owner cannot read — they would see the spinner stop and nothing else.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, { ok: false, status: 409 }),
+    );
+    mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+
+    fireEvent.click(button("Create"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A wiki with that name already exists.");
+    expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
+    // Nothing was seeded, so the empty state is still the truth behind it.
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps that stated refusal when an unrelated server render arrives", async () => {
+    // The other edge of DW-429's clear, and the reason it is gated on the latch
+    // rather than run on every arrival. `wikis` is a fresh array on ANY server
+    // render — somebody ingesting a source moves `dataVersion` and the shell
+    // refetches — and "A wiki with that name already exists." is not made untrue
+    // by that. Clearing it here would leave the owner a live confirm, an open
+    // dialog, and no idea what the last press did wrong.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, { ok: false, status: 409 }),
+    );
+    const view = mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+    fireEvent.click(button("Create"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A wiki with that name already exists.");
+    // The route ANSWERED, so nothing latched — which is what makes the arrival
+    // below a render the owner never asked for.
+    expect(button("Create").disabled).toBe(false);
+
+    view.rerender(
+      <WorkbenchDataProvider value={data([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "A wiki with that name already exists.",
+    );
+    expect(button("Create").disabled).toBe(false);
+  });
+
+  it("guards a 2xx whose body carries no wiki at all", async () => {
+    // Pushing `undefined` into `wikis` here crashes the very next render on
+    // `wiki.id`, which is a BLANK PAGE rather than the message below — the one
+    // failure mode a green request makes look like success.
+    fetchMock.mockResolvedValueOnce(answer({}));
+    mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+
+    fireEvent.click(button("Create"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn’t create the wiki.");
+    expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
+    // The canvas behind it is intact: no blank render, no wiki card.
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
+    expect(screen.queryByText(WIKI.name)).toBeNull();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("a request that never settles (DW-175, DW-283)", () => {
+  /**
+   * The card's `send` had no deadline at all: a hung create or re-template left
+   * `busy` true for the rest of the session, both dialogs locked, and nothing
+   * on screen saying why. The shared helper arms `AbortSignal.timeout`, and
+   * BOTH abort flavours reach the catch as an error whose `name` is the whole
+   * signal — the message names the MECHANISM ("signal timed out", "This
+   * operation was aborted") rather than the thing the owner was trying to do.
+   *
+   * WHAT THE MESSAGE MAY CLAIM is the second half (DW-283). The deadline fires
+   * on THIS side: the request left, and nothing came back. `Couldn’t create the
+   * wiki.` is therefore a statement about the server that the client is in no
+   * position to make — and the owner who believes it presses Create again and
+   * seeds a second wiki, or presses Overwrite again over a template that was
+   * already rewritten. So the sentence names the unknown outcome, and the card
+   * refreshes so the screen can answer what the message cannot.
+   *
+   * The abort is delivered rather than waited for: a real 15s deadline is not
+   * something a suite can sit through, and what is under test is what the card
+   * does with it. Built with `Object.assign(new Error(...), { name })` and NOT
+   * with a real `DOMException`, because jsdom's DOMException does not inherit
+   * from Error — `writeFailure`'s `cause instanceof Error` would be false and
+   * the sentence below would arrive from its last line whatever the abort
+   * branch did.
+   */
+  const ABORTS: ReadonlyArray<readonly [string, string]> = [
+    ["TimeoutError", "signal timed out"],
+    ["AbortError", "This operation was aborted"],
+  ];
+
+  for (const [name, mechanism] of ABORTS) {
+    it(`reports a re-template's outcome as unknown, and reconciles, on a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      openTemplateDialog();
+      fireEvent.change(screen.getByLabelText("Scenario Template"), {
+        target: { value: "research" },
+      });
+
+      fireEvent.click(button("Overwrite"));
+
+      const alert = await screen.findByRole("alert");
+      // Not the flat failure, and not the mechanism either.
+      expect(alert.textContent).not.toBe("Couldn’t apply the template.");
+      expect(alert.textContent).not.toContain(mechanism);
+      expect(alert.textContent).toContain("apply the template");
+      expect(alert.textContent).toContain("unknown");
+      expect(
+        screen.getByRole("dialog", { name: "Change Scenario Template" }).contains(alert),
+      ).toBe(true);
+      // The overwrite may have landed, so the card cannot go on rendering the
+      // template it was showing before as though nothing had happened.
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+      // …and `Overwrite` is LATCHED DEAD until that render arrives (DW-515).
+      // It used to come back the moment `finally` cleared `busy`, under this
+      // very alert and over a card the refresh may already have moved onto the
+      // new scenario. Idempotence was the argument for leaving it live, and it
+      // only ever covered the Schema, which History keeps: a second POST
+      // rewrites purpose.md and the Workspace Purpose from the template with
+      // nothing kept, destroying whatever the first one may already have
+      // written there.
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(true));
+
+      // Asserted on the SPY, not on the attribute: no second request leaves.
+      const before = fetchMock.mock.calls.length;
+      fireEvent.click(button("Overwrite"));
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith(`/api/wikis/${ENCODED_ID}/template`),
+        ),
+      ).toHaveLength(1);
+
+      // Every way OUT stays live — the latch rides `confirmDisabled` and never
+      // `busy`. The sentence just read tells the owner to go and look at the
+      // screen, and a modal they cannot dismiss is not a screen.
+      expect(button("Cancel").disabled).toBe(false);
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it(`gives Overwrite back once a server render arrives after a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([WIKI], WIKI.id);
+      fireEvent.click(button("Change template"));
+      fireEvent.change(screen.getByLabelText("Scenario Template"), {
+        target: { value: "research" },
+      });
+      fireEvent.click(button("Overwrite"));
+      const sentence = (await screen.findByRole("alert")).textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(true));
+
+      // A fresh array is what a server render IS. Deliberately answering the
+      // SAME wiki on the SAME scenario: a refresh that says nothing changed
+      // must still give the owner their button back, or the confirm is dead
+      // with no explanation and no way to revive it. (It also cannot be the
+      // reset effect doing the work — that keys on the active wiki, which a
+      // re-template never moves, which is precisely why this needed a latch.)
+      view.rerender(
+        <WorkbenchDataProvider value={data([WIKI], WIKI.id)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(false));
+      // …and the SENTENCE goes with the latch. It said the outcome was unknown
+      // and sent the owner to look at the screen; this render is that screen.
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText(sentence)).toBeNull();
+      // The dialog is still open — the reset effect did not fire, so this is
+      // the latch's release and nothing else.
+      expect(screen.getByRole("dialog", { name: "Change Scenario Template" })).toBeTruthy();
+    });
+
+    it(`reports a create's outcome as unknown, and shuts the door, on a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      mount([], null);
+      fireEvent.click(button("Create Wiki"));
+
+      fireEvent.click(button("Create"));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).not.toBe("Couldn’t create the wiki.");
+      expect(alert.textContent).not.toContain(mechanism);
+      expect(alert.textContent).toContain("create the wiki");
+      expect(alert.textContent).toContain("unknown");
+      expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(
+        true,
+      );
+      await waitFor(() => expect(refresh).toHaveBeenCalled());
+      // The POST may already have SEEDED a wiki, and this dialog is still open
+      // over it with `busy` back to false — so the confirm is dead too (DW-407),
+      // not just the opener behind it. Nothing enforces unique wiki names, so a
+      // second press is a duplicate wiki and every prompt moved onto its
+      // template; `router.refresh()` is a spy here, so the server render never
+      // lands and the door stays shut exactly as it does for the length of a
+      // real round trip.
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+      // What this proves is the thing that matters at the surface: no second
+      // `/api/wikis` leaves it. It cannot say WHICH guard refused — the button
+      // is `disabled`, so jsdom dispatches no activation and `create` is never
+      // entered at all, putting this assertion strictly downstream of the
+      // attribute. The handler's own early return is unreachable from here and
+      // is pinned by a source scan instead; see `workbench-left-column.test.ts`.
+      const before = fetchMock.mock.calls.length;
+      fireEvent.click(button("Create"));
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === "/api/wikis"),
+      ).toHaveLength(1);
+      // The empty state behind the overlay offers no second way in either.
+      expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
+      expect(button("Create Wiki").disabled).toBe(true);
+      // Every way OUT stays live — the latch rides `confirmDisabled`, never
+      // `busy`. The sentence just read tells the owner to go and look at the
+      // screen, and a modal they cannot dismiss is not a screen.
+      expect(button("Cancel").disabled).toBe(false);
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it(`gives the create confirm back once a server render arrives after a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      const sentence = (await screen.findByRole("alert")).textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      // A fresh array is what a server render IS — `page.tsx` reads the registry
+      // every time, so its identity is the arrival signal. Deliberately still
+      // EMPTY: a refresh that says nothing was seeded must still give the owner
+      // their confirm back, or the control is dead with no explanation and no
+      // way to revive it. (Answering with a wiki instead would close the dialog
+      // outright, which is the reset effect's job and not this latch's.)
+      view.rerender(
+        <WorkbenchDataProvider value={data([], null)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Create").disabled).toBe(false));
+      // …and the SENTENCE goes with the latch (DW-429). It said the outcome was
+      // unknown and sent the owner to look at the screen; this render is that
+      // screen. Leaving it standing beside a confirm the same commit made live
+      // is a dialog contradicting itself — the button says "go ahead", the
+      // alert above it says nobody knows what happened.
+      expect(screen.queryByRole("alert")).toBeNull();
+      // Nowhere on the surface, not merely out of the alert channel: the empty
+      // state behind the overlay carries its own copy of the same sentence.
+      expect(screen.queryByText(sentence)).toBeNull();
+    });
+
+    it(`keeps the create sentence in the empty state when the owner dismisses after a ${name}`, async () => {
+      // The exact move the message invites — "check what the screen shows
+      // before trying again" means dismiss this dialog and look — and the
+      // sentence lives INSIDE the thing being dismissed. Before DW-430 that
+      // round trip destroyed the owner's only explanation and left them in
+      // front of a dimmed `Create Wiki` that said nothing at all.
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      const alert = await screen.findByRole("alert");
+      const sentence = alert.textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      const opener = button("Create Wiki");
+      // Still `disabled` and NOT `aria-disabled`: the latch is transient, like
+      // `switching` in the header, and the read-only convention is the opposite
+      // case. What changes is that the dimming now says something.
+      expect(opener.disabled).toBe(true);
+      expect(opener.hasAttribute("aria-disabled")).toBe(false);
+      // Resolved through the DOM, so an id pointing at nothing fails here.
+      expect(describedByText(opener)).toBe(sentence);
+      // NOT a second alert: the dialog's own owns that channel, and announcing
+      // the same sentence twice would also break every `findByRole("alert")`
+      // above, which expects exactly one.
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // A server render is what settles it — and takes both halves away.
+      view.rerender(
+        <WorkbenchDataProvider value={data([], null)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Create Wiki").disabled).toBe(false));
+      expect(screen.queryByText(sentence)).toBeNull();
+      expect(button("Create Wiki").getAttribute("aria-describedby")).toBeNull();
+    });
+
+    it(`shuts the create dialog's ENTER path too after a ${name}`, async () => {
+      // The second of the two live routes DW-407 names, and the one no
+      // attribute covers: the field sits in a <form>, so Enter reaches
+      // `CreateWikiDialog.submit` without touching the confirm button at all,
+      // and a `disabled` button cannot refuse a keystroke. So a GUARD is the
+      // only thing between Enter and a second POST — and two carry it,
+      // `submit`'s `if (busy || confirmDisabled) return;` and `create`'s own
+      // early return, each unreachable behind the other. This case can only
+      // observe that the pair refuses; `workbench-left-column.test.ts` pins
+      // each line individually, for the reason it states about unreachable
+      // guards.
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      await screen.findByRole("alert");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      // The field stays LIVE behind the latch — a disabled input would drop out
+      // of the tab order — so the keystroke really does arrive.
+      const input = screen.getByLabelText("Wiki name") as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      fireEvent.change(input, { target: { value: "Acme redux" } });
+      expect(input.value).toBe("Acme redux");
+
+      const before = fetchMock.mock.calls.length;
+      fireEvent.submit(input.closest("form") as HTMLFormElement);
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) => url === "/api/wikis"),
+      ).toHaveLength(1);
+    });
+  }
+
+  it("leaves a STATED template refusal unlatched, and its sentence standing", async () => {
+    // The other edge of DW-515's rule, and the reason the latch cannot simply
+    // follow "the overwrite failed". A route that answered with a reason
+    // ANSWERED: nothing landed, nothing is unknown, and holding `Overwrite`
+    // would strand the owner waiting for a refresh that is never issued.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "That wiki no longer exists." }, { ok: false, status: 404 }),
+    );
+    const view = mount([WIKI], WIKI.id);
+    fireEvent.click(button("Change template"));
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+    fireEvent.click(button("Overwrite"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("That wiki no longer exists.");
+    expect(refresh).not.toHaveBeenCalled();
+    // Live again once a DIFFERENT scenario is picked — which it already is.
+    await waitFor(() => expect(button("Overwrite").disabled).toBe(false));
+
+    // And an unrelated server render — somebody ingesting a source moves
+    // `dataVersion` and the shell refetches — does not make it untrue. The
+    // release effect is gated on this card's own raise ref precisely so that a
+    // stated refusal survives a render the owner never caused.
+    view.rerender(
+      <WorkbenchDataProvider value={data([WIKI], WIKI.id)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe("That wiki no longer exists.");
+    expect(button("Overwrite").disabled).toBe(false);
+  });
+});
+
+describe("the read-failure branch", () => {
+  it("says the read failed even when it was handed wikis and a current id", () => {
+    // The degraded render's hard case. The provider's `wikis` is a PLACEHOLDER
+    // when `registryUnavailable` is up, not an observation — so a card built
+    // from it would describe a wiki the server never confirmed, and the flag has
+    // to outrank the whole `current` branch rather than merely stand in for an
+    // empty list.
+    mount([WIKI], WIKI.id, true);
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(WIKI_UNAVAILABLE_COPY);
+    // Not the empty state: `WIKI_EMPTY_COPY` is a claim about the registry this
+    // render cannot make, and its Create Wiki button would seed a duplicate
+    // wiki and move every prompt onto its template on a transient read error.
+    expect(screen.queryByText(WIKI_EMPTY_COPY)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create Wiki" })).toBeNull();
+    // …and not the wiki card either, which is the half an empty-list render
+    // cannot ask about at all.
+    expect(screen.queryByText(WIKI.name)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change template" })).toBeNull();
+    expect(screen.queryByText(PREVIEW_UNSELECTED_COPY)).toBeNull();
+  });
+});

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ---------------------------------------------------------------------------
@@ -58,8 +58,9 @@ describe("POST /api/query/save", () => {
       undefined,
       undefined,
     );
-    // A markdown save is a public commons page → /wiki/<slug>.
-    expect((await res.json()).url).toBe("/wiki/test-page");
+    // Every save resolves to the owner-scoped page URL; an ownerless save
+    // addresses it through the default tenant (the commons URL is retired).
+    expect((await res.json()).url).toBe("/u/yopedia/test-page");
   });
 
   it("calls saveAnswerToWiki without sources when sources is omitted", async () => {
@@ -176,5 +177,64 @@ describe("POST /api/query/save", () => {
 
     const data = await res.json();
     expect(data.error).toContain("sources must be an array");
+  });
+});
+
+/**
+ * A read-only deployment refuses to save an answer (DW-187).
+ *
+ * This door keeps a route-level gate for a stated reason: `saveAnswerToWiki`
+ * runs `bakeYoyoIllustrations` before the page write, which GENERATES
+ * illustrations and stores them in R2 — an irreversible side effect, and a paid
+ * model call, both ahead of a write the kernel was always going to refuse. So
+ * "the library was never entered" is the assertion, not "the page is unchanged".
+ */
+describe("POST /api/query/save — read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every case above asserts what an ordinary
+    // deployment does, and an exported value would turn them red on one machine.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  it("answers 403 without baking an illustration or writing a page", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest({ title: "My Answer", content: "Some answer content" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    // `saveAnswerToWiki` owns the illustration bake AND the page write, so
+    // "never called" is the whole claim: no R2 asset, no model call, no page.
+    expect(mockedSaveAnswer).not.toHaveBeenCalled();
+  });
+
+  it("refuses the artifact path too, before the principal is resolved", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await POST(
+      makeRequest({ title: "Deck", content: "<p>x</p>", format: "slides" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockedSaveAnswer).not.toHaveBeenCalled();
+  });
+
+  it("saves exactly as before with the flag unset — the control case", async () => {
+    const res = await POST(
+      makeRequest({ title: "My Answer", content: "Some answer content" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockedSaveAnswer).toHaveBeenCalledTimes(1);
   });
 });

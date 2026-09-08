@@ -1,0 +1,34 @@
+exact-head SHA: 250688ee769d356c8be6c8567b00c2dd7b34a620
+command: pnpm test:e2e
+cwd: /Users/christianlee/App-Development/work-wiki
+started: 2026-08-24T15:25:10Z
+
+> work-wiki@0.1.0 test:e2e /Users/christianlee/App-Development/work-wiki
+> playwright test
+
+
+Running 17 tests using 1 worker
+
+(node:86419) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 e2e/retired-routes.spec.ts:15:7 › signed-in retired-route 404s › the sampled URLs are the retired surfaces, not a restated list (2ms)
+  ✓   2 e2e/retired-routes.spec.ts:31:9 › signed-in retired-route 404s › /wiki is 404 for the signed-in owner (493ms)
+  ✓   3 e2e/retired-routes.spec.ts:31:9 › signed-in retired-route 404s › /wiki/alpha is 404 for the signed-in owner (522ms)
+  ✓   4 e2e/retired-routes.spec.ts:31:9 › signed-in retired-route 404s › /wiki/contributors is 404 for the signed-in owner (379ms)
+  ✓   5 e2e/retired-routes.spec.ts:31:9 › signed-in retired-route 404s › /waitlist is 404 for the signed-in owner (514ms)
+  ✓   6 e2e/retired-routes.spec.ts:31:9 › signed-in retired-route 404s › /u/anyone is 404 for the signed-in owner (496ms)
+  ✓   7 e2e/retired-routes.spec.ts:42:9 › signed-in retired-route 404s › /api/wiki/browse is a bodiless 404 for the signed-in owner (349ms)
+  ✓   8 e2e/retired-routes.spec.ts:42:9 › signed-in retired-route 404s › /api/query/demo is a bodiless 404 for the signed-in owner (286ms)
+  ✓   9 e2e/retired-routes.spec.ts:42:9 › signed-in retired-route 404s › /api/contributors is a bodiless 404 for the signed-in owner (287ms)
+  ✓  10 e2e/workbench-owner.spec.ts:109:7 › private Workbench owner journey › lands on the Wiki canvas as the signed-in owner (1.7s)
+  ✓  11 e2e/workbench-owner.spec.ts:117:7 › private Workbench owner journey › creates a wiki from a scenario template and opens Settings (1.1s)
+  ✓  12 e2e/workbench-owner.spec.ts:135:7 › private Workbench owner journey › Chat and Search rails expose their canvases (702ms)
+  ✓  13 e2e/workbench-owner.spec.ts:155:7 › private Workbench owner journey › signed-in Graph, Lint, Review, and Research journeys open after a wiki exists (1.9s)
+  ✓  14 e2e/workbench-owner.spec.ts:181:7 › private Workbench owner journey › the Files tab is reachable after sign-in (548ms)
+  ✓  15 e2e/workbench-owner.spec.ts:190:7 › private Workbench owner journey › non-empty Graph chrome, reduced-motion Fit, narrow layout, and Research handoff (3.9s)
+  ✓  16 e2e/workbench-owner.spec.ts:238:7 › private Workbench owner journey › Lint auto-fix and Review Create Page / Skip in the signed-in browser (7.3s)
+  ✓  17 e2e/workbench-owner.spec.ts:303:15 › signed-out boundary › sends a browser with no session to sign-in (187ms)
+
+  17 passed (25.1s)
+exit: 0
+finished: 2026-08-24T15:25:36Z

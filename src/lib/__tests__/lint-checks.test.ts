@@ -15,14 +15,16 @@ import {
   checkLowConfidence,
   checkUnmigratedPages,
   checkUncitedClaims,
-  checkUnresolvedDiscussions,
-  checkDisputedPages,
   checkSupersededDangling,
+  checkDisputedPages,
+  checkDuplicateEntities,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
+  ALL_CHECK_TYPES,
 } from "../lint-checks";
 import type { LintIssue } from "../types";
+import { disputedClearGuidance } from "../lint-types";
 
 // We use writeWikiPage / ensureDirectories to set up wiki pages on disk.
 import { writeWikiPage, updateIndex, ensureDirectories } from "../wiki";
@@ -300,6 +302,18 @@ describe("checkBrokenLinks", () => {
 
     const issues = await checkBrokenLinks(["source", "target"]);
     expect(issues).toEqual([]);
+  });
+
+  it("detects a dangling [[wikilink]] as a broken link with source page", async () => {
+    await writeWikiPage(
+      "source",
+      "# Source\n\nThis links to [[missing-page]] which does not exist on disk.",
+    );
+    const issues = await checkBrokenLinks(["source"]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.type).toBe("broken-link");
+    expect(issues[0]?.slug).toBe("source");
+    expect(issues[0]?.target).toBe("missing-page");
   });
 
   it("skips links to infrastructure files (index.md, log.md)", async () => {
@@ -710,7 +724,7 @@ describe("checkUnmigratedPages", () => {
     expect(issues[0].type).toBe("unmigrated-page");
     expect(issues[0].slug).toBe("old-page");
     expect(issues[0].severity).toBe("info");
-    expect(issues[0].message).toContain("yopedia metadata");
+    expect(issues[0].message).toContain("work-wiki metadata");
     expect(issues[0].suggestion).toBeDefined();
   });
 
@@ -857,119 +871,6 @@ describe("checkUncitedClaims", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkUnresolvedDiscussions
-// ---------------------------------------------------------------------------
-describe("checkUnresolvedDiscussions", () => {
-  it("returns no issues when no discuss files exist", async () => {
-    await writeWikiPage("clean-page", "# Clean\n\nNo discussions here.");
-    const slugs = ["clean-page"];
-    const issues = await checkUnresolvedDiscussions(slugs);
-    expect(issues).toHaveLength(0);
-  });
-
-  it("flags a page with open discussion threads", async () => {
-    await writeWikiPage("debated", "# Debated\n\nSome content.");
-    // Create a discuss file with one open and one resolved thread
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "Thread 1", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
-      { title: "Thread 2", status: "resolved", author: "bob", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "debated.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkUnresolvedDiscussions(["debated"]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].type).toBe("unresolved-discussions");
-    expect(issues[0].slug).toBe("debated");
-    expect(issues[0].severity).toBe("warning");
-  });
-
-  it("uses plural when multiple threads are open", async () => {
-    await writeWikiPage("hot-topic", "# Hot Topic\n\nControversial.");
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "T1", status: "open", author: "a", createdAt: new Date().toISOString(), comments: [] },
-      { title: "T2", status: "open", author: "b", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "hot-topic.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkUnresolvedDiscussions(["hot-topic"]);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("2 unresolved discussion threads");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkDisputedPages
-// ---------------------------------------------------------------------------
-describe("checkDisputedPages", () => {
-  it("flags a page with disputed: true", async () => {
-    await createPageWithIndex("controversial", "Controversial Topic", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].type).toBe("disputed-page");
-    expect(issues[0].slug).toBe("controversial");
-    expect(issues[0].severity).toBe("warning");
-    expect(issues[0].message).toContain("disputed");
-    expect(issues[0].suggestion).toContain("discussion");
-  });
-
-  it("returns no issues when no pages are disputed", async () => {
-    await createPageWithIndex("peaceful", "Peaceful Topic", {
-      disputed: false,
-      created: "2025-01-01",
-    });
-    await createPageWithIndex("neutral", "Neutral Topic", {
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(0);
-  });
-
-  it("mentions existing unresolved threads when present", async () => {
-    await createPageWithIndex("hot-debate", "Hot Debate", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    // Create a discuss file with one open thread
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    const threads = [
-      { title: "Disagreement", status: "open", author: "alice", createdAt: new Date().toISOString(), comments: [] },
-    ];
-    await fs.writeFile(path.join(discussDir, "hot-debate.json"), JSON.stringify(threads));
-    _resetStorage();
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("1 unresolved discussion thread");
-    expect(issues[0].suggestion).toContain("resolve");
-  });
-
-  it("suggests opening a discussion when disputed page has no threads", async () => {
-    await createPageWithIndex("no-discussion", "No Discussion Yet", {
-      disputed: true,
-      created: "2025-01-01",
-    });
-
-    const issues = await checkDisputedPages();
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain("no discussion threads");
-    expect(issues[0].suggestion).toContain("Open a discussion thread");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // checkSupersededDangling
 // ---------------------------------------------------------------------------
 describe("checkSupersededDangling", () => {
@@ -1013,5 +914,302 @@ describe("checkSupersededDangling", () => {
 
     const issues = await checkSupersededDangling(["normal-page"]);
     expect(issues).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkDisputedPages
+// ---------------------------------------------------------------------------
+describe("checkDisputedPages", () => {
+  it("flags a page whose disputed flag is true", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("disputed-page");
+    expect(issues[0].slug).toBe("contested-page");
+    expect(issues[0].severity).toBe("warning");
+    expect(issues[0].message).toContain("disputed");
+  });
+
+  it("names the surviving clear path in the suggestion, not a talk thread", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const [issue] = await checkDisputedPages();
+    // The check exists so an owner can ACT on the flag. A message that only
+    // restates "this is disputed" repeats what the ArticleView banner already
+    // says; the clear path is what the retired talk-based version used to
+    // supply and what this replaces.
+    expect(issue.suggestion).toBeDefined();
+    expect(issue.suggestion).toContain("/api/wiki/contested-page");
+    expect(issue.suggestion).toContain("disputed: false");
+    // Talk is retired — no reconciliation thread may be advertised.
+    expect(issue.suggestion?.toLowerCase()).not.toContain("discussion");
+    expect(issue.suggestion?.toLowerCase()).not.toContain("talk");
+  });
+
+  it("says WHO can complete the PATCH, and says it in the shared clause (DW-389)", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const [issue] = await checkDisputedPages();
+    // DW-121 made the commons realm gate cover metadata writes, so on a public
+    // knowledge page this PATCH is refused for every non-admin, non-service
+    // principal. Naming the request without naming that is an instruction that
+    // 403s the reader who follows it.
+    expect(issue.suggestion).toContain("admin- or service-only");
+    expect(issue.suggestion).toContain("public");
+    expect(issue.suggestion).toContain("has to ask one");
+    // ONE home for the clause: `./lint-fix`'s auto-fix refusal carries the same
+    // string for the same slug, and the only way both can stay right is if
+    // neither spells it out. `lint-fix.test.ts` asserts the other half.
+    expect(issue.suggestion).toContain(disputedClearGuidance("contested-page"));
+  });
+
+  it("does NOT flag a page with disputed: false", async () => {
+    await createPageWithIndex("settled-page", "Settled Page", {
+      disputed: false,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toEqual([]);
+  });
+
+  it("does NOT flag a page with no disputed key at all", async () => {
+    await createPageWithIndex("plain-page", "Plain Page", {
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues).toEqual([]);
+  });
+
+  it("flags only the disputed page when both kinds are present", async () => {
+    await createPageWithIndex("settled-page", "Settled Page", {
+      disputed: false,
+      created: "2025-01-01",
+    });
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDisputedPages();
+    expect(issues.map((i) => i.slug)).toEqual(["contested-page"]);
+  });
+
+  it("skips an index entry with no readable page file and keeps checking", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+    // An index entry pointing at a page that was never written — the stale-index
+    // condition. The disputed check must not throw on it, or one bad row would
+    // hide every disputed page behind it.
+    _testIndexEntries.push({
+      slug: "ghost-page",
+      title: "Ghost Page",
+      summary: "Indexed but never written",
+    });
+    await updateIndex(_testIndexEntries);
+
+    const issues = await checkDisputedPages();
+    expect(issues.map((i) => i.slug)).toEqual(["contested-page"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkDuplicateEntities
+// ---------------------------------------------------------------------------
+
+describe("checkDuplicateEntities", () => {
+  it("names the merge action and aliases[] in the suggestion", async () => {
+    // Two pages for one entity: the second carries the first's title as an
+    // alias, which is the overlap `findDuplicateEntities` pairs on.
+    await createPageWithIndex("acme-corp", "Acme Corp", {
+      created: "2025-01-01",
+    });
+    await createPageWithIndex("acme-corporation", "Acme Corporation", {
+      aliases: ["Acme Corp"],
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDuplicateEntities();
+    expect(issues).toHaveLength(1);
+    const [issue] = issues;
+    expect(issue.type).toBe("duplicate-entity");
+    expect(issue.severity).toBe("warning");
+    expect(new Set([issue.slug, issue.target])).toEqual(
+      new Set(["acme-corp", "acme-corporation"]),
+    );
+
+    // `duplicate-entity` is NOT in `AUTO_FIXABLE_CHECK_TYPES`, so the stdio MCP
+    // server's `z.enum` refuses it at the transport and the agent never reaches
+    // `NOT_AUTO_FIXABLE`'s explanation. On that door this `suggestion` is the
+    // ONLY carrier of the action to take — it is what `fix_lint_issue`'s tool
+    // description points the agent at — so pin both halves of it: the merge
+    // itself, and where the absorbed name has to survive so its URL still
+    // resolves. Losing either would leave the type unfixable AND unexplained.
+    expect(issue.suggestion).toBeDefined();
+    expect(issue.suggestion?.toLowerCase()).toContain("merge");
+    expect(issue.suggestion).toContain("aliases[]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retired discussion checks
+// ---------------------------------------------------------------------------
+
+describe("retired discussion checks", () => {
+  it("ALL_CHECK_TYPES no longer offers the talk-surface check", () => {
+    // The talk surface is retired. This type drove `lint_wiki`'s MCP schemas
+    // and the API's check-type validation via this const, so its absence here
+    // is what keeps it out of both. (`fix_lint_issue` and `POST /api/lint/fix`
+    // read the narrower `AUTO_FIXABLE_CHECK_TYPES` since DW-348, so they never
+    // admitted it either way.)
+    //
+    // Only the talk-shaped check is asserted here. `disputed-page` is NOT part
+    // of this retirement — the `disputed` frontmatter flag outlived talk — and
+    // pinning its presence in a block named "retired" would make the block
+    // assert the opposite of its own name. The roster lives in its own describe
+    // below, so deleting this one when talk is finally forgotten cannot take
+    // the roster pin with it.
+    expect(ALL_CHECK_TYPES).not.toContain("unresolved-discussions");
+  });
+});
+
+/**
+ * Every hand-written lint check-type count in a document, in order.
+ *
+ * Whitespace is collapsed first so a phrasing that markdown reflowed across two
+ * lines is still seen; the two wordings are the two `DESIGN-triggers.md` uses.
+ * A numberless mention ("existing lint check types") carries nothing to pin and
+ * is deliberately not matched.
+ */
+function documentedCheckCounts(text: string): number[] {
+  const flat = text.replace(/\s+/g, " ");
+  return [...flat.matchAll(/\b(\d+) (?:lint check|condition) types\b/g)].map(
+    (m) => Number(m[1]),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The check-type roster
+// ---------------------------------------------------------------------------
+
+describe("ALL_CHECK_TYPES roster", () => {
+  it("has one entry per shipped check", () => {
+    // A bare length pin, deliberately: the roster's single runtime home
+    // (`src/lib/lint-types.ts`) is what both the lint UI and the MCP/API
+    // schemas read, so a silent addition or removal is worth one deliberate
+    // update here.
+    expect(ALL_CHECK_TYPES).toHaveLength(15);
+  });
+
+  it("includes disputed-page", () => {
+    // DW-76: ingest still sets the `disputed` frontmatter flag and ArticleView
+    // still renders its banner, so the flag needs a surface that lists the
+    // flagged pages for an owner. That surface is this check, and it only
+    // reaches the UI toggles and `lint_wiki`'s check enum by being in this
+    // list. NOT `fix_lint_issue`'s enum — that one is
+    // `AUTO_FIXABLE_CHECK_TYPES`, which deliberately excludes this type
+    // (DW-348); the human action reaches the caller through the issue's own
+    // `suggestion` instead.
+    expect(ALL_CHECK_TYPES).toContain("disputed-page");
+  });
+
+  it("declares each check type exactly once", () => {
+    // A duplicated entry would render a duplicate UI toggle and would inflate
+    // the length assertion above into a false pass.
+    expect(new Set<string>(ALL_CHECK_TYPES).size).toBe(ALL_CHECK_TYPES.length);
+  });
+
+  it("DESIGN-triggers.md documents the real check-type count", async () => {
+    // The count is hand-written in three places in that file ("15 lint check
+    // types" twice, "15 condition types" once) and nothing read it out of the
+    // roster, so they drifted apart — one said 14 while the other two said 15
+    // (DW-467). Pin every numbered phrasing to `ALL_CHECK_TYPES.length` rather
+    // than to another hand-written number, the way
+    // `src/lib/__tests__/mcp-annotations.test.ts` pins the MCP *tool* count in
+    // the same file.
+    const text = await fs.readFile(
+      path.resolve(__dirname, "../../..", "DESIGN-triggers.md"),
+      "utf8",
+    );
+    const documented = documentedCheckCounts(text);
+    // A bare count pin, in the same spirit as `toHaveLength(15)` above:
+    // `toBeGreaterThan(0)` would only notice ALL the phrasings vanishing, so
+    // deleting or rewording two of the three would quietly shrink this pin's
+    // reach while it still passed. Three is what the file carries; a fourth
+    // mention is worth one deliberate update here.
+    expect(documented).toHaveLength(3);
+    for (const count of documented) {
+      expect(count).toBe(ALL_CHECK_TYPES.length);
+    }
+  });
+
+  /**
+   * The pin above can only ever assert the doc as it stands today, so its
+   * failure modes — a stale number, a roster change, a doc that lost its
+   * phrasings, a count reflowed across a line — are exercised here against
+   * synthetic text instead. Without these, "the pin would catch it" is a claim
+   * nothing checks.
+   */
+  describe("documentedCheckCounts", () => {
+    it("collects every numbered phrasing, both wordings", () => {
+      expect(
+        documentedCheckCounts(
+          "work-wiki has 15 lint check types … detect 15 condition types",
+        ),
+      ).toEqual([15, 15]);
+    });
+
+    it("surfaces a count that drifted out of step with the others", () => {
+      // The DW-467 state itself: :454 said 14 while :141 and :404 said 15.
+      const drifted = documentedCheckCounts(
+        "15 lint check types … already detect 14 condition types",
+      );
+      expect(drifted).toEqual([15, 14]);
+      expect(drifted.every((n) => n === 15)).toBe(false);
+    });
+
+    it("reports the documented number, not the roster length", () => {
+      // A roster that grew or shrank leaves every doc phrasing behind at the
+      // old number, and that gap is what makes the pin fail. So this reads the
+      // documented number back verbatim and asserts it really is a different
+      // value from `ALL_CHECK_TYPES.length` — the comparison the pin performs.
+      // Contrasting against the live length rather than a literal keeps the
+      // case meaningful if the roster ever reaches the fixture's number.
+      const stale = String(ALL_CHECK_TYPES.length - 1);
+      expect(documentedCheckCounts(`${stale} lint check types`)).toEqual([
+        Number(stale),
+      ]);
+      expect(documentedCheckCounts(`${stale} lint check types`)[0]).not.toBe(
+        ALL_CHECK_TYPES.length,
+      );
+    });
+
+    it("returns nothing when the phrasings are reworded away", () => {
+      // Feeds the pin's length assertion: an empty result must not read as
+      // "every count agrees".
+      expect(
+        documentedCheckCounts("existing lint check types and frontmatter"),
+      ).toEqual([]);
+    });
+
+    it("sees a count wrapped onto the next line", () => {
+      expect(documentedCheckCounts("work-wiki has 15 lint\ncheck types")).toEqual(
+        [15],
+      );
+    });
   });
 });

@@ -2,90 +2,90 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/config", () => ({ isReadOnly: vi.fn() }));
+vi.mock("@/lib/wikis", () => ({ getCurrentWiki: vi.fn() }));
 vi.mock("@/lib/workspace-profile", async (original) => ({
   ...(await original<typeof import("@/lib/workspace-profile")>()),
   getWorkspaceProfile: vi.fn(),
-  saveWorkspaceProfile: vi.fn(),
 }));
 
 import { GET, PUT } from "@/app/api/workspace-profile/route";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import {
-  getWorkspaceProfile,
-  saveWorkspaceProfile,
-  type WorkspaceProfile,
-} from "@/lib/workspace-profile";
-
-const PROFILE: WorkspaceProfile = {
-  version: 1,
-  scenario: "business",
-  purpose: "Track decisions.",
-  keyQuestions: ["What changed?"],
-  inScope: ["Decisions"],
-  outOfScope: ["Rumor"],
-  outputLanguage: "English",
-  pageConventions: "Cite sources.",
-  createdAt: "2026-08-06T00:00:00.000Z",
-  updatedAt: "2026-08-06T00:00:00.000Z",
-};
+import { getCurrentWiki } from "@/lib/wikis";
+import { getWorkspaceProfile } from "@/lib/workspace-profile";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
-const mockedGet = vi.mocked(getWorkspaceProfile);
-const mockedSave = vi.mocked(saveWorkspaceProfile);
+const mockedCurrentWiki = vi.mocked(getCurrentWiki);
+const mockedProfile = vi.mocked(getWorkspaceProfile);
 
-function putRequest(body: unknown) {
-  return new Request("http://localhost/api/workspace-profile", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
-  mockedReadOnly.mockReturnValue(false);
-  mockedGet.mockResolvedValue(PROFILE);
-  mockedSave.mockResolvedValue(PROFILE);
-});
-
-describe("Workspace Purpose API", () => {
-  it("requires sign-in", async () => {
-    mockedPrincipal.mockResolvedValue(null);
-    expect((await GET()).status).toBe(401);
-    expect((await PUT(putRequest(PROFILE))).status).toBe(401);
-    expect(mockedGet).not.toHaveBeenCalled();
-    expect(mockedSave).not.toHaveBeenCalled();
-  });
-
-  it("loads and saves only in the principal tenant", async () => {
-    expect(await (await GET()).json()).toEqual({ profile: PROFILE, readOnly: false });
-    const response = await PUT(putRequest(PROFILE));
-    expect(response.status).toBe(200);
-    expect(mockedGet).toHaveBeenCalledWith("alice");
-    expect(mockedSave).toHaveBeenCalledWith("alice", {
-      scenario: "business",
-      purpose: "Track decisions.",
-      keyQuestions: ["What changed?"],
-      inScope: ["Decisions"],
-      outOfScope: ["Rumor"],
+describe("retired workspace-profile compatibility route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedPrincipal.mockResolvedValue({ handle: "alice" } as never);
+    mockedReadOnly.mockReturnValue(false);
+    mockedCurrentWiki.mockResolvedValue({ id: "wiki-1", name: "Hiring" } as never);
+    mockedProfile.mockResolvedValue({
+      version: 1,
+      scenario: "custom",
+      purpose: "Legacy evidence",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
       outputLanguage: "English",
-      pageConventions: "Cite sources.",
+      pageConventions: "",
+      createdAt: null,
+      updatedAt: null,
     });
   });
 
-  it("rejects writes in explicit read-only mode", async () => {
-    mockedReadOnly.mockReturnValue(true);
-    const response = await PUT(putRequest(PROFILE));
-    expect(response.status).toBe(403);
-    expect(mockedSave).not.toHaveBeenCalled();
+  it("requires authentication for reads and writes", async () => {
+    mockedPrincipal.mockResolvedValue(null);
+    expect((await GET()).status).toBe(401);
+    expect((await PUT(new Request("http://localhost/api/workspace-profile"))).status).toBe(401);
   });
 
-  it("rejects invalid scenarios", async () => {
-    const response = await PUT(putRequest({ scenario: "other" }));
-    expect(response.status).toBe(400);
-    expect(mockedSave).not.toHaveBeenCalled();
+  it("serves preserved legacy evidence as a retired read-only contract", async () => {
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      profile: { purpose: "Legacy evidence" },
+      readOnly: false,
+      wiki: { id: "wiki-1", name: "Hiring" },
+      retired: true,
+    });
+    expect(mockedProfile).toHaveBeenCalledWith("alice", "wiki-1");
+  });
+
+  it("returns an empty compatibility profile when there is no current Wiki", async () => {
+    mockedCurrentWiki.mockResolvedValue(null);
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      profile: { purpose: "", keyQuestions: [], pageConventions: "" },
+      wiki: null,
+      retired: true,
+    });
+    expect(mockedProfile).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when preserved evidence cannot be read", async () => {
+    mockedProfile.mockRejectedValue(new Error("profile unreadable"));
+    const response = await GET();
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "profile unreadable" });
+  });
+
+  it("rejects every authenticated structured-profile write", async () => {
+    const response = await PUT(new Request("http://localhost/api/workspace-profile", {
+      method: "PUT",
+      body: JSON.stringify({ purpose: "A second writer" }),
+    }));
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET");
+    expect(await response.json()).toEqual({
+      error: "Workspace Purpose is edited from purpose.md in the Workbench Preview.",
+    });
+    expect(mockedProfile).not.toHaveBeenCalled();
   });
 });

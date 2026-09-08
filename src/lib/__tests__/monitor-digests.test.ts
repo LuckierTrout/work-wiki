@@ -200,3 +200,56 @@ describe("source-monitor digests", () => {
     )).toMatchObject([{ id: digest!.id, owner: "alice", status: "failed" }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guidance by human, storage by handle (DW-709)
+// ---------------------------------------------------------------------------
+
+import { createNamesTerm } from "../names-terms";
+import { tenantForOwner } from "../wiki";
+
+/**
+ * Digest prose is canonicalized against the owner's Names & Terms. Before
+ * DW-709 an `alice--yoyo`-owned digest read the AGENT's tenant — an empty
+ * dictionary — so the aliases alice maintains never reached the prose she
+ * actually receives. The digest RECORD itself stays in the agent's silo.
+ */
+describe("agent-owned digests canonicalize against the human's dictionary", () => {
+  const HUMAN = "alice";
+  const AGENT = "alice--yoyo";
+
+  it("applies the human's aliases to the entry prose, storing under the agent", async () => {
+    await createNamesTerm(HUMAN, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+    // Both canonicalized fields carry the ALIAS, so a dictionary read against
+    // the agent's own empty tenant leaves them verbatim and this fails.
+    const monitor = await createSourceMonitor(AGENT, {
+      name: "Lighthouse brief",
+      url: "https://example.com/launch",
+      targetSlug: "launch-plan",
+    }, new Date("2026-08-04T00:00:00.000Z"));
+    await recordOperation(AGENT, {
+      kind: "monitor",
+      operation: "propose-update",
+      status: "succeeded",
+      subjectId: monitor.id,
+      detail: "Lighthouse shifted its ship date; proposal mcp_9",
+      createdAt: "2026-08-04T03:00:00.000Z",
+    });
+
+    const digest = await createMonitorDigest(AGENT, {
+      now: new Date("2026-08-04T06:00:00.000Z"),
+    });
+
+    expect(digest?.entries[0]?.monitorName).toBe("Project Lighthouse brief");
+    expect(digest?.entries[0]?.detail).toContain("Project Lighthouse shifted");
+    // Addressing is untouched: the digest is the AGENT's, in the agent's silo.
+    expect(digest?.owner).toBe(AGENT);
+    expect(tenantForOwner(AGENT)).not.toBe(tenantForOwner(HUMAN));
+    expect(await listMonitorDigests(HUMAN)).toEqual([]);
+    expect(await listMonitorDigests(AGENT)).toHaveLength(1);
+  });
+});

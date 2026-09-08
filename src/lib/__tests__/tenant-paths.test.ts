@@ -14,8 +14,21 @@ import type { PageMetaIndex } from "../page-index";
 // Mock page-index so tenantForSlug tests don't need real storage
 // ---------------------------------------------------------------------------
 let mockPageIndex: PageMetaIndex | null = null;
+let getPageIndexCalls = 0;
 vi.mock("../page-index", () => ({
-  getPageIndex: () => Promise.resolve(mockPageIndex),
+  // Mirrors production: the real `getPageIndex` hands back a NULL-PROTOTYPE
+  // map, which is what makes a slug naming an `Object.prototype` member read as
+  // a miss on `tenantForSlug`'s fast path (DW-232). A plain-object mock would
+  // quietly re-introduce the bug the tests below are meant to pin.
+  getPageIndex: () => {
+    getPageIndexCalls += 1;
+    return Promise.resolve(
+      mockPageIndex === null
+        ? null
+        : (Object.assign(Object.create(null), mockPageIndex) as PageMetaIndex),
+    );
+  },
+  getPageIndexDirtySlugs: () => Promise.resolve(new Set<string>()),
 }));
 
 // Pin DATA_DIR and clear WIKI_DIR/RAW_DIR overrides so the relative-path math
@@ -141,6 +154,27 @@ describe("tenantForSlug", () => {
     // "no-such-page" is not in the index — falls through to buildSlugTenantMap
     // which also won't find it → DEFAULT_TENANT
     expect(await tenantForSlug("no-such-page")).toBe(DEFAULT_TENANT);
+  });
+
+  it("takes the slow path for a prototype-named slug missing from the index", async () => {
+    mockPageIndex = {
+      "existing-page": {
+        slug: "existing-page",
+        title: "Exists",
+        summary: "yes",
+        owner: "bob",
+      },
+    };
+    getPageIndexCalls = 0;
+    const tenant = await tenantForSlug("constructor");
+    // Against a plain-object index, `pageIdx["constructor"]` answers with the
+    // inherited `Object` constructor — truthy, so the fast path "hits" and the
+    // slow path never runs. `listWikiPages` (the slow path) reads the index a
+    // second time, so a call count above one is the proof the miss was
+    // recorded and the fall-through happened.
+    expect(getPageIndexCalls).toBeGreaterThan(1);
+    expect(tenant).toBe(DEFAULT_TENANT);
+    expect(typeof tenant).toBe("string");
   });
 
   it("falls back to buildSlugTenantMap when page index is absent", async () => {

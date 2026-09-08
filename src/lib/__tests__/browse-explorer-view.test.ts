@@ -18,8 +18,8 @@ function page(overrides: Partial<IndexEntry> = {}): IndexEntry {
 }
 
 describe("browse explorer presentation", () => {
-  it("keeps commons links global and private or agent pages owner-scoped", () => {
-    expect(browsePageHref(page())).toBe("/wiki/measurement-plan");
+  it("keeps every link owner-scoped — the commons URL is retired", () => {
+    expect(browsePageHref(page())).toBe("/u/christianlee/measurement-plan");
     expect(browsePageHref(page({ visibility: "private" }))).toBe(
       "/u/christianlee/measurement-plan",
     );

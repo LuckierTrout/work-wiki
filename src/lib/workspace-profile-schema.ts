@@ -25,8 +25,8 @@ export interface WorkspaceScenarioTemplate extends WorkspaceProfileInput {
 }
 
 /**
- * Clean-room WorkWiki templates. These describe broadly useful workflows in
- * WorkWiki's own language and do not reproduce the reference application's
+ * Clean-room work-wiki templates. These describe broadly useful workflows in
+ * work-wiki's own language and do not reproduce the reference application's
  * GPL-licensed template text.
  */
 export const WORKSPACE_SCENARIO_TEMPLATES: Record<

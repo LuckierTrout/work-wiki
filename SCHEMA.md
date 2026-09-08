@@ -65,10 +65,10 @@ These were added in Phase 1 of the work-wiki pivot.
 | `valid_from` | ISO date string (YYYY-MM-DD) | Today (ingest date) | Initial ingest and re-ingest (always resets to today — the content is re-verified) | `stale-page` lint check (flags pages verified over 180 days ago); page view temporal range ("Verified May 2026 · Review by Oct 2026") |
 | `owner` | string (principal handle) | the acting user (`"system"` for legacy/MCP) | Set from the authenticated session on write (never client-supplied); preserved on re-ingest | Accountability; basis (with `contributors`) for the "Mine" personal lens |
 | `visibility` | `"public"` \| `"private"` | `"public"` | Set on create; preserved on re-ingest (a private page is never silently re-published). `private` is a future paid feature | Read filtering (future, when private content lands) |
-| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
-| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | `/wiki/contributors` page, `ContributorBadge` component, contributor profiles API |
+| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | The contributor scan in `src/lib/contributors.ts` (`computeScanData()`), which `src/lib/contributor-index.ts` serializes into the contributor index on an explicit `rebuildContributorIndex()` — nothing maintains that index on write, nothing rebuilds it on a schedule, and no product surface renders it; the author union when two pages merge; the CLI page view's `Authors:` line |
+| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | The contributor scan in `src/lib/contributors.ts` (`computeScanData()`), which `src/lib/contributor-index.ts` serializes into the contributor index on an explicit `rebuildContributorIndex()` — nothing maintains that index on write, nothing rebuilds it on a schedule, and no product surface renders it; the contributor union when two pages merge; basis (with `owner`) for the "Mine" personal lens |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
-| `disputed` | boolean | `false` | Set manually or by future contradiction resolution; preserved on re-ingest | `disputed-page` lint check; talk page system (`discuss/` directory); wiki page view warning badge |
+| `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner); `disputed-page` lint check (lists the flagged pages for an owner to reconcile) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
 | `aliases` | string array | `[]` | Set manually for alternative names; preserved on re-ingest | Alias index for entity deduplication at ingest time; `duplicate-entity` lint check; search resolution |
 | `sources` | JSON string (SourceEntry[]) | `"[]"` | Ingest appends a new entry; re-ingest appends if the source URL is new | Wiki page view provenance section; parseSources() in `src/lib/sources.ts` |
@@ -123,14 +123,59 @@ frontmatter on demand and updated incrementally on page write. The
 `duplicate-entity` lint check scans for pages whose titles/aliases
 overlap (suggesting they should be merged).
 
+## Alias hints on API misses (`canonicalSlug`)
+
+When a page is merged away or renamed, its old slug becomes an alias of the
+survivor (see **Alias resolution at ingest time** above). The browser surfaces
+— `/u/<handle>/<slug>`, `.../<slug>/edit` and `/u/<handle>/raw/<slug>` — answer
+a request for that old slug with a `308` to the survivor's equivalent URL. The
+MACHINE doors do not redirect. They keep their `404` and name the survivor in
+the error body instead:
+
+```json
+{ "error": "page not found: old-slug", "canonicalSlug": "survivor" }
+```
+
+**Which doors emit it — and only these.** `GET /api/raw/<slug>`, and `DELETE`,
+`PUT` and `PATCH` on `/api/wiki/<slug>`. Four handlers, no others.
+
+**Which doors do NOT.** There is no `GET` on `/api/wiki/<slug>` at all. The
+other read door a machine caller reaches for, `GET /api/workbench/preview`,
+answers its own fixed `{ "error": "Not found." }` and carries **no**
+`canonicalSlug` — do not assume parity there. Neither do the MCP tools: they
+reach the wiki library directly rather than through these HTTP routes, so a
+merged-away slug still answers a bare `Page not found: <slug>` on that surface.
+
+**The status never changes.** A miss is still `404`, and the `error` sentence is
+still the one it always was. `canonicalSlug` is purely ADDITIVE — an API client
+is not a browser, and silently redirecting one would hide a moved page from the
+caller that most needs to record the move.
+
+**It is absent unless a readable survivor resolves.** The field is projected
+from the same principal-aware, fail-closed gate the page routes redirect
+through, so it appears only when the alias index resolves the requested slug to
+a *different* slug, a page exists there, and the caller may read it. A slug
+nothing aliases, an anonymous caller whose survivor is private, and the ACL
+cloak (a page that exists but the caller may not read — such a slug resolves to
+*itself*) all answer a bare `{ "error": ... }`. The field can therefore never be
+used as an existence oracle for a private page.
+
+**It carries the SLUG only** — never a tenant or an owner handle. Both machine
+doors are slug-keyed, so the survivor's slug is the whole of what an HTTP client
+needs to retry.
+
 ## Talk pages (Phase 2)
 
-Talk pages provide a threaded discussion surface for editorial disputes,
-contradiction resolution, and general commentary on any wiki page.
+Talk pages **were** work-wiki's threaded discussion surface for editorial
+disputes, contradiction resolution, and general commentary on any wiki page.
+The surface is retired — see **Retired surfaces** below — so what follows
+documents the on-disk shape, which the readers that outlived it still depend on.
 
-**Location:** `discuss/<slug>.json` — created on demand by `ensureDiscussDir()`
-in `src/lib/talk.ts`. The `discuss/` directory is gitignored (like `wiki/` and
-`raw/`).
+**Location:** `discuss/<slug>.json`, under the data directory —
+`getDiscussDir()` in `src/lib/talk.ts`. Nothing creates the directory ahead of
+the first write: `ensureDiscussDir()` is an explicit no-op, because the storage
+provider creates parent directories itself. The `discuss/` directory is
+gitignored (like `wiki/` and `raw/`).
 
 **Schema:** Each file contains a JSON array of `TalkThread` objects:
 
@@ -147,24 +192,46 @@ Each `TalkComment` has:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Unique ID (timestamp-based, e.g. `"1714600000000"`) |
+| `id` | string | Unique ID within the file. The retired writers minted these from a monotonic clock (e.g. `"1714600000000"`), which is what any file already on disk holds; nothing in production mints one now, and the test fixture's ids follow their own scheme. |
 | `author` | string | Who wrote this comment (user handle or agent ID) |
 | `created` | ISO date string | When the comment was posted |
 | `body` | string | Markdown content |
 | `parentId` | `string \| null` | ID of parent comment for threading; `null` for top-level |
 
-**API routes:**
+**Retired surfaces:** the Discussion UI and every REST route under
+`/api/wiki/:slug/discuss` were cut with the move to a private, single-owner
+Workbench. `RETIRED_SURFACES` (`src/lib/retired.ts`) holds the four routes:
+`/api/wiki/:slug/discuss`, `/api/wiki/:slug/discuss/:threadIndex`,
+`/api/wiki/:slug/discuss/:threadIndex/comments` and
+`/api/wiki/:slug/discuss/:threadIndex/ask-yoyo`. Every method those four once
+served now answers a bodiless 404 through `retiredRoute()` — `GET` and `POST`
+on the first, `GET` and `PATCH` on the second, `POST` on each of the last two,
+six method+route pairs over the four listed routes. The "Discussion" tab and the
+discussion badge counts went with the pages that carried them: `/wiki` and
+`/wiki/[slug]` are entries in the same list, and their bodies are
+`retiredPage()`, which is Next's `notFound()`.
 
-- `GET /api/wiki/:slug/discuss` — list all threads for a page
-- `POST /api/wiki/:slug/discuss` — create a new thread
-- `GET /api/wiki/:slug/discuss/:threadIndex` — get a single thread
-- `PATCH /api/wiki/:slug/discuss/:threadIndex` — update thread status (resolve/reopen)
-- `POST /api/wiki/:slug/discuss/:threadIndex/comments` — add a comment (supports `parentId` for replies)
+**Still live:** the storage format above, and the readers with callers.
+`deleteDiscussions()` is one of the steps page deletion runs in
+`src/lib/lifecycle.ts`; `src/lib/discuss-stats-index.ts` keeps the per-slug
+thread counts as a precomputed index that the maintenance scan rebuilds daily;
+and `src/lib/contributors.ts` scans the same `discuss/` files for the comment
+and thread-created counts in its wiki-wide contributor scan.
 
-**UI:** The wiki page view includes a "Discussion" tab showing threads with
-nested reply rendering (indented comments up to 3 visual levels). Discussion
-badge counts appear on wiki index page cards and individual page headers to
-surface active disputes at a glance.
+**Present but unreached:** one further piece is still exported and still
+correct, with nothing outside the tests reaching it.
+`getDiscussionStatsForSlugs()` (`src/lib/talk.ts`) computes per-page thread
+counts, but its only caller is `src/lib/browse.ts`, which has no non-test
+importers of its own now that `/api/wiki/browse` is a `RETIRED_SURFACES` entry.
+
+**Deleted:** the thread-writing half of `src/lib/talk.ts` is gone. It lost its
+callers when the routes above were retired, so nothing *authors a thread or a
+comment* any more — no production code path adds to a `discuss/<slug>.json`,
+and the only writer of that content left in the repo is the test fixture
+`src/lib/__tests__/discuss-fixtures.ts`. The FILE is still handled, though:
+`src/lib/contributors.ts` and `src/lib/discuss-stats-index.ts` read it,
+`src/lib/silo.ts` copies it wholesale into a tenant silo (and deletes it from
+one), and `deleteDiscussions()` deletes it on page teardown.
 
 ## Contributor profiles (Phase 2)
 
@@ -172,9 +239,13 @@ Contributor profiles aggregate activity from two data sources — revision
 history and talk page discussions — to build a picture of each contributor's
 involvement and trustworthiness.
 
-**Built dynamically** by `buildContributorProfile()` and `listContributors()`
-in `src/lib/contributors.ts`. No persistent storage; profiles are computed on
-each request by scanning revisions and talk page JSON files.
+**Computed** by `computeScanData()` in `src/lib/contributors.ts` — one
+wiki-wide pass over every readable page's revisions plus every `discuss/` file,
+producing per-author activity and revert counts. `src/lib/contributor-index.ts`
+can persist that scan's RAW tallies as a KV index (edits, pages, comments,
+threads, reverts, first/last seen — no trust score is stored), and applies the
+trust formula below when it builds a profile on READ. Nothing calls either on a
+request path or on a schedule; see **Retired surfaces** below.
 
 **Trust score formula:**
 
@@ -190,16 +261,33 @@ with 100 edits and 5 reverts has trust 0.5.
 **Revert detection:** A revision counts as "reverted" when a subsequent revision
 by a different author reduces content size by more than 50%.
 
-**API routes:**
+**Retired surfaces:** the public contributor UI and its REST routes were cut
+with the move to a private, single-owner Workbench. `GET /api/contributors`,
+`GET /api/contributors/:handle` and the `/wiki/contributors` index page are all
+entries in `RETIRED_SURFACES` (`src/lib/retired.ts`). The two REST routes answer
+a bodiless 404 through `retiredRoute()`; the page body is `retiredPage()`, which
+is Next's `notFound()`, so it renders the app's own 404 UI. There is no
+`/wiki/contributors/:handle` detail page, and the `ContributorBadge` component
+no longer exists anywhere in `src/`.
 
-- `GET /api/contributors` — list all contributors, sorted by edit count
-- `GET /api/contributors/:handle` — single contributor profile
+**Deleted with them:** the profile builders. `buildContributorProfile()`,
+`buildContributorProfiles()` and `listContributors()` are gone from
+`src/lib/contributors.ts` (DW-125) — the retired surfaces above were their last
+production callers, leaving only tests behind them.
 
-**UI:** Contributor index page at `/wiki/contributors` lists all contributors
-with trust badges. Detail pages at `/wiki/contributors/:handle` show full stats
-(edit count, pages edited, comments, threads created, reverts if non-zero,
-first/last seen dates). `ContributorBadge` components on wiki pages link through
-to contributor detail pages.
+**Present but unreached:** the scan and the index. `computeScanData()`,
+`computeTrustScore()` and the pure reducers in `src/lib/contributors.ts` still
+compute the activity, revert and trust facts above, and every export of
+`src/lib/contributor-index.ts` is intact — the incremental hooks
+(`recordEditForAuthor` / `reverseEditForAuthor` / `recordTalkForAuthor`), the
+read helpers (`contributorProfileFromIndex` / `profilesFromIndex`) and
+`rebuildContributorIndex()`. None of them has a production caller. The lifecycle
+write/delete hook that maintained the index was removed once nothing read it,
+and the contributor rebuild is no longer one of `rebuildDerivedIndexes()`' steps
+(DW-126) — a daily wiki-wide scan whose output nothing consumed. Both modules
+are retained deliberately: `rebuildContributorIndex()` is an on-demand repair
+tool, and deleting them would decide whether the contributor trust surface ever
+returns, which is a product call rather than a cleanup.
 
 ## Revision attribution (Phase 2)
 
@@ -505,11 +593,10 @@ ordered sequence of steps, a set of file outputs, and a log entry shape.
 - **Trigger:** a question (free-text).
 - **Steps:**
   1. Read `wiki/index.md` to enumerate candidate pages.
-  2. Score candidates with BM25 keyword scoring. When an embedding provider is
-     configured (OpenAI, Google, or Ollama), also perform vector search and
-     combine results via Reciprocal Rank Fusion (RRF). Optionally refine with
-     an LLM rerank to find the most relevant slugs (`searchIndex()` in
-     `src/lib/query.ts`).
+  2. Score candidates with BM25 keyword scoring. When vector search is switched
+     on, also perform vector search and combine results via Reciprocal Rank
+     Fusion (RRF). Optionally refine with an LLM rerank to find the most
+     relevant slugs (`searchIndex()` in `src/lib/query-search.ts`).
   3. Fetch the full content of the top-ranked pages.
   4. Synthesize an answer with inline citations and return both the answer
      and the list of source slugs.
@@ -593,18 +680,10 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   frontmatter fields (`confidence`, `expiry`, `authors`), indicating it
   predates the schema migration. Auto-fix: add sensible defaults
   (confidence 0.5, expiry 90 days out, authors `["system"]`, etc.).
-- **`unresolved-discussions`** (warning) — page has open (unresolved)
-  discussion threads on its talk page. No auto-fix — requires reviewing
-  and resolving the open threads on the talk page.
-- **`disputed-page`** (warning) — page has `disputed: true` in its
-  frontmatter, indicating unresolved contradictions. Reports whether
-  the page has open discussion threads to resolve the dispute or needs
-  one opened. No auto-fix — requires reviewing the page content and
-  talk page to resolve the dispute through discussion.
 - **`supersedes-dangling`** (warning) — page declares a `supersedes` field
   pointing to a slug that doesn't exist on disk. The supersession chain is
-  broken. No auto-fix — create the target page or remove the `supersedes`
-  field.
+  broken. Auto-fix: clear the dead reference (re-verified missing before
+  clearing).
 - **`incomplete-coverage`** (info) — LLM comparison of raw source content
   (`raw/<slug>.md`) against the corresponding wiki page (`wiki/<slug>.md`)
   flags cases where significant information from the source is absent from
@@ -613,6 +692,18 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   source on disk. Requires an LLM key; skipped when no key is configured.
   No auto-fix — requires re-ingesting with an updated prompt or manually
   adding the missing content.
+- **`disputed-page`** (warning) — page's `disputed` frontmatter flag is `true`:
+  a merge contradicted the existing page (or someone set the flag by hand) and
+  no review has cleared it. The flag is never cleared automatically, and this
+  is the first surface to report the flagged pages unprompted as actionable
+  issues (a dataview `queryByFrontmatter` filter can also list them on
+  request). No auto-fix —
+  clearing `disputed` asserts a human reconciled the conflicting claims, done
+  via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with
+  metadata `{ disputed: false }`) — on a public knowledge page that PATCH is
+  admin- or service-only, so an owner who is not an admin has to ask one to
+  clear the flag; on a private, agent-scoped or artifact page the owner's own
+  toggle still works.
 
 ## Provider configuration
 
@@ -638,16 +729,17 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
 Things this schema does NOT yet codify, in rough priority order. Future
 sessions should pick from this list:
 
-- Vector search is partially implemented — embeddings are generated
-  incrementally on page write (when an embedding-capable provider like OpenAI,
-  Google, or Ollama is configured) and used for hybrid BM25+vector retrieval
-  via RRF. Batch rebuild of the full vector index is available via the Settings
-  page (`/api/settings/rebuild-embeddings`).
-  Anthropic-only users see no regression (pure BM25 fallback).
-- Lint auto-fix handles nine of sixteen checks (`orphan-page`, `stale-index`,
+- Vector search is partially implemented — when vector search is switched on,
+  embeddings are generated incrementally on page write and used for hybrid
+  BM25+vector retrieval via RRF. The switch is what every vector-backed path
+  reads: a deployment with an embedding-capable provider configured but the
+  switch off does no vector work at all. Batch rebuild of the full vector index
+  is available via the Settings page (`/api/settings/rebuild-embeddings`).
+  Deployments without vector search see no regression (pure BM25 fallback).
+- Lint auto-fix handles ten of fifteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
-  `missing-concept-page`, `stale-page`, `unmigrated-page`) via
-  `POST /api/lint/fix`.
+  `missing-concept-page`, `stale-page`, `unmigrated-page`,
+  `supersedes-dangling`) via `POST /api/lint/fix`.
   The `contradiction` fix uses the LLM to rewrite the affected page.
   The `missing-concept-page` fix generates a stub page via the LLM.
   The `broken-link` fix removes broken links from the source page.
@@ -655,15 +747,14 @@ sessions should pick from this list:
   refreshes `valid_from` to today.
   The `unmigrated-page` fix adds sensible work-wiki defaults (confidence 0.5,
   expiry 90 days out, authors `["system"]`).
-  The seven exceptions without auto-fix are: `low-confidence` (requires
+  The `supersedes-dangling` fix clears the dead reference (re-verified
+  missing before clearing).
+  The five exceptions without auto-fix are: `low-confidence` (requires
   ingesting additional sources), `duplicate-entity` (requires human judgment
   to merge), `uncited-claims` (requires adding citations or ingesting
-  sources), `unresolved-discussions` (requires reviewing and resolving
-  open threads on the talk page), `disputed-page` (requires resolving
-  the dispute through discussion), `supersedes-dangling` (requires
-  creating the target page or removing the supersedes field), and
-  `incomplete-coverage` (requires ingesting additional sources to
-  improve topic coverage).
+  sources), `incomplete-coverage` (requires ingesting additional sources
+  to improve topic coverage), and `disputed-page` (requires an owner to
+  reconcile the conflicting claims and clear the flag).
 - Long documents are chunked at ingest time (12K chars per chunk ≈ 3K
   tokens) so they fit within provider context windows. Token counting is
   character-based (not tokenizer-exact), which is conservative but not
@@ -686,7 +777,15 @@ sessions should pick from this list:
 
 ## Planned evolution
 
-Phase 1 (schema evolution) and Phase 2 (talk pages + attribution) are complete.
+Phase 1 (schema evolution) is complete. Phase 2 (talk pages + attribution)
+shipped and then lost its product surfaces: the talk-page Discussion UI, the
+public contributor index and the REST routes behind both were cut with the move
+to a private, single-owner Workbench, and are entries in `RETIRED_SURFACES`
+(`src/lib/retired.ts`). What Phase 2 built underneath is largely unaffected —
+the `discuss/` storage format and its readers, the contributor scan and index,
+and revision attribution — though the contributor *profile builders* went with
+their surfaces. The Talk pages, Contributor profiles and Revision attribution
+sections above describe exactly what is live, unreached and deleted.
 Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`
 and `POST /api/ingest/x-mention` are implemented, along with the MCP tool
 `ingest_x_mention`. The remaining piece is the GitHub Actions polling workflow (#21),
@@ -694,7 +793,11 @@ which is blocked on deployment architecture.
 Phase 4 (agent identity as work-wiki pages) is **substantially complete** — the agent
 registry, context API, `seedAgent()` utility, `agent-identity` page type, scoped
 search, MCP tools (`seed-agent`, `list-agents`, `update-agent`, `delete-agent`,
-`agent-context`), and contributor profiles are implemented. Remaining Phase 4 work:
+`agent-context`), and the contributor profile library are implemented. The
+contributor product surfaces that library fed were retired afterwards
+(`src/lib/retired.ts`), and its profile builders were then deleted; the
+underlying scan and trust score still compute (see Contributor profiles above).
+Remaining Phase 4 work:
 migrating yoyo's actual identity content into work-wiki pages and `grow.sh` integration.
 The schema will continue to evolve toward the full work-wiki model defined in
 [`work-wiki-concept.md`](work-wiki-concept.md). See YOYO.md for the phased roadmap.

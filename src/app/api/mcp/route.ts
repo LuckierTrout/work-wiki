@@ -24,7 +24,7 @@ import { logger } from "@/lib/logger";
  *     route, which scopes writes to agent-knowledge — here the human is driving
  *     their own client, so their writes are their own pages.
  *   - the **service token** → the configured service principal.
- *   - **no token** → rejected. WorkWiki is a private deployment, so reads and
+ *   - **no token** → rejected. work-wiki is a private deployment, so reads and
  *     writes both require a valid agent or service credential.
  *
  * Middleware-exempt (authenticates in-route via the token, not a Clerk session).
@@ -67,8 +67,12 @@ async function resolvePrincipal(req: Request): Promise<AuthResult> {
     const agent = await getAgent(agentId);
     if (!agent?.owner) return { kind: "unauthorized" };
     // Act as the agent's human owner (handle-keyed ownership). The non-service
-    // id means this is NOT a write-anything principal — it can only write the
-    // owner's own pages + the public commons (canWriteFrontmatter).
+    // id is load-bearing: an `agent:` principal is neither `service:` nor an
+    // admin, so `canWriteFrontmatter` puts it on the ordinary human side of the
+    // realm gate. It may write the owner's own private pages, and public pages
+    // OUTSIDE the realm (artifacts, agent-scoped) — but since DW-121 it is
+    // refused on a public knowledge page for every write kind, metadata
+    // included, exactly as a signed-in human would be.
     return {
       kind: "ok",
       principal: { id: `agent:${agentId}`, handle: agent.owner },

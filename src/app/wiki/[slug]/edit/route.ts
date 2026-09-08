@@ -1,32 +1,11 @@
-import { NextResponse, type NextRequest } from "next/server";
-import { notFound } from "next/navigation";
-import { decodeSlug } from "@/lib/slugify";
-import {
-  readWikiPageWithFrontmatter,
-  tenantForOwner,
-  validateSlug,
-} from "@/lib/wiki";
-import { editPath } from "@/lib/links";
+import { retiredRoute } from "@/lib/retired";
 
-/** Legacy flat edit URL → true 308 to canonical `/u/<tenant>/<slug>/edit`. */
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ slug: string }> },
-) {
-  const { slug: encodedSlug } = await params;
-  const slug = decodeSlug(encodedSlug);
-  try {
-    validateSlug(slug);
-  } catch {
-    notFound();
-  }
-  const page = await readWikiPageWithFrontmatter(slug);
-  const owner =
-    typeof page?.frontmatter.owner === "string"
-      ? page.frontmatter.owner
-      : undefined;
-  return NextResponse.redirect(
-    new URL(editPath(tenantForOwner(owner), slug), req.url),
-    308,
-  );
+/**
+ * Retired: the legacy flat edit URL. It lived inside the `/wiki/[slug]`
+ * namespace, which is retired wholesale, so it no longer 308s to the canonical
+ * `/u/<tenant>/<slug>/edit` — it 404s like the rest of the namespace.
+ * See `src/lib/retired.ts`.
+ */
+export function GET(): Response {
+  return retiredRoute();
 }

@@ -8,20 +8,42 @@
 
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
+import { withFileLock } from "./lock";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
 
 /** Default TTL for terminal ingest jobs before GC deletes the file (7 days). */
 export const INGEST_JOB_GC_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export type IngestJobStatus = "queued" | "processing" | "done" | "failed";
+export type IngestJobStatus =
+  | "queued"
+  | "processing"
+  | "retrying"
+  | "done"
+  | "failed"
+  | "skipped";
 export type IngestJobStage =
+  | "dispatch-pending"
   | "queued"
   | "extracting"
+  | "analysis"
+  | "generation"
   | "synthesizing"
   | "indexing"
   | "deriving-knowledge"
   | "complete";
+
+export const INGEST_CANCELLED_COPY = "Cancelled — no pages were written.";
+
+/**
+ * `extract` is the Epic 7 arm: a binary arrival's job is created under this
+ * kind and parked while the sidecar claims the matching extract record. It
+ * becomes `ingest` the moment the extracted text is in the kernel, which is
+ * what makes "compile only after extract text exists" a property of the job
+ * record rather than of whoever happens to call the queue next.
+ */
+export type IngestJobKind = "ingest" | "embed" | "extract";
+export type IngestJobOrigin = "plaud";
 
 /**
  * A job that's been `queued`/`processing` longer than this is treated as
@@ -42,7 +64,11 @@ export const INGEST_JOB_STALE_MS = 20 * 60 * 1000;
 export function effectiveStatus(
   job: Pick<IngestJob, "status" | "updatedAt">,
 ): { status: IngestJobStatus; error?: string } {
-  if (job.status === "queued" || job.status === "processing") {
+  if (
+    job.status === "queued" ||
+    job.status === "processing" ||
+    job.status === "retrying"
+  ) {
     const age = Date.now() - Date.parse(job.updatedAt);
     if (Number.isFinite(age) && age > INGEST_JOB_STALE_MS) {
       return { status: "failed", error: "This ingest stalled — please try again." };
@@ -71,6 +97,22 @@ export interface IngestJob {
   source?: "email";
   /** Owner-only inbound-email details shown in Recent ingests. */
   email?: EmailIngestMetadata;
+  /** Plaud-origin Intake. Absent on other doors. */
+  origin?: IngestJobOrigin;
+  /** Stored Source path (`raw/sources/…`) so retry does not store again. */
+  sourceRel?: string;
+  relativePath?: string;
+  sourceType?: string;
+  contentSha256?: string;
+  kind?: IngestJobKind;
+  /** Workbench Wiki the job was confirmed from. Observability only — not a vault id. */
+  wikiId?: string;
+  cancelled?: boolean;
+  /** Source was cascade-deleted; workers must not write Pages. */
+  sourceDeleted?: boolean;
+  reuseAnalysis?: boolean;
+  progressDone?: number;
+  progressTotal?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,31 +125,64 @@ function relPathFor(jobId: string): string {
   return `ingest-jobs/${jobId}.json`;
 }
 
-/** Create a job in the `queued` state. */
-export async function createIngestJob(input: {
+function buildIngestJob(input: {
   jobId: string;
-  /** Optional — non-URL sources (pasted text, uploaded PDF/image) have none. */
   url?: string;
   owner: string;
   title?: string;
   source?: "email";
   email?: EmailIngestMetadata;
-}): Promise<IngestJob> {
+  origin?: IngestJobOrigin;
+  sourceRel?: string;
+  relativePath?: string;
+  sourceType?: string;
+  contentSha256?: string;
+  kind?: IngestJobKind;
+  wikiId?: string;
+  status?: IngestJobStatus;
+  stage?: IngestJobStage;
+}): IngestJob {
   const now = new Date().toISOString();
-  const job: IngestJob = {
+  const status = input.status ?? "queued";
+  return {
     jobId: input.jobId,
     ...(input.url ? { url: input.url } : {}),
     owner: input.owner,
     title: input.title,
     ...(input.source ? { source: input.source } : {}),
     ...(input.email ? { email: input.email } : {}),
-    status: "queued",
-    stage: "queued",
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.sourceRel ? { sourceRel: input.sourceRel } : {}),
+    ...(input.relativePath ? { relativePath: input.relativePath } : {}),
+    ...(input.sourceType ? { sourceType: input.sourceType } : {}),
+    ...(input.contentSha256 ? { contentSha256: input.contentSha256 } : {}),
+    ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.wikiId ? { wikiId: input.wikiId } : {}),
+    status,
+    stage: input.stage ?? (status === "skipped" ? "complete" : "queued"),
     createdAt: now,
     updatedAt: now,
   };
-  await getStorage().writeFile(relPathFor(input.jobId), JSON.stringify(job));
-  return job;
+}
+
+/**
+ * Create a job only if that id is free. `created: false` means another isolate
+ * already owns the record — callers must not enqueue a second Ingest.
+ */
+export async function createIngestJobIfAbsent(input: Parameters<typeof buildIngestJob>[0]): Promise<{
+  job: IngestJob;
+  created: boolean;
+}> {
+  const job = buildIngestJob(input);
+  const wrote = await getStorage().writeFileIfAbsent(relPathFor(input.jobId), JSON.stringify(job));
+  if (wrote) return { job, created: true };
+  const existing = await getIngestJob(input.jobId);
+  return { job: existing ?? job, created: false };
+}
+
+/** Create a job in the `queued` state. */
+export async function createIngestJob(input: Parameters<typeof buildIngestJob>[0]): Promise<IngestJob> {
+  return (await createIngestJobIfAbsent(input)).job;
 }
 
 /**
@@ -117,6 +192,7 @@ export async function createIngestJob(input: {
 export async function listIngestJobs(input: {
   owner: string;
   source?: "email";
+  wikiId?: string;
   limit?: number;
 }): Promise<IngestJob[]> {
   const entries = await getStorage().listFiles(JOBS_PREFIX);
@@ -129,6 +205,7 @@ export async function listIngestJobs(input: {
       const job = JSON.parse(raw) as IngestJob;
       if (job.owner !== input.owner) continue;
       if (input.source && job.source !== input.source) continue;
+      if (input.wikiId && job.wikiId && job.wikiId !== input.wikiId) continue;
       jobs.push(job);
     } catch (error) {
       if (!isEnoent(error)) {
@@ -157,29 +234,230 @@ export async function getIngestJob(jobId: string): Promise<IngestJob | null> {
  * `null`) if the job is gone — a status update must never resurrect or partially
  * write a record.
  */
+export type IngestJobPatch = Partial<
+  Pick<
+    IngestJob,
+    | "status"
+    | "stage"
+    | "slug"
+    | "error"
+    | "title"
+    | "cancelled"
+    | "sourceDeleted"
+    | "reuseAnalysis"
+    | "progressDone"
+    | "progressTotal"
+    | "contentSha256"
+    | "sourceRel"
+    | "origin"
+    | "kind"
+  >
+>;
+
 export async function updateIngestJob(
   jobId: string,
-  patch: Partial<Pick<IngestJob, "status" | "stage" | "slug" | "error" | "title">>,
+  patch: IngestJobPatch,
 ): Promise<IngestJob | null> {
-  const existing = await getIngestJob(jobId);
-  if (!existing) {
-    logger.warn("ingest-jobs", `updateIngestJob: job ${jobId} not found`);
-    return null;
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const existing = await getIngestJob(jobId);
+    if (!existing) {
+      logger.warn("ingest-jobs", `updateIngestJob: job ${jobId} not found`);
+      return null;
+    }
+    const updated: IngestJob = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
+  });
+}
+
+/**
+ * Merge a patch only while the durable job still satisfies `predicate`.
+ * Queue producers use this after enqueue so a fast consumer's processing or
+ * terminal checkpoint can never be regressed to queued.
+ */
+export async function updateIngestJobIf(
+  jobId: string,
+  predicate: (job: IngestJob) => boolean,
+  patch: IngestJobPatch,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const storage = getStorage();
+    const rel = relPathFor(jobId);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      let read: Awaited<ReturnType<typeof storage.readFileWithEtag>>;
+      try {
+        read = await storage.readFileWithEtag(rel);
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        throw error;
+      }
+      const job = JSON.parse(read.content) as IngestJob;
+      if (!predicate(job)) return job;
+      const updated: IngestJob = {
+        ...job,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      if (await storage.writeFileIfMatch(rel, JSON.stringify(updated), read.etag)) {
+        return updated;
+      }
+    }
+    throw new Error("Ingest job was busy; retry the update");
+  });
+}
+
+/**
+ * Claim a queued or retrying job for this isolate. Returns null if another
+ * worker already holds it, it is terminal, cancelled, or source-deleted.
+ */
+export async function claimIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const storage = getStorage();
+    const rel = relPathFor(jobId);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      let read: Awaited<ReturnType<typeof storage.readFileWithEtag>>;
+      try {
+        read = await storage.readFileWithEtag(rel);
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        throw error;
+      }
+      const job = JSON.parse(read.content) as IngestJob;
+      if (!job || job.owner !== owner) return null;
+      if (job.cancelled || job.sourceDeleted) return null;
+      if (job.status !== "queued" && job.status !== "retrying") return null;
+      const updated: IngestJob = {
+        ...job,
+        status: "processing",
+        stage: job.stage === "generation" ? "generation" : "extracting",
+        updatedAt: new Date().toISOString(),
+      };
+      if (await storage.writeFileIfMatch(rel, JSON.stringify(updated), read.etag)) {
+        return updated;
+      }
+    }
+    throw new Error("Ingest job was busy; retry the claim");
+  });
+}
+
+/** Cancel or tombstone every non-terminal job whose Source identity matches. */
+export async function cancelJobsForSource(
+  owner: string,
+  keys: readonly string[],
+): Promise<number> {
+  const keySet = new Set(keys);
+  const jobs = await listIngestJobs({ owner, limit: 500 });
+  let n = 0;
+  for (const job of jobs) {
+    if (!job.sourceRel) continue;
+    if (!keySet.has(job.sourceRel) && !keys.some((key) => job.sourceRel?.endsWith(key))) {
+      continue;
+    }
+    if (job.status === "done" || job.status === "skipped") {
+      await updateIngestJob(job.jobId, { sourceDeleted: true, cancelled: true });
+      n += 1;
+      continue;
+    }
+    await updateIngestJob(job.jobId, {
+      cancelled: true,
+      sourceDeleted: true,
+      status: job.status === "processing" ? "processing" : "failed",
+      error: INGEST_CANCELLED_COPY,
+    });
+    n += 1;
   }
-  const updated: IngestJob = {
-    ...existing,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-  await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
-  return updated;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
 // Garbage collection — purge terminal jobs older than a TTL
 // ---------------------------------------------------------------------------
 
-const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set(["done", "failed"]);
+const TERMINAL_STATUSES: Set<IngestJobStatus> = new Set([
+  "done",
+  "failed",
+  "skipped",
+]);
+
+/**
+ * Ask a queued or in-flight job to stop before Page writes. Terminal jobs are
+ * left as they are. A queued job becomes failed immediately so Activity can
+ * offer Retry; an in-flight job sets `cancelled` and ingest observes it
+ * immediately before `writeWikiPageWithSideEffects`.
+ */
+export async function cancelIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const job = await getIngestJob(jobId);
+    if (!job || job.owner !== owner) return null;
+    if (job.status === "done" || job.status === "skipped") return job;
+    if (job.status === "failed") {
+      if (job.cancelled) return job;
+      const updated: IngestJob = {
+        ...job,
+        cancelled: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+      return updated;
+    }
+    if (job.status === "processing") {
+      const updated: IngestJob = {
+        ...job,
+        cancelled: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+      return updated;
+    }
+    const updated: IngestJob = {
+      ...job,
+      cancelled: true,
+      status: "failed",
+      error: INGEST_CANCELLED_COPY,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
+  });
+}
+
+/**
+ * Reset a failed job so the same Source can be compiled again. Does not store
+ * bytes. Caller re-enqueues the existing `sourceRel`.
+ */
+export async function retryIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const job = await getIngestJob(jobId);
+    if (!job || job.owner !== owner) return null;
+    if (job.sourceDeleted) return null;
+    if (job.status === "processing" || job.status === "retrying") return null;
+    if (job.status !== "failed") return null;
+    const updated: IngestJob = {
+      ...job,
+      status: "queued",
+      stage: "queued",
+      error: "",
+      cancelled: false,
+      reuseAnalysis: true,
+      updatedAt: new Date().toISOString(),
+    };
+    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
+    return updated;
+  });
+}
 const JOBS_PREFIX = "ingest-jobs";
 
 /**
@@ -190,6 +468,24 @@ const JOBS_PREFIX = "ingest-jobs";
  * deliberately protected because deleting their status file would not cancel
  * the queue message that is still processing.
  */
+/**
+ * Drop a job that was created in this request and never enqueued.
+ * Not a cancel of in-flight work — the queue never saw this id.
+ */
+export async function abandonFreshIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<void> {
+  const job = await getIngestJob(jobId);
+  if (!job || job.owner !== owner) return;
+  if (job.status !== "queued") return;
+  try {
+    await getStorage().deleteFile(relPathFor(jobId));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
 export async function deleteIngestJob(
   jobId: string,
   owner: string,

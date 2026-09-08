@@ -61,7 +61,7 @@ beforeEach(async () => {
   resetAliasIndex();
 
   // Default: no LLM key (fallback synthesis)
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
 });
 
 afterEach(async () => {
@@ -109,13 +109,18 @@ describe("YouTube ingest routing", () => {
 
     // Mock global fetch for the normal URL path
     const originalFetch = global.fetch;
+    // Headerless on purpose, so the bytes have to be there too: the door now
+    // sniffs them rather than waving an undeclared type through (DW-441).
+    const page =
+      "<html><head><title>Normal Page</title></head><body><p>Content here.</p></body></html>";
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: { get: () => null },
-      text: () =>
-        Promise.resolve(
-          "<html><head><title>Normal Page</title></head><body><p>Content here.</p></body></html>",
-        ),
+      text: () => Promise.resolve(page),
+      arrayBuffer: async () => {
+        const bytes = new TextEncoder().encode(page);
+        return bytes.buffer.slice(0, bytes.byteLength) as ArrayBuffer;
+      },
     });
 
     try {

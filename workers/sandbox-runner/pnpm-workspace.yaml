@@ -1,0 +1,25 @@
+# This file exists to stop pnpm's upward search at THIS directory, so that
+# `pnpm --dir workers/sandbox-runner …` resolves to this package and installs
+# against its own pnpm-lock.yaml. It is not a multi-package declaration.
+#
+# Without it, the repo-root pnpm-workspace.yaml (added so pnpm stops walking up
+# past the checkout and aborting with `ERROR packages field missing or empty`)
+# captures this directory: pnpm resolves the command to the ROOT workspace,
+# which does not list this package, and
+# `pnpm --dir workers/sandbox-runner install --frozen-lockfile`
+# (.github/workflows/ci.yml, .github/workflows/deploy-cloudflare.yml) becomes a
+# silent no-op — it exits 0 in ~100ms and creates no node_modules at all.
+# Concretely that fails CI's Sandbox Worker job one step later, at
+# `TS2307: Cannot find module '@cloudflare/sandbox'`. The same no-op also sits
+# in front of `wrangler deploy`, but that path is conditional on this fork:
+# AGENTS.md records that the deploy workflows are inert unless opted into with
+# ENABLE_CLOUDFLARE_DEPLOY, and that production deploys are run manually.
+#
+# Listing this directory in the ROOT `packages:` instead is not the fix — it is
+# a different break. The root pnpm-lock.yaml has no importer for this package,
+# so `pnpm install --frozen-lockfile` at the root would then fail with
+# ERR_PNPM_OUTDATED_LOCKFILE ("specifiers in the lockfile ({}) don't match
+# specs in package.json"), taking out CI's Application job and every fresh
+# clone.
+packages:
+  - "."

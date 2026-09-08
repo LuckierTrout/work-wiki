@@ -27,7 +27,7 @@ A wiki designed for both humans and agents to read and write.
 
 **Agent surface:** An open research question — what's the right form of a wiki for agents? Structured claims? Embeddings? Fact triples? The product answers this over time.
 
-**Not RAG.** RAG re-derives every query. work-wiki accumulates — pages update, contradictions reconcile on talk pages, lineage is preserved, what's stale visibly decays.
+**Not RAG.** RAG re-derives every query. work-wiki accumulates — pages update, contradictions reconcile on merge, lineage is preserved, what's stale visibly decays.
 
 ### What makes it different
 
@@ -165,13 +165,31 @@ for the selected provider.
 | Google | `GOOGLE_GENERATIVE_AI_API_KEY=...` | `gemini-2.0-flash` | `@ai-sdk/google` (Gemini) |
 | DeepSeek | `DEEPSEEK_API_KEY=...` | `deepseek-v4-flash` | OpenAI-compatible generation API; embeddings use a separate provider |
 | Ollama Cloud | `OLLAMA_API_KEY=...` | `gpt-oss:120b` | Hosted API at `https://ollama.com/api`; store the key as a server secret |
-| Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed |
+| Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed. `OLLAMA_BASE_URL` is the **chat/generation** endpoint — Ollama *embeddings* read the Embedding endpoint saved in Settings |
 
 Cloudflare deployments use the `AI` binding with `@cf/baai/bge-m3` for
 embeddings. BGE-M3 produces 1,024-dimensional vectors, so its Vectorize index
 must also be created with 1,024 dimensions. Generation-provider keys remain
 independent and can be switched in Settings without changing the embedding
 model.
+
+The durable-lock v2 migration requires a two-stage rollout because older
+Workers publish and delete the legacy lease without compare-and-set fencing.
+First deploy the new build with `WORKWIKI_DURABLE_LOCK_V2_READY` absent; page
+mutations then fail closed while reads stay available. After every request and
+queue delivery running the previous build has drained, set
+`WORKWIKI_DURABLE_LOCK_V2_READY=1` and deploy the same build again. Never set
+the flag during the first rolling deployment: an old Worker that already read
+an absent lease can otherwise enter alongside a v2 holder.
+
+The legacy `locks/` object also remains the fail-closed exclusivity bridge if a
+heartbeat expires: another Worker will not take over a positive lease while
+the original callback may still be running. A waiter fails immediately with an
+operator-recovery error rather than hanging or entering concurrently. If a
+crashed Worker leaves one behind, first confirm that all requests and queue
+deliveries for that lock have stopped, then clear that one orphan deliberately
+before retrying the mutation. Do not clear an expired lease merely because its
+timestamp has passed.
 
 Structured Knowledge extraction can also use its own provider and model from
 **Settings → Knowledge extraction**. When no workload override is saved, it

@@ -3,34 +3,44 @@ import type { FileEntry } from "./storage";
 import { readWikiPage, readWikiPageWithFrontmatter, listWikiPages, wikiRelPath } from "./wiki";
 import { hasLLMKey, callLLM } from "./llm";
 import { loadPageConventions } from "./schema";
-import { extractWikiLinks } from "./links";
+import { extractAllInternalLinks, extractWikiLinks } from "./links";
 import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
-import { getDiscussionStatsForSlugs, getDiscussionStats } from "./talk";
-import { listRawSources, readRawSource } from "./raw";
+import {
+  listRawSources,
+  listRawSourceSnapshots,
+  readRawSource,
+  readRawSourceById,
+} from "./raw";
 import { getPageIndex } from "./page-index";
+import { disputedClearGuidance } from "./lint-types";
+import { getOwnerHandle } from "./owner";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
-/** All known lint check types (const tuple for Zod enum compatibility). */
-export const ALL_CHECK_TYPES = [
-  "orphan-page",
-  "stale-index",
-  "empty-page",
-  "missing-crossref",
-  "broken-link",
-  "contradiction",
-  "missing-concept-page",
-  "stale-page",
-  "low-confidence",
-  "unmigrated-page",
-  "duplicate-entity",
-  "uncited-claims",
-  "unresolved-discussions",
-  "disputed-page",
-  "supersedes-dangling",
-  "incomplete-coverage",
-] as const satisfies readonly LintIssue["type"][];
+async function lintWorkspaceGuidance(provided?: string): Promise<string> {
+  if (provided !== undefined) return provided;
+  const owner = getOwnerHandle();
+  return owner ? buildWorkspaceGuidance(owner) : "";
+}
+
+function withPurposeGuidance(systemPrompt: string, guidance: string): string {
+  return guidance
+    ? `${systemPrompt}\n\n${guidance}`
+    : systemPrompt;
+}
+
+/**
+ * All known lint check types (const tuple for Zod enum compatibility).
+ *
+ * Declared in `./lint-types` — a pure, client-safe module — and re-exported
+ * here so every existing `@/lib/lint-checks` importer keeps working. Do NOT
+ * reintroduce a second declaration: this module imports `./storage`, `./llm`
+ * and `./wiki`, so a client component cannot import it, and the copy that used
+ * to live in `LintFilterControls` for that reason drifted three entries behind.
+ */
+export { ALL_CHECK_TYPES } from "./lint-types";
 
 // Files that are part of the wiki infrastructure, not content pages.
 export const INFRASTRUCTURE_FILES = new Set(["index.md", "log.md"]);
@@ -153,7 +163,7 @@ export async function checkBrokenLinks(
     const page = await readWikiPage(slug);
     if (!page) continue;
 
-    const links = extractWikiLinks(page.content);
+    const links = extractAllInternalLinks(page.content);
     for (const { targetSlug } of links) {
       // Skip infrastructure files (index.md, log.md)
       if (INFRASTRUCTURE_FILES.has(`${targetSlug}.md`)) continue;
@@ -369,8 +379,9 @@ export function parseContradictionResponse(
  */
 export async function checkContradictions(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "contradiction",
@@ -403,11 +414,26 @@ export async function checkContradictions(
 
   // Load SCHEMA.md conventions once for all cluster checks so the
   // contradiction detector is aware of the wiki's structural rules.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global,
+  // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // inside `readActiveWikiSchema`). This detector takes no owner at all. The
+  // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
+  // via `isOwnerPrincipal`); `runLint` in `src/cli.ts` reaches the same code with
+  // no principal. So do not read this as "caller == site owner" — the
+  // conventions come from the site owner either way. A second tenant means
+  // threading a tenant argument through `loadPageConventions()` and down
+  // through `lint()` from both entry points. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   let systemPrompt = CONTRADICTION_SYSTEM_PROMPT;
   if (conventions) {
     systemPrompt += `\n\nThe wiki follows these conventions (from SCHEMA.md):\n\n${conventions}`;
   }
+  systemPrompt = withPurposeGuidance(
+    systemPrompt,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
 
   for (const cluster of clusters) {
     // Build the user message with all pages in this cluster
@@ -505,8 +531,9 @@ export function parseMissingConceptResponse(
  */
 export async function checkMissingConceptPages(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "missing-concept-page",
@@ -547,12 +574,27 @@ export async function checkMissingConceptPages(
 
   const userMessage = `Existing wiki pages:\n${existingTitles}\n\nPage contents (samples):\n\n${pagesText}`;
 
-  // Load SCHEMA.md conventions
+  // Load SCHEMA.md conventions.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global,
+  // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // inside `readActiveWikiSchema`). This detector takes no owner at all. The
+  // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
+  // via `isOwnerPrincipal`); `runLint` in `src/cli.ts` reaches the same code with
+  // no principal. So do not read this as "caller == site owner" — the
+  // conventions come from the site owner either way. A second tenant means
+  // threading a tenant argument through `loadPageConventions()` and down
+  // through `lint()` from both entry points. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   let systemPrompt = MISSING_CONCEPT_SYSTEM_PROMPT;
   if (conventions) {
     systemPrompt += `\n\nThe wiki follows these conventions (from SCHEMA.md):\n\n${conventions}`;
   }
+  systemPrompt = withPurposeGuidance(
+    systemPrompt,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
 
   try {
     const response = await callLLM(systemPrompt, userMessage);
@@ -678,6 +720,56 @@ export async function checkLowConfidence(): Promise<LintIssue[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Disputed-page check — flags pages whose `disputed` frontmatter flag is set.
+// ---------------------------------------------------------------------------
+
+/**
+ * Check for disputed pages — pages whose `disputed` frontmatter flag is `true`.
+ *
+ * Ingest sets the flag when a merge contradicts the existing page, and nothing
+ * clears it automatically, so without this check the flag is close to one-way:
+ * the `ArticleView` banner tells a *reader* the page is contested, but nothing
+ * hands an owner a worklist. (A dataview query can already list them —
+ * `queryByFrontmatter` in `./dataview` filters on arbitrary frontmatter fields
+ * — but only if someone thinks to ask; this is the first surface that reports
+ * them unprompted, as actionable lint issues alongside the other checks.)
+ *
+ * This is deliberately NOT the version that was deleted with the talk surface:
+ * the old one called `getDiscussionStats()` to describe open threads. Talk is
+ * retired, so the message states the flag and the suggestion names the
+ * surviving clear path — the Disputed toggle in the page editor, which is a
+ * `PATCH /api/wiki/<slug>` metadata write.
+ *
+ * That path is NOT open to every owner, and the suggestion says so. DW-121 made
+ * the commons realm gate cover metadata writes as well as body writes, so on a
+ * public knowledge page (what `belongsInCommons` selects) the PATCH is refused
+ * for every non-admin, non-service principal and a non-admin owner has to ask
+ * an admin; on a private, agent-scoped or artifact page the owner's own toggle
+ * still works. The sentence itself comes from {@link disputedClearGuidance} so
+ * it cannot drift from the refusal `./lint-fix` throws for the same check
+ * (DW-389). Clearing stays a human decision either way; there is no auto-fix
+ * (see the `disputed-page` branch in `./lint-fix`).
+ */
+export async function checkDisputedPages(): Promise<LintIssue[]> {
+  const pages = await listWikiPages();
+  const issues: LintIssue[] = [];
+
+  for (const entry of pages) {
+    const page = await readWikiPageWithFrontmatter(entry.slug);
+    if (!page) continue;
+    if (page.frontmatter.disputed !== true) continue;
+    issues.push({
+      type: "disputed-page",
+      slug: entry.slug,
+      message: `Page is flagged disputed — its sources disagree and no review has cleared it`,
+      severity: "warning",
+      suggestion: `Review "${entry.slug}", reconcile the conflicting claims in the page body, then ${disputedClearGuidance(entry.slug)}`,
+    });
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // Unmigrated-page check — flags pages missing ALL core work-wiki metadata.
 // ---------------------------------------------------------------------------
 
@@ -798,57 +890,6 @@ export async function checkUncitedClaims(): Promise<LintIssue[]> {
   return issues;
 }
 
-export async function checkUnresolvedDiscussions(
-  diskSlugs: string[],
-): Promise<LintIssue[]> {
-  const statsMap = await getDiscussionStatsForSlugs(diskSlugs);
-  const issues: LintIssue[] = [];
-  for (const [slug, stats] of statsMap) {
-    if (stats.open > 0) {
-      const plural = stats.open === 1 ? "thread" : "threads";
-      issues.push({
-        type: "unresolved-discussions",
-        slug,
-        message: `${stats.open} unresolved discussion ${plural}`,
-        severity: "warning",
-        suggestion: `Review and resolve the open discussion threads on the "${slug}" talk page.`,
-      });
-    }
-  }
-  return issues;
-}
-
-export async function checkDisputedPages(): Promise<LintIssue[]> {
-  const pages = await listWikiPages();
-  const issues: LintIssue[] = [];
-  for (const entry of pages) {
-    const page = await readWikiPageWithFrontmatter(entry.slug);
-    if (!page) continue;
-    if (page.frontmatter.disputed !== true) continue;
-
-    // Check whether the page already has unresolved discussion threads
-    const stats = await getDiscussionStats(entry.slug);
-    const hasOpenThreads = stats.open > 0;
-
-    const message = hasOpenThreads
-      ? `Page is marked as disputed and has ${stats.open} unresolved discussion ${stats.open === 1 ? "thread" : "threads"}`
-      : `Page is marked as disputed but has no discussion threads`;
-
-    const suggestion = hasOpenThreads
-      ? `Review and resolve the ${stats.open} open discussion ${stats.open === 1 ? "thread" : "threads"} on the "${entry.slug}" talk page to clear the dispute`
-      : `Open a discussion thread to resolve the dispute on "${entry.slug}"`;
-
-    issues.push({
-      type: "disputed-page",
-      slug: entry.slug,
-      message,
-      severity: "warning",
-      suggestion,
-    });
-  }
-  return issues;
-}
-
 /**
  * Check for dangling supersedes references — pages whose `supersedes` field
  * points to a slug that doesn't exist on disk.
@@ -885,16 +926,16 @@ export async function checkSupersededDangling(
 // Incomplete coverage — raw source content missing from wiki page
 // ---------------------------------------------------------------------------
 
-const INCOMPLETE_COVERAGE_SYSTEM_PROMPT = `You are a wiki coverage auditor. You will be given two documents:
-1. A "raw source" — the original ingested material.
-2. A "wiki page" — the wiki's distillation of that source.
+const INCOMPLETE_COVERAGE_SYSTEM_PROMPT = `You are a wiki coverage auditor. You will be given:
+1. One or more "raw sources" — the original ingested material for a single page. A page built from several ingests arrives as several parts, each shown under its own "--- Raw Source: ... ---" header. Read every part and judge them together as one body of source material.
+2. A "wiki page" — the wiki's distillation of those sources.
 
-Your job: identify significant information present in the raw source that is absent from or poorly represented in the wiki page. Ignore formatting differences, reorganization, and minor wording changes — focus on substantive facts, claims, data, or concepts that a reader of the wiki page would miss.
+Your job: identify significant information present in the raw sources that is absent from or poorly represented in the wiki page. Ignore formatting differences, reorganization, and minor wording changes — focus on substantive facts, claims, data, or concepts that a reader of the wiki page would miss. Information covered by the wiki page is not a gap no matter which raw source part it came from.
 
 Return a JSON array of objects: [{"gap": "Brief description of missing information", "importance": "high" | "medium"}]
 
 Only include gaps that a knowledgeable reader would consider important. Omit trivial details, boilerplate, and navigation text.
-If the wiki page adequately covers the raw source, return an empty array: []
+If the wiki page adequately covers the raw sources, return an empty array: []
 
 Respond ONLY with the JSON array — no additional text, no markdown code fences.`;
 
@@ -928,8 +969,13 @@ export const MAX_COVERAGE_CHECKS = 20;
 
 /**
  * Check for incomplete coverage — raw source content that is missing from the
- * corresponding wiki page. For each wiki page that has a matching raw source,
- * calls the LLM to compare the two and report significant gaps.
+ * corresponding wiki page. For each sampled wiki page, EVERY stored Source for
+ * that page is collected — the flat `raw/sources/<slug>.md` blob when it exists
+ * plus each hashed `raw/sources/<slug>/<id>.md` Intake snapshot — and all of
+ * them go to the LLM in a single call, each under its own header, to be judged
+ * against the page together (DW-571). Comparing against whichever Source
+ * happened to open first judged a multi-arrival page by directory-listing
+ * order.
  *
  * At most `MAX_COVERAGE_CHECKS` pages are checked per run to avoid uncapped
  * LLM calls. The sample is shuffled so successive runs cover different pages.
@@ -938,8 +984,9 @@ export const MAX_COVERAGE_CHECKS = 20;
  */
 export async function checkIncompleteCoverage(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "incomplete-coverage",
@@ -951,15 +998,56 @@ export async function checkIncompleteCoverage(
     ];
   }
 
-  // Find which disk slugs have corresponding raw sources
-  let rawSources: { slug: string }[];
+  // Find which disk slugs have corresponding raw sources.
+  //
+  // BOTH listings, because `listRawSources` is non-recursive by contract: a
+  // page whose only Source is a hashed `raw/sources/<slug>/<id>.md` Intake
+  // arrival was never a coverage candidate at all (DW-437). The helper's browse
+  // contract does not move; the caller unions, exactly as `wiki-retrieve.ts`
+  // does. Each listing gets its own try/catch so one failing root does not
+  // silently blank the whole check.
+  const rawSlugsOnDisk = new Set<string>();
+  // The slugs the FLAT listing reported, kept apart from the union above so a
+  // flat read that throws can be told apart from a page that simply has no
+  // flat blob. Without it, "no `raw/sources/<slug>.md` exists" (the normal
+  // shape for an Intake-only page) and "the blob is listed but will not open"
+  // (a real fault) are the same silent `catch`.
+  const flatSlugsOnDisk = new Set<string>();
   try {
-    rawSources = await listRawSources();
-  } catch {
-    return [];
+    for (const source of await listRawSources()) {
+      rawSlugsOnDisk.add(source.slug);
+      flatSlugsOnDisk.add(source.slug);
+    }
+  } catch (error) {
+    // Snapshots below can still drive the check, but say so: a broken Source
+    // listing and an empty one produce the same silent `[]` otherwise.
+    logger.warn("lint", "flat raw source listing failed for coverage", error);
   }
-
-  const rawSlugsOnDisk = new Set(rawSources.map((r) => r.slug));
+  // The snapshot ids per slug, so a slug that only exists in the hashed tree
+  // has something for `readRawSource` to fall back to. Adding a slug the reader
+  // cannot open would just `continue` below and change nothing observable.
+  const snapshotIdsBySlug = new Map<string, string[]>();
+  try {
+    for (const snapshot of await listRawSourceSnapshots()) {
+      // THIS CALLER FILTERS, for both uses below. The listing now describes
+      // binary artefacts too (DW-569), and neither use can do anything with
+      // one: `readRawSourceById` opens Markdown only, so a `.pdf` id in
+      // `snapshotIdsBySlug` is a fallback that always throws, and a page whose
+      // only Source is a PDF has no raw PROSE for this check to compare the
+      // page against. The Markdown extracted from that PDF, when there is any,
+      // is a separate row under the same `rawId` and does make the page a
+      // candidate.
+      if (snapshot.ext !== "md") continue;
+      rawSlugsOnDisk.add(snapshot.slug);
+      const ids = snapshotIdsBySlug.get(snapshot.slug);
+      if (ids) ids.push(snapshot.rawId);
+      else snapshotIdsBySlug.set(snapshot.slug, [snapshot.rawId]);
+    }
+  } catch (error) {
+    // The flat listing still drives the check — same reason as above for
+    // logging rather than swallowing outright.
+    logger.warn("lint", "raw snapshot listing failed for coverage", error);
+  }
   const slugsWithRaw = diskSlugs.filter((s) => rawSlugsOnDisk.has(s));
 
   if (slugsWithRaw.length === 0) {
@@ -975,6 +1063,10 @@ export async function checkIncompleteCoverage(
   const sample = shuffled.slice(0, MAX_COVERAGE_CHECKS);
 
   const issues: LintIssue[] = [];
+  const systemPrompt = withPurposeGuidance(
+    INCOMPLETE_COVERAGE_SYSTEM_PROMPT,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
   const MAX_RAW_CHARS = 8000;
   const MAX_WIKI_CHARS = 8000;
 
@@ -982,22 +1074,101 @@ export async function checkIncompleteCoverage(
     const wikiPage = await readWikiPage(slug);
     if (!wikiPage) continue;
 
-    let rawContent: string;
+    // EVERY readable Source for this slug, not the first one that opens. The
+    // flat Source first — a slug that only arrived through Intake has no
+    // `raw/sources/<slug>.md` at all — then every hashed snapshot listed for
+    // it. Stopping at the first readable one judged a page assembled from
+    // several Intake arrivals against exactly one of them, picked by
+    // directory-listing order, and never compared the snapshots of a page that
+    // also had a flat blob (DW-571).
+    const rawParts: { label: string; content: string }[] = [];
+    const seenRawContent = new Set<string>();
+    const collectRawPart = (label: string, content: string) => {
+      // Byte-identical parts are the same text twice: sending both would spend
+      // the budget on a duplicate instead of on a sibling Source.
+      if (seenRawContent.has(content)) return;
+      seenRawContent.add(content);
+      rawParts.push({ label, content });
+    };
     try {
-      const raw = await readRawSource(slug);
-      rawContent = raw.content;
-    } catch {
-      continue; // Raw source unreadable, skip
+      collectRawPart("flat", (await readRawSource(slug)).content);
+    } catch (error) {
+      // `readRawSource` throws for both "there is no flat blob" and "the flat
+      // blob will not open". The first is the normal shape for an Intake-only
+      // page and stays silent; the second is a fault, and gets the same
+      // warning a listed-but-unreadable snapshot does — logging one and
+      // swallowing the other is the asymmetry the warning exists to remove.
+      if (flatSlugsOnDisk.has(slug)) {
+        logger.warn(
+          "lint",
+          `flat raw source ${slug} unreadable for coverage`,
+          error,
+        );
+      }
+    }
+    for (const rawId of snapshotIdsBySlug.get(slug) ?? []) {
+      try {
+        collectRawPart(
+          `snapshot ${rawId}`,
+          (await readRawSourceById(slug, rawId)).content,
+        );
+      } catch (error) {
+        // Listed but unreadable. The two listing catches above log rather than
+        // swallow so that a broken listing and an empty one cannot look alike;
+        // a page silently compared against a partial Source set is that same
+        // lie in a smaller shape. Skipped, never fatal.
+        logger.warn(
+          "lint",
+          `raw snapshot ${slug}/${rawId} unreadable for coverage`,
+          error,
+        );
+      }
+    }
+    if (rawParts.length === 0) continue; // No readable Source, skip
+
+    // Spread MAX_RAW_CHARS across the collected Sources need-aware: while
+    // budget remains, the equal share is the FLOOR rather than the cap, so
+    // parts shorter than their share release the remainder to the parts that
+    // can still use it. A flat blob beside three tiny snapshots therefore
+    // keeps nearly the whole budget rather than MAX_RAW_CHARS/4, and four
+    // equally oversized Sources still get a quarter each. Shortest first, so
+    // an unspent share flows onward. The floor is 0, not 1: a page with more
+    // Sources than the budget has characters must still total at most
+    // MAX_RAW_CHARS, and a guaranteed one character each would breach that.
+    // A single `.slice(0, MAX_RAW_CHARS)` over the joined parts is the shape
+    // that must not ship: it pushes every snapshot out behind a long flat
+    // blob, which is DW-571 in a new form.
+    const takes = new Array<number>(rawParts.length);
+    let remaining = MAX_RAW_CHARS;
+    let left = rawParts.length;
+    const byAscendingLength = rawParts
+      .map((_, index) => index)
+      .sort((a, b) => rawParts[a].content.length - rawParts[b].content.length);
+    for (const index of byAscendingLength) {
+      const share = Math.max(0, Math.floor(remaining / left));
+      const take = Math.min(rawParts[index].content.length, share);
+      takes[index] = take;
+      remaining -= take;
+      left -= 1;
     }
 
-    const rawSnippet = rawContent.slice(0, MAX_RAW_CHARS);
+    // Rendered in collection order (flat, then snapshots as listed) so the
+    // message shape stays stable regardless of how the budget was split. The
+    // per-part headers sit outside the budget, exactly as the single
+    // `--- Raw Source: <slug> ---` header always did.
+    const rawSection = rawParts
+      .map(
+        (part, index) =>
+          `--- Raw Source: ${slug} [${part.label}] ---\n${part.content.slice(0, takes[index])}`,
+      )
+      .join("\n\n");
     const wikiSnippet = wikiPage.content.slice(0, MAX_WIKI_CHARS);
 
-    const userMessage = `--- Raw Source: ${slug} ---\n${rawSnippet}\n\n--- Wiki Page: ${slug} ---\n${wikiSnippet}`;
+    const userMessage = `${rawSection}\n\n--- Wiki Page: ${slug} ---\n${wikiSnippet}`;
 
     try {
       const response = await callLLM(
-        INCOMPLETE_COVERAGE_SYSTEM_PROMPT,
+        systemPrompt,
         userMessage,
       );
       const gaps = parseIncompleteCoverageResponse(response);

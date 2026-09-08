@@ -1,28 +1,30 @@
 import { unzipSync, zlibSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
-import { ClientInputError } from "./errors";
+import { detectDocumentFormat, ownLookup } from "./document-formats";
+import type { DocumentFormat } from "./document-formats";
+import { ClientInputError, isClientInputError } from "./errors";
 import { extractTitle, htmlToMarkdown } from "./html-parse";
 import { describeImage } from "./vision";
 
-export const DOCUMENT_FORMATS = [
-  "docx",
-  "pptx",
-  "xlsx",
-  "csv",
-  "md",
-  "txt",
-  "html",
-  "pdf",
-  "zip",
-  "odt",
-  "ods",
-  "odp",
-  "epub",
-  "org",
-  "rtf",
-  "mobi",
-] as const;
-export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
+/**
+ * The format tables moved to `./document-formats` (a leaf module with no
+ * imports) so the bulk-import client could stop hand-copying them (DW-246).
+ * They are re-exported here, under the same names, because this module has been
+ * their public address since the extractor was written — `@/app/api/ingest/…`,
+ * `./vault-explorer`, `email-ingest-allowlist-parity.test.ts` and
+ * `prose-inventory-parity.test.ts` all import them from here and none had to
+ * change.
+ */
+export {
+  DOCUMENT_FORMATS,
+  DOCUMENT_FORMAT_LABELS,
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+  SUPPORTED_DOCUMENT_MIME_TYPES,
+  detectDocumentFormat,
+  isSupportedDocument,
+} from "./document-formats";
+export type { DocumentFormat } from "./document-formats";
+
 type OfficeFormat = "docx" | "pptx" | "xlsx";
 
 const MAX_ARCHIVE_TEXT_BYTES = 12 * 1024 * 1024;
@@ -38,30 +40,6 @@ const MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES = 30 * 1024 * 1024;
 const MAX_PDF_IMAGES = 8;
 const MAX_PDF_IMAGE_PIXELS = 12_000_000;
-
-const MIME_FORMATS: Record<string, DocumentFormat> = {
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "text/csv": "csv",
-  "application/csv": "csv",
-  "text/markdown": "md",
-  "text/x-markdown": "md",
-  "text/plain": "txt",
-  "text/html": "html",
-  "application/xhtml+xml": "html",
-  "application/pdf": "pdf",
-  "application/zip": "zip",
-  "application/x-zip-compressed": "zip",
-  "application/vnd.oasis.opendocument.text": "odt",
-  "application/vnd.oasis.opendocument.spreadsheet": "ods",
-  "application/vnd.oasis.opendocument.presentation": "odp",
-  "application/epub+zip": "epub",
-  "text/org": "org",
-  "application/rtf": "rtf",
-  "text/rtf": "rtf",
-  "application/x-mobipocket-ebook": "mobi",
-};
 
 export interface ExtractedDocument {
   format: DocumentFormat;
@@ -94,29 +72,6 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   bmp: "image/bmp",
   ico: "image/x-icon",
 };
-
-function extension(filename: string): string {
-  const match = filename.trim().toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match?.[1] ?? "";
-}
-
-export function detectDocumentFormat(
-  filename: string,
-  contentType?: string,
-): DocumentFormat | null {
-  const ext = extension(filename);
-  if (ext === "markdown") return "md";
-  if (ext === "htm") return "html";
-  if (DOCUMENT_FORMATS.includes(ext as DocumentFormat)) {
-    return ext as DocumentFormat;
-  }
-  const mime = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return mime ? MIME_FORMATS[mime] ?? null : null;
-}
-
-export function isSupportedDocument(filename: string, contentType?: string): boolean {
-  return detectDocumentFormat(filename, contentType) !== null;
-}
 
 function decodeXml(value: string): string {
   return value.replace(
@@ -457,7 +412,21 @@ function openOfficeArchive(
   let imageTotal = 0;
   let imageCount = 0;
   try {
-    return unzipSync(input, {
+    // Null prototype, not the plain object `unzipSync` hands back: entry names
+    // are attacker-supplied and so are the keys read out of this map — a
+    // relationship `Target` inside the uploaded archive can boil down to a bare
+    // `constructor` / `valueOf` / `toString` (see `resolveArchiveTarget`). A
+    // plain index then answers with the inherited `Object.prototype` function
+    // instead of `undefined`, which is how a crafted deck kept a bogus slide
+    // past `extractPptx`'s `Boolean(files[slide.path])` filter and threw an
+    // uncaught `TypeError` out of `TextDecoder.decode` (DW-695). Fixing it at
+    // the construction site covers every read of the OOXML archive this
+    // function returns — docx/pptx/xlsx alike, including reads added later.
+    // The ODT/ODS/ODP and EPUB paths build their own plain-prototype maps from
+    // `safeArchiveEntries`; those are read by literal key (`content.xml`,
+    // `meta.xml`) or by walking `Object.entries` (`extractEpub`), never
+    // indexed by a content-derived path, so the hazard does not reach them.
+    const entries = unzipSync(input, {
       filter(file) {
         const kind = archiveEntryKind(format, file.name);
         if (!kind) return false;
@@ -483,15 +452,16 @@ function openOfficeArchive(
         return true;
       },
     });
+    return Object.assign(Object.create(null) as Record<string, Uint8Array>, entries);
   } catch (error) {
-    if (error instanceof ClientInputError) throw error;
+    if (isClientInputError(error)) throw error;
     throw new ClientInputError(`The .${format} file could not be opened.`);
   }
 }
 
 function mediaTypeFor(filename: string): string | null {
   const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  return IMAGE_MEDIA_TYPES[ext] ?? null;
+  return ownLookup(IMAGE_MEDIA_TYPES, ext);
 }
 
 function assetFromArchive(
@@ -500,7 +470,24 @@ function assetFromArchive(
   alt: string,
   context: string,
 ): ExtractedDocumentAsset | null {
-  const bytes = files[target];
+  // `ownLookup`, not `files[target]`: `target` comes from a relationship
+  // `Target` inside the uploaded archive, and `resolveArchiveTarget` can boil
+  // one down to a bare `constructor` / `valueOf` / `toString`, which a plain
+  // index answers with the inherited `Object.prototype` function instead of
+  // entry bytes (DW-365). No asset escapes today only because
+  // `mediaTypeFor` returns `null` for every extensionless name and no
+  // `Object.prototype` member name carries an extension — the guard below is
+  // one combined `!bytes || !mediaType` test, so the safety lives entirely in
+  // that other function's rejection rule. Looking the key up on the object's
+  // own properties removes that dependency, and matches the line beneath it.
+  //
+  // `openOfficeArchive` has returned a NULL-PROTOTYPE map since DW-695, so on
+  // that path the inherited member is already unreachable and this call can no
+  // longer answer differently from a bare index. It stays as defence in depth
+  // — the guard is per-lookup and holds for any caller that hands in a plain
+  // object — which is why the two idioms sit side by side rather than one
+  // contradicting the other.
+  const bytes = ownLookup(files, target);
   const mediaType = mediaTypeFor(target);
   if (!bytes || !mediaType) return null;
   const filename = target.split("/").pop() || "image";
@@ -627,7 +614,17 @@ function extractPptx(files: Record<string, Uint8Array>): {
     ).map((match, index) => ({
       number: index + 1,
       path: relationships.get(attr(match[1], "r:id")) ?? "",
-    })).filter((slide) => Boolean(files[slide.path]));
+    })).filter(
+      // EXISTENCE IS NOT IDENTITY (DW-724). A `p:sldId` rel can resolve to any
+      // key the archive really holds — `../media/photo.jpg` from
+      // `ppt/presentation.xml` lands on `ppt/media/photo.jpg` — and such an
+      // entry passed the existence check, made `ordered` non-empty, shadowed
+      // the numbered fallback and got image bytes decoded as slide XML. Only a
+      // key shaped like a slide part is a slide.
+      (slide) =>
+        /^ppt\/slides\/slide\d+\.xml$/i.test(slide.path) &&
+        Boolean(files[slide.path]),
+    );
     if (ordered.length) slides = ordered;
   }
   if (slides.length === 0) throw new ClientInputError("The PPTX file has no slides.");
@@ -905,6 +902,15 @@ export function extractDocumentText(input: {
     };
   }
 
+  if (format === "xls") {
+    // The legacy binary workbook is a compound-file container, not an OOXML
+    // zip, so `openOfficeArchive` below would fail on it with a message about
+    // a missing archive entry. It has no reader here on purpose: Epic 7 routes
+    // every spreadsheet through the sidecar's `calamine` pass, and this module
+    // is no longer the extract path for office binaries.
+    throw new ClientInputError(".xls extraction runs in the local sidecar.");
+  }
+
   const files = openOfficeArchive(bytes, format);
   const core = coreProperties(files);
   const extracted = format === "docx"
@@ -962,7 +968,7 @@ function safeArchiveEntries(bytes: ArrayBuffer): Array<[string, Uint8Array]> {
     });
     return Object.entries(files).sort(([a], [b]) => a.localeCompare(b));
   } catch (error) {
-    if (error instanceof ClientInputError) throw error;
+    if (isClientInputError(error)) throw error;
     throw new ClientInputError("The .zip file could not be opened.");
   }
 }
@@ -1003,7 +1009,7 @@ export async function extractDocumentTextAsync(input: {
         sections.push(`## File: ${relativePath}\n\n${nested.text}`);
         assets.push(...nested.assets);
       } catch (error) {
-        if (error instanceof ClientInputError && /no extractable text layer/i.test(error.message)) {
+        if (isClientInputError(error) && /no extractable text layer/i.test(error.message)) {
           continue;
         }
         throw error;

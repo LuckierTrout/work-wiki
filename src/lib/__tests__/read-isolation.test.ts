@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { ensureDirectories, writeWikiPage, listReadableWikiPages } from "../wiki";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 let tmpDir: string;
 let prevWiki: string | undefined;
@@ -81,5 +81,17 @@ describe("listReadableWikiPages — read isolation", () => {
     expect(slugs).toContain("pub");
     expect(slugs).toContain("priv");
     expect(slugs).toContain("agent-priv"); // alice--yoyo → human owner alice
+  });
+
+  it("hides a page whose authoritative frontmatter cannot be read", async () => {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (String(target).endsWith("/pub.md")) throw new Error("transient read failure");
+      return originalRead(target);
+    });
+
+    const slugs = (await listReadableWikiPages(null)).map((page) => page.slug);
+    expect(slugs).not.toContain("pub");
   });
 });

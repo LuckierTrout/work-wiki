@@ -138,7 +138,7 @@ a lint issue that matches a trigger's rule.
 | **Latency** | Negligible — lint checks are fast (except contradiction/missing-concept, which use LLM but are already budgeted) |
 | **Reliability** | Deterministic — same input always produces same result |
 | **Complexity** | Low — trigger is a filter over lint results + page events |
-| **Fit with work-wiki** | Direct — work-wiki has 14 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
+| **Fit with work-wiki** | Direct — work-wiki has 15 lint check types, frontmatter fields, revision history, and talk pages. These already detect the conditions users care about. |
 
 **Verdict:** The right first step. Covers 80% of use cases at near-zero
 marginal cost by leveraging infrastructure that already exists.
@@ -187,8 +187,7 @@ interface WikiTrigger {
   // ---- Condition ----
 
   /** What kind of event fires the trigger */
-  on: "page-write" | "page-delete" | "lint-found" | "discussion-opened"
-    | "discussion-resolved";
+  on: "page-write" | "page-delete" | "lint-found";
 
   /** Optional: limit to specific page slugs (glob patterns allowed) */
   scope?: string[];
@@ -218,6 +217,14 @@ interface WikiTrigger {
   messageTemplate?: string;
 }
 ```
+
+**Note on talk-thread events.** An earlier draft of this union carried
+`discussion-opened` and `discussion-resolved`. Both are gone: the talk-page
+Discussion UI and every `/api/wiki/:slug/discuss` route were retired with the
+commons and now answer 404 (`src/lib/retired.ts`), so nothing opens or resolves
+a thread for a trigger to fire on. Talk pages remain useful as *detection*
+input — the readers over `discuss/` are still live — but not as an event
+source.
 
 ### 3.2 Trigger event (what gets recorded when a trigger fires)
 
@@ -313,8 +320,6 @@ in a way that matches the rule's condition.
 | `page-write` | A page is created or updated | "Notify me when any page I authored is edited" |
 | `page-delete` | A page is deleted | "Alert when a page in the security/ scope is removed" |
 | `lint-found` | A lint check finds a matching issue | "Notify me when lint finds a contradiction" |
-| `discussion-opened` | A new talk thread is created | "Alert when someone opens a discussion on my pages" |
-| `discussion-resolved` | A talk thread is resolved | "Notify me when a dispute I'm involved in resolves" |
 
 **Scope:** Triggers can be scoped to specific page slugs or glob patterns
 (e.g., `["security-*", "auth-*"]`). Unscoped triggers match all pages.
@@ -335,7 +340,7 @@ events in `wiki/.trigger-events/<YYYY-MM-DD>.jsonl`.
 
 ### 4.1 Current MCP capabilities
 
-work-wiki's MCP server (`src/mcp.ts`) exposes 21 tools over stdio transport.
+work-wiki's MCP server (`src/mcp.ts`) exposes 40 tools over stdio transport.
 The `@modelcontextprotocol/sdk` package supports:
 
 - **Tool registration** (fully used)
@@ -396,7 +401,7 @@ that conflicts with where MCP is heading.
 
 ### Rationale
 
-1. **The building blocks already exist.** work-wiki has 14 lint check types
+1. **The building blocks already exist.** work-wiki has 15 lint check types
    that detect the most valuable change conditions (stale, low-confidence,
    disputed, contradictions, broken links, etc.), a revision system that
    tracks who changed what, talk pages for discussions, and a unified
@@ -446,7 +451,7 @@ that conflicts with where MCP is heading.
 | **MCP integration** | None | None | None | Native (resources + notifications) |
 | **User-definable** | Yes | No | No | Yes (structured conditions) |
 
-work-wiki's advantage: lint checks already detect 14 condition types
+work-wiki's advantage: lint checks already detect 15 condition types
 deterministically. A trigger system built on top of lint is cheaper, more
 reliable, and more predictable than LLM-evaluated NL triggers — while
 covering the conditions that actually matter for a knowledge base (staleness,

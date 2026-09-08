@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { seedAgent, assertCanMutateAgent, AgentOwnershipError, agentIdFor } from "@/lib/agents";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 const VALID_SECTION_TYPES = new Set(["identity", "learnings", "social"]);
 
@@ -116,6 +117,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ agent: profile }, { status: 201 });
   } catch (err) {
+    // Deployment read-only (DW-188). NO route-level gate: `seedAgent` writes its
+    // identity pages through the kernel BEFORE `registerAgent` persists the
+    // profile, so the very first page refuses and the agent is never registered
+    // — no half-seeded agent to clean up. The catch only has to classify it.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     if (err instanceof AgentOwnershipError) {
       return NextResponse.json({ error: err.message }, { status: 403 });
     }

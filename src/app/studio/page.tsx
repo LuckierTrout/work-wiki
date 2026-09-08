@@ -4,7 +4,7 @@ import { getPrincipal } from "@/lib/auth";
 import { KnowledgeStudio } from "@/components/KnowledgeStudio";
 
 export const metadata = {
-  title: "Knowledge Studio — WorkWiki",
+  title: "Knowledge Studio — work-wiki",
   description: "Private owner workspace for compiling, understanding, and operating your knowledge.",
 };
 

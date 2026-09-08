@@ -11,12 +11,13 @@
  * `tools/call`.
  *
  * Tool handlers are REUSED from the stdio server (`@/mcp`) — single source of
- * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 49
+ * truth, no parallel write-path to drift (see `.yoyo/learnings.md`). All 40
  * tools are exposed — full parity with the stdio MCP server.
  *
  * Auth/attribution lives in the route (`src/app/api/mcp/route.ts`): a Bearer
- * token resolves to an `owner` handle; WRITE tools require it and attribute the
- * page to that owner. Reads run unauthenticated against the public commons.
+ * token resolves to an `owner` handle, and writes are attributed to that owner.
+ * This deployment is private, so EVERY `tools/call` — reads included — requires
+ * a principal; there is no anonymous read path.
  */
 import {
   handleSearchWiki,
@@ -32,16 +33,9 @@ import {
   handleDeletePage,
   handleSaveQueryAnswer,
   handleMaintenanceScan,
-  handlePublishToCommons,
   handleUpdateMetadata,
   handleLintWiki,
   handleFixLintIssue,
-  handleReconcilePage,
-  handleListDiscussions,
-  handleReadDiscussion,
-  handleCreateDiscussion,
-  handleAddComment,
-  handleResolveDiscussion,
   handleListRevisions,
   handleReadRevision,
   handleRevertRevision,
@@ -65,12 +59,13 @@ import {
   handleIngestImage,
   handleIngestPdf,
   handleIngestXMention,
-  handleListContributors,
-  handleGetContributor,
 } from "@/mcp";
 import { mergePages } from "@/lib/merge";
+import { autoFixRefusal } from "@/lib/lint-fix";
+import { AUTO_FIXABLE_CHECK_TYPES } from "@/lib/lint-types";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
-import { canWriteFrontmatter } from "@/lib/authz";
+import { canWriteFrontmatter, isRealmRestrictedFrontmatterWrite } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 import { getAgent, agentIdFor, assertCanMutateAgent } from "@/lib/agents";
 import { logger } from "@/lib/logger";
@@ -134,7 +129,7 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  /** Write tools require an authenticated principal; reads don't. */
+  /** Marks a mutating tool. Reads and writes BOTH require a principal. */
   write: boolean;
   run: (
     args: Record<string, unknown>,
@@ -152,6 +147,209 @@ const schema = (
   ...(required.length ? { required } : {}),
 });
 
+// ---------------------------------------------------------------------------
+// The argument gate
+// ---------------------------------------------------------------------------
+
+/** A value's JSON Schema `type` — `null` and arrays split out of `typeof`. */
+function jsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * The JSON Schema `type` values `jsonType` can actually decide.
+ *
+ * A declared type OUTSIDE this set is skipped rather than failed, and the
+ * direction matters: `jsonType` never returns `"integer"` (a legal JSON Schema
+ * spelling, and the likely one for a future numeric field) or anything from a
+ * union like `["string","null"]`, so comparing it would refuse EVERY value for
+ * that property and make the tool permanently uncallable — a whole door closed
+ * by a schema edit that looked like documentation. Silence is the safe
+ * direction: the handler still sees what it always saw, which is exactly the
+ * state every tool was in before this gate existed. The parity suite pins that
+ * nothing on disk today is in the skipped case, so the skip is a guard against
+ * a future edit rather than cover for a present gap.
+ */
+const DECIDABLE_TYPES = new Set([
+  "string",
+  "number",
+  "boolean",
+  "object",
+  "array",
+]);
+
+/** The subset `jsonType` can decide an ARRAY ELEMENT against. */
+const PRIMITIVE_ITEM_TYPES = new Set(["string", "number", "boolean"]);
+
+/**
+ * The one runtime check `tools/call` arguments pass through (DW-563).
+ *
+ * WHY IT IS GENERIC. Every `ToolDef` above already declares a JSON Schema, and
+ * the stdio door turns the same declarations into zod — so a `batch_ingest_urls`
+ * with `urls: "https://x"` is refused there at `z.array(z.string())` while this
+ * door handed the string to `handleBatchIngest`, where a string is array-like
+ * enough to come back as "Malformed URLs at indices 0, 1, 2…". Every other
+ * `ToolDef.run` still spreads-and-casts the same way, so a per-tool guard would
+ * be one chance to forget per tool. Reading the schemas that are already on disk
+ * closes all of them at once and cannot drift from what `tools/list` advertises,
+ * because it IS what `tools/list` advertises.
+ *
+ * WHY ONLY `required` AND `type`. That is exactly the parity the stdio door has,
+ * and no more. Where a handler already answers for a value in a better sentence
+ * than a schema error could, it keeps doing so: `autoFixRefusal` names the check
+ * type and its clear path, `validateQuery` answers `unknown filter op` for a bad
+ * dataview operator. A generic "expected string" in front of those would be a
+ * worse answer, not a safer one.
+ *
+ * OBJECT ARRAY ELEMENTS ARE READ TOO (DW-672). An array whose `items` declares
+ * `type: "object"` has each element read against that `items` schema's own
+ * `required` list and property `type`s — the same two loops, the same
+ * vocabulary, with an indexed-and-dotted PATH: `seed_agent` with
+ * `sections: [{slug:"s"}]` is now `Missing required field: sections[0].title`
+ * instead of travelling into `handleSeedAgent` (which validates nothing — it
+ * maps and delegates) and out the other side as `src/lib/agents.ts` throwing
+ * "Cannot read properties of undefined". A non-object element is
+ * ``Invalid request field `sections[0]`: expected object``, and a mistyped member
+ * is ``Invalid request field `sections[0].slug`: expected string``. Every
+ * sentence that predates this paragraph is byte-identical; the vocabulary grew
+ * by path alone.
+ *
+ * HOW FAR DOWN. The reading follows array `items` at WHATEVER DEPTH the schemas
+ * declare — an object element carrying its own array-of-objects member is read
+ * the same way, as `outer[0].inner[1].member`, because `checkObject`'s property
+ * loop reaches the same branch again. That is not a designed depth so much as
+ * the absence of a bound: nothing on disk nests past one level today (three
+ * fields — `seed_agent.sections`, `update_agent.addPages`,
+ * `dataview_query.filters`, each with primitive members), so the deeper
+ * behaviour is UNEXERCISED and unpinned by any row. A bound is deliberately not
+ * added, because a limb no schema can reach is untestable dead code.
+ *
+ * WHAT STAYS OUT OF SCOPE AT EVERY LEVEL. `enum` members, string formats, ranges
+ * and numeric bounds: `seed_agent` with `sections: [{…, type:"bogus", …}]` is a
+ * well-typed string as far as this gate reads, and whatever the handler answers
+ * stands. And a PROPERTY declared `type: "object"` is NEVER recursed into, at any
+ * depth — array `items` is the only nesting this gate follows, while
+ * `update_metadata.metadata` is a deliberate `additionalProperties: true` bag
+ * whose members are the caller's, not a contract to enforce.
+ *
+ * WHAT IT DELIBERATELY LETS THROUGH. Undeclared keys: `vault_curate` is called
+ * with an `owner` its schema never mentions, and `run` overrides it from the
+ * principal — rejecting or stripping unknown keys would break that, and the
+ * schemas here are advertising, not a closed-world contract.
+ *
+ * ABSENT IS NOT `null`. A missing key and an explicit `undefined` are "unset"
+ * and skip the type check; an explicit `null` is a VALUE and is refused, which
+ * is how `LINT_FIX_REQUEST`'s `z.string().optional()` answers the same body at
+ * `POST /api/lint/fix`. Reading `null` as "unset" here would make one body a 400
+ * at the REST door and a silent success at this one.
+ *
+ * Returns the refusal sentence, or `null` when the arguments are acceptable.
+ * The vocabulary is the doors' shared one: `Missing required field: <path>`
+ * (`@/lib/lint-fix`) and ``Invalid request field `<path>`: expected <type>``
+ * (`src/app/api/lint/fix/route.ts`), where `<path>` is a bare name at the top
+ * level and `<array>[<index>].<member>` inside an object array element.
+ */
+function validateToolArguments(
+  inputSchema: Record<string, unknown>,
+  args: unknown,
+): string | null {
+  if (jsonType(args) !== "object") {
+    return "Invalid request arguments: expected a JSON object";
+  }
+  // Empty prefix at the top level, so every sentence this door already answers
+  // is unchanged: the path IS the bare field name there.
+  return checkObject(inputSchema, args as Record<string, unknown>, "");
+}
+
+/**
+ * The gate's one reading, applied at whatever depth its caller is at.
+ *
+ * `declarations` is a JSON Schema object — the tool's `inputSchema` at the top
+ * level, an array's `items` schema inside an element — and only its `required`
+ * list and `properties` types are read. `prefix` is the path already walked:
+ * `""` at the top level, `` `sections[0]` `` inside an element, and it is the
+ * only thing that differs between the calls.
+ *
+ * SELF-CALLING, NOT TWO-LEVEL. The property loop below re-enters this function
+ * for every object element it meets, so an object array nested inside an object
+ * element is read too — array `items` is followed as deep as it is declared. A
+ * property declared `type: "object"` is never followed at any depth. See the
+ * doc block above for why no depth bound is imposed, and for the fact that
+ * nothing on disk nests past one level, so depths beyond that are unexercised.
+ */
+function checkObject(
+  declarations: { required?: unknown; properties?: unknown },
+  values: Record<string, unknown>,
+  prefix: string,
+): string | null {
+  const label = (name: string) => (prefix ? `${prefix}.${name}` : name);
+
+  const required = Array.isArray(declarations.required)
+    ? (declarations.required as unknown[])
+    : [];
+  // Own properties only, in this loop and the next. A bare `values[name]` walks
+  // the prototype chain, so a `required` name colliding with an
+  // `Object.prototype` member (`constructor`, `toString`) would be "satisfied"
+  // by an inherited function and then type-checked against it. Same house rule
+  // as `ownEntry` in `@/lib/lint-fix` and the parity suite's own read.
+  const own = (name: string): unknown =>
+    Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+
+  for (const name of required) {
+    if (typeof name !== "string") continue;
+    if (own(name) === undefined) return `Missing required field: ${label(name)}`;
+  }
+
+  const properties =
+    jsonType(declarations.properties) === "object"
+      ? (declarations.properties as Record<string, unknown>)
+      : {};
+  for (const [name, declaration] of Object.entries(properties)) {
+    const value = own(name);
+    if (value === undefined) continue; // absent means absent
+    if (jsonType(declaration) !== "object") continue;
+    const decl = declaration as { type?: unknown; items?: unknown };
+    if (typeof decl.type !== "string") continue; // nothing declared to check
+    if (!DECIDABLE_TYPES.has(decl.type)) continue; // see DECIDABLE_TYPES
+    if (jsonType(value) !== decl.type) {
+      return `Invalid request field \`${label(name)}\`: expected ${decl.type}`;
+    }
+    if (decl.type !== "array" || jsonType(decl.items) !== "object") continue;
+    const items = decl.items as {
+      type?: unknown;
+      required?: unknown;
+      properties?: unknown;
+    };
+    const itemType = items.type;
+    if (typeof itemType !== "string") continue; // nothing declared to check
+    const elements = value as unknown[];
+    if (PRIMITIVE_ITEM_TYPES.has(itemType)) {
+      for (let i = 0; i < elements.length; i++) {
+        if (jsonType(elements[i]) !== itemType) {
+          return `Invalid request field \`${label(name)}[${i}]\`: expected ${itemType}`;
+        }
+      }
+      continue;
+    }
+    // Object elements get the same reading one step down (DW-672). Any OTHER
+    // element spelling is undecidable and still passes through — see
+    // `DECIDABLE_TYPES` for why silence is the safe direction.
+    if (itemType !== "object") continue;
+    for (let i = 0; i < elements.length; i++) {
+      const at = `${label(name)}[${i}]`;
+      if (jsonType(elements[i]) !== "object") {
+        return `Invalid request field \`${at}\`: expected object`;
+      }
+      const nested = checkObject(items, elements[i] as Record<string, unknown>, at);
+      if (nested) return nested;
+    }
+  }
+
+  return null;
+}
+
 /** Owner-attribution for writes: every write tool stamps the resolved owner. */
 function attributed(
   args: Record<string, unknown>,
@@ -164,7 +362,7 @@ function attributed(
 export const MCP_TOOLS: ToolDef[] = [
   {
     name: "search_wiki",
-    description: "Search work-wiki wiki pages by query string (public commons).",
+    description: "Search work-wiki wiki pages by query string.",
     inputSchema: schema(
       {
         query: str("Search query"),
@@ -403,14 +601,31 @@ export const MCP_TOOLS: ToolDef[] = [
     inputSchema: schema({ slug: str("Page slug to re-ingest") }, ["slug"]),
     write: true,
     // Enforce the same write ACL as the REST reingest route: you can only
-    // re-synthesize a page you may write (public commons = collectively
-    // editable; another user's PRIVATE page = denied). Without this, any
-    // token-holder could overwrite/fork others' pages. A missing/unauthorized
-    // page throws a single cloaked error (no private-page existence oracle).
+    // re-synthesize a page you may write. Since DW-121 that excludes every
+    // public knowledge page for a non-service, non-admin principal — the realm
+    // reserves those for agents and admins — as well as another user's PRIVATE
+    // page. Without this, any token-holder could overwrite/fork others' pages.
+    // A missing/unauthorized page throws a single cloaked error (no
+    // private-page existence oracle).
     run: async (a, p) => {
       const slug = typeof a.slug === "string" ? a.slug : "";
       const page = slug ? await readWikiPageWithFrontmatter(slug) : null;
       if (!page || !canWriteFrontmatter(page.frontmatter, p, "body")) {
+        // WHETHER THIS TOOL MAY SPEAK AT ALL is a cloak decision, and it is the
+        // predicate — not the copy table — that settles it: only a page that was
+        // actually read and is realm-restricted is public, non-agent-scoped and
+        // non-artifact, so naming it leaks nothing. Every other denial — missing
+        // slug, missing page, another user's private page — keeps the
+        // deliberately merged cloak below, which is what stops this tool from
+        // being a private-page existence oracle.
+        //
+        // Once it may speak, the WORDS still come from `resolveWriteDenial`,
+        // like every other door (see the rule in `write-denial.ts`).
+        if (page && isRealmRestrictedFrontmatterWrite(page.frontmatter, "body")) {
+          throw new Error(
+            resolveWriteDenial("reingest", page.frontmatter, "body"),
+          );
+        }
         throw new Error(
           `Page not found or you don't have permission to re-ingest it: ${slug || "(missing slug)"}`,
         );
@@ -421,7 +636,7 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "maintenance_scan",
     description:
-      "Scan the wiki for maintenance tasks (disputed pages, expired sources, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work.",
+      "Scan the wiki for maintenance tasks (expired sources, unmigrated pages, dangling supersedes, orphans, broken links). Read-only — returns candidates; does not enqueue or execute work. Disputed pages are not scanned here — list them with lint_wiki (check type 'disputed-page'); clearing the flag is a human review.",
     inputSchema: schema({
       cap: { type: "number", description: "Max tasks to return (default 10)" },
     }),
@@ -430,33 +645,6 @@ export const MCP_TOOLS: ToolDef[] = [
       handleMaintenanceScan(
         a as Parameters<typeof handleMaintenanceScan>[0],
       ),
-  },
-  {
-    name: "publish_to_commons",
-    description:
-      "Publish an agent-knowledge page to the public commons. Clears the agent type, " +
-      "transfers ownership to the agent's human owner, preserves the agent in contributors[]. " +
-      "One-way promotion — cannot be unpublished.",
-    inputSchema: schema(
-      {
-        slug: str("Slug of the agent-knowledge page to publish"),
-        agentId: str("ID of the agent that owns the page (e.g. alice--yoyo)"),
-      },
-      ["slug", "agentId"],
-    ),
-    write: true,
-    run: async (a, p) => {
-      const args = a as Parameters<typeof handlePublishToCommons>[0];
-      // Verify the caller owns the agent whose page is being published.
-      const agent = await getAgent(args.agentId);
-      if (!agent) throw new Error(`Agent not found: ${args.agentId}`);
-      if (!agent.owner || agent.owner !== p!.handle) {
-        throw new Error(
-          `Ownership mismatch: only the agent's owner can publish its pages to the commons.`,
-        );
-      }
-      return handlePublishToCommons(args);
-    },
   },
   {
     name: "update_metadata",
@@ -502,42 +690,93 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "fix_lint_issue",
     description:
-      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. " +
-      "Not all issue types are auto-fixable.",
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, plus optional slug/target/message: " +
+      "`slug` is required by every type EXCEPT missing-concept-page, which reads `message` alone. " +
+      "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
+      "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
     inputSchema: schema(
       {
-        type: str("Lint issue type (e.g. 'orphan-page', 'stale-index', 'empty-page')"),
-        slug: str("Slug of the affected page"),
-        target: str("Target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes"),
+        type: {
+          ...str(
+            `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
+          ),
+          // ADVERTISED, and separately ENFORCED in `run` below. The door's
+          // generic gate (`validateToolArguments`) reads `required` and each
+          // declared `type`, deliberately NOT `enum` members — so this list is
+          // still documentation for the agent rather than a gate, and the
+          // sentence a wrong member gets is `autoFixRefusal`'s, which names the
+          // check type and its clear path instead of "expected one of" (DW-348).
+          enum: [...AUTO_FIXABLE_CHECK_TYPES],
+        },
+        slug: str(
+          "Slug of the affected page. Required by every type EXCEPT " +
+            "missing-concept-page, which reads `message` alone.",
+        ),
+        target: str("Target slug for cross-ref, contradiction, and broken-link fixes"),
         message: str("Message context for contradiction or missing-concept-page fixes"),
       },
-      ["type", "slug"],
+      // `slug` is NOT required (DW-457): `missing-concept-page` reads `message`
+      // alone, and every slug-requiring type answers "Missing required field:
+      // slug" for the `""` an absent one converts to — the same trade
+      // `LINT_FIX_REQUEST` makes at the REST door.
+      ["type"],
     ),
     write: true,
-    run: (a, p) =>
-      handleFixLintIssue({
-        ...(a as { type: string; slug: string; target?: string; message?: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "reconcile_page",
-    description:
-      "Reconcile a wiki page by applying valid points from a discussion thread. " +
-      "Reads the page and thread, LLM-revises the page, posts a summary comment, and resolves the thread.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page to reconcile"),
-        threadIndex: { type: "number", description: "Zero-based index of the discussion thread" },
-      },
-      ["pageSlug", "threadIndex"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleReconcilePage({
-        ...(a as { pageSlug: string; threadIndex: number }),
-        author: p!.handle,
-      }),
+    run: async (a, p) => {
+      // The three STRING fields arrive already gated (DW-455, generalized by
+      // DW-563): `dispatchMcp` runs `validateToolArguments` over this tool's
+      // own `inputSchema` before reaching here, so each of `slug`/`target`/
+      // `message` is either absent or a string — the per-tool `optionalString`
+      // helper that used to do it here said nothing the generic gate does not
+      // say, in the same words. What it stopped still cannot get through: a
+      // spread-and-cast once let an object `slug` reach `fixOrphanPage` and come
+      // back a 404 naming `[object Object]`, an error about a page the caller
+      // never asked for.
+      //
+      // ABSENT is still not `null` — the gate refuses an explicit `null` as a
+      // value, matching `LINT_FIX_REQUEST`'s `z.string().optional()` at the REST
+      // door, so `{"type":"orphan-page","slug":null}` cannot be a 400 there and
+      // a silent success here.
+      //
+      // `type` keeps its OWN gate, which the generic one cannot subsume: the
+      // schema declares `enum`, and `validateToolArguments` deliberately checks
+      // declared `type`s and not `enum` members. `autoFixRefusal` comes from
+      // `@/lib/lint-fix` so a recognized-but-not-fixable type gets its own
+      // explanation here, word for word as the HTTP route answers it, rather
+      // than a bare "unsupported".
+      const slug = a.slug as string | undefined;
+      const target = a.target as string | undefined;
+      const message = a.message as string | undefined;
+
+      const refusal = autoFixRefusal(a.type, slug ?? "");
+      if (refusal) throw new Error(refusal);
+
+      // Explicit fields rather than a spread: every one of them has been gated
+      // — the three strings by `validateToolArguments`, and `type` by
+      // `autoFixRefusal`, which answers `AUTO_FIX_UNSUPPORTED` for anything that
+      // is not a string naming a real handler. So the casts record narrowings a
+      // gate already proved, FOR ARGUMENTS THAT ARRIVED THROUGH `dispatchMcp` —
+      // the only caller today, but `MCP_TOOLS` is exported, and a direct
+      // `tool.run(...)` bypasses the door and every check it performs. The
+      // `autoFixRefusal` line below holds either way; the three string casts
+      // hold only on the gated path.
+      //
+      // `triggeredBy`, never `author` (DW-447). This door used to stamp the
+      // resolved principal as the AUTHOR of the fix, which credited a human
+      // with a machine-generated edit everywhere `normalizeActor` looks — the
+      // revision sidecar, the page's contributor list, their trust score. The
+      // author stays `fixLintIssue`'s `"lint-fix"` default; the principal is
+      // recorded as the TRIGGER on the wiki-log detail line, which nothing in
+      // the contributor contract reads. `attributed()` above already mints both
+      // fields for the tools that take them; this one takes only the trigger.
+      return handleFixLintIssue({
+        type: a.type as string,
+        slug,
+        target,
+        message,
+        triggeredBy: p!.handle,
+      });
+    },
   },
   {
     name: "merge_pages",
@@ -562,92 +801,10 @@ export const MCP_TOOLS: ToolDef[] = [
         bypassOwnerCheck: false,
       }),
   },
-  // -- Discussion tools ---------------------------------------------------
-  {
-    name: "list_discussions",
-    description:
-      "List all discussion threads for a wiki page (public, read-only).",
-    inputSchema: schema(
-      { pageSlug: str("Slug of the wiki page to list discussions for") },
-      ["pageSlug"],
-    ),
-    write: false,
-    run: (a) =>
-      handleListDiscussions(a as Parameters<typeof handleListDiscussions>[0]),
-  },
-  {
-    name: "read_discussion",
-    description:
-      "Read a single discussion thread with full comment bodies (public, read-only). " +
-      "Use list_discussions first to discover thread indices.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread (from list_discussions)" },
-      },
-      ["pageSlug", "threadIndex"],
-    ),
-    write: false,
-    run: (a) =>
-      handleReadDiscussion(a as Parameters<typeof handleReadDiscussion>[0]),
-  },
-  {
-    name: "create_discussion",
-    description:
-      "Start a new discussion thread on a wiki page for editorial discussion.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page to discuss"),
-        title: str("Title of the discussion thread"),
-        body: str("Opening comment body (markdown)"),
-      },
-      ["pageSlug", "title", "body"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleCreateDiscussion({
-        ...(a as { pageSlug: string; title: string; body: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "add_comment",
-    description:
-      "Add a comment to an existing discussion thread on a wiki page.",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread" },
-        content: str("Comment body (markdown)"),
-        parentId: str("Optional parent comment ID for threaded replies"),
-      },
-      ["pageSlug", "threadIndex", "content"],
-    ),
-    write: true,
-    run: (a, p) =>
-      handleAddComment({
-        ...(a as { pageSlug: string; threadIndex: number; content: string; parentId?: string }),
-        author: p!.handle,
-      }),
-  },
-  {
-    name: "resolve_discussion",
-    description:
-      "Resolve a discussion thread on a wiki page (mark as resolved or wontfix).",
-    inputSchema: schema(
-      {
-        pageSlug: str("Slug of the wiki page the discussion belongs to"),
-        threadIndex: { type: "number", description: "Zero-based index of the thread" },
-        resolution: str("Resolution status: open | resolved | wontfix"),
-      },
-      ["pageSlug", "threadIndex", "resolution"],
-    ),
-    write: true,
-    run: (a, _p) =>
-      handleResolveDiscussion(
-        a as Parameters<typeof handleResolveDiscussion>[0],
-      ),
-  },
+  // -- Discussion tools: RETIRED ------------------------------------------
+  // Talk is retired (AD-21). The REST handlers and the UI panel are gone, so an
+  // agent creating a thread here would write to a surface nothing can display.
+  // `src/lib/talk.ts` stays on disk (AD-21) with no reachable callers.
   // -- Revision tools -----------------------------------------------------
   {
     name: "list_revisions",
@@ -693,6 +850,7 @@ export const MCP_TOOLS: ToolDef[] = [
       handleRevertRevision({
         ...(a as { slug: string; timestamp: number }),
         author: p!.handle,
+        principal: p,
       }),
   },
   // -- Vault tools ----------------------------------------------------------
@@ -1020,28 +1178,6 @@ export const MCP_TOOLS: ToolDef[] = [
     run: (a) =>
       handleIngestHistory(a as Parameters<typeof handleIngestHistory>[0]),
   },
-  // -- Contributor trust awareness (read-only) --------------------------------
-  {
-    name: "list_contributors",
-    description:
-      "List all contributors with trust scores and activity summaries. Returns a JSON array of " +
-      "contributor profiles including handle, editCount, revertCount, trustScore, and activity breakdown. " +
-      "Useful for assessing contributor reliability before accepting, reverting, or escalating edits.",
-    inputSchema: schema({}),
-    write: false,
-    run: () => handleListContributors(),
-  },
-  {
-    name: "get_contributor",
-    description:
-      "Get a specific contributor's trust profile by handle. Returns a single contributor profile " +
-      "including editCount, revertCount, trustScore, commentCount, and detailed activity. " +
-      "Useful for checking a contributor's track record before acting on their edits.",
-    inputSchema: schema({ handle: str("Contributor handle to look up") }, ["handle"]),
-    write: false,
-    run: (a) =>
-      handleGetContributor(a as Parameters<typeof handleGetContributor>[0]),
-  },
 ];
 
 /** Public (transport-facing) tool descriptor for `tools/list`. */
@@ -1147,17 +1283,34 @@ export async function dispatchMcp(
       if (!tool) {
         return ok(id, toolResult(`Unknown tool: ${params.name}`, true));
       }
-      if (tool.write && !principal) {
+      // Reads AND writes both require a principal: this is a private,
+      // single-owner deployment, so there is no anonymous read path (AD-8).
+      // `src/app/api/mcp/route.ts` already 401s a missing bearer, so this is
+      // defense-in-depth for any other caller of `dispatchMcp`.
+      if (!principal) {
         return ok(
           id,
           toolResult(
-            "Authentication required: this tool writes to your content. Send Authorization: Bearer <your work-wiki token>.",
+            "Authentication required: this deployment is private. Send Authorization: Bearer <your work-wiki token>.",
             true,
           ),
         );
       }
+      // The generic argument gate (DW-563), AFTER the unknown-tool and
+      // missing-principal checks so neither refusal is displaced, and BEFORE
+      // `run` so no handler ever sees arguments its own schema contradicts.
+      // Thrown rather than returned: the `catch` below already renders a tool
+      // failure as an `isError` result, and a malformed argument is a tool
+      // failure, not a JSON-RPC protocol error.
+      // Only `undefined` is absent. `?? {}` would coalesce an explicit
+      // `arguments: null` into a valid empty object, so `{"arguments":null}`
+      // would succeed while the gate one line down refuses `null` on a FIELD as
+      // "a value, not unset" — the gate's own rule contradicted at the envelope.
+      const args = params.arguments === undefined ? {} : params.arguments;
       try {
-        const result = await tool.run(params.arguments ?? {}, principal);
+        const refusal = validateToolArguments(tool.inputSchema, args);
+        if (refusal) throw new Error(refusal);
+        const result = await tool.run(args, principal);
         const filed = tool.write ? await fileIntoVault(result, targetVault) : result;
         return ok(id, toolResult(filed));
       } catch (err) {

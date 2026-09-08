@@ -56,6 +56,31 @@ describe("system health", () => {
     expect(health.operations.observed).toBeGreaterThan(0);
   });
 
+  it("does not call a TRUNCATED backup healthy, without calling it unverified", async () => {
+    // Before the limits truncated, an over-limit tenant got NO backup at all,
+    // so this snapshot said `missing` and `attention`. A partial backup that
+    // verifies must not be a quieter answer than the failure it replaced.
+    await getStorage().writeFile(
+      tenantWikiRelPath(tenantForOwner("alice"), "notes.md"),
+      serializeFrontmatter({ owner: "alice", visibility: "private" }, "# Notes"),
+    );
+    const backup = await createOwnerBackup("alice", new Date(), {
+      maxFiles: 1,
+      maxBytes: 2 * 1024 * 1024 * 1024,
+    });
+    expect(backup.truncated).toBe(true);
+    await verifyOwnerBackup("alice", backup.id);
+
+    const health = await getSystemHealth("alice");
+
+    expect(health.status).toBe("attention");
+    // Truncation is its OWN fact: the restore check really did pass over the
+    // set that was copied, and this field reports verification, nothing else.
+    expect(health.backup.status).toBe("verified");
+    expect(health.backup.latest?.truncated).toBe(true);
+    expect(health.backup.latest?.truncationReason).toBe("file-count");
+  });
+
   it("surfaces a failed source check as requiring attention", async () => {
     const backup = await createOwnerBackup("alice");
     await verifyOwnerBackup("alice", backup.id);

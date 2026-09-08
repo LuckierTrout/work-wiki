@@ -1,13 +1,13 @@
 # LLM Wiki functional parity roadmap
 
-This document defines how WorkWiki will reach user-visible functional parity
+This document defines how work-wiki will reach user-visible functional parity
 with [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) while remaining an
 owner-only cloud application. The audit baseline is upstream version `0.6.7`,
 commit `ad215b51252ffc1c6721d5b057f0449a2fb51530` (2026-08-02).
 
-"Parity" means that a WorkWiki user can achieve the same outcome. It does not
+"Parity" means that a work-wiki user can achieve the same outcome. It does not
 mean copying the desktop implementation or forcing local-computer concepts into
-a Cloudflare Worker. The upstream repository is GPL-3.0 licensed, so WorkWiki
+a Cloudflare Worker. The upstream repository is GPL-3.0 licensed, so work-wiki
 will independently implement the behavior and will not copy its source code,
 prompts, templates, or UI.
 
@@ -23,13 +23,13 @@ prompts, templates, or UI.
   folder on a user's computer.
 - Shell and code execution use an isolated remote sandbox with explicit grants,
   timeouts, budgets, output limits, and approval. They never run in the Worker
-  or on the WorkWiki host filesystem.
+  or on the work-wiki host filesystem.
 - Provider credentials stay server-side. Purpose, model choices, and retrieval
   preferences may be changed in the owner UI.
 
 ## Capability matrix
 
-| Area | Reference behavior | WorkWiki today | Status | Parity work |
+| Area | Reference behavior | work-wiki today | Status | Parity work |
 | --- | --- | --- | --- | --- |
 | Knowledge layers | Immutable sources, generated wiki, schema, purpose, overview, and log | Raw snapshots, wiki pages, conventions, revisions, evidence, and activity ledger | Partial | Add owner and vault purpose profiles plus a generated overview page |
 | Project templates | Research, reading, personal growth, business, and general scenarios | Page templates and vaults, but no purpose/schema scenario setup | Missing | Add independently written scenario profiles that initialize purpose, page types, and starter questions |
@@ -62,7 +62,7 @@ prompts, templates, or UI.
 | Delete lifecycle | Source-aware cascade that preserves entities shared by other sources | Comprehensive cleanup plus a source-to-page contribution ledger that replaces one page's stale contribution without touching others | Strong partial | Drive source deletion through the contribution ledger before removing shared compiled pages |
 | Portability | Complete project ZIP export/import and deterministic index rebuild | Owner tenant ZIP export/import validates version, paths, size, tenant, and checksums; previews collisions and rebuilds derived indexes after skip/overwrite restore | Equivalent core | Add optional client-side archive encryption and a dedicated scoped sync token |
 | HTTP API and MCP | Projects, files, read, reviews, search, chat, graph, and source rescan | Larger MCP surface covering read/write, ingest, query, review-adjacent lifecycle, vaults, agents, graph, and history | Stronger | Add project binding, source-only search, research, skill, and sync operations |
-| Internationalization | English and Chinese UI, multilingual output behavior | English/Chinese interface selector, cookie persistence, catalog fallback, protected user content, and workspace output-language preference | Strong partial | Complete owner-session string coverage and add translation-catalog tooling |
+| Internationalization | English and Chinese UI, multilingual output behavior | English-only interface: the zh-CN catalog, the interface selector, and its locale cookie are retired, leaving a literal `lang="en"` document; the workspace output-language preference still steers generated content | Declined (recorded decision) | None — declined under parity clause 3: `AGENTS.md` → Learned User Preferences records English-only UI, so no interface translation or catalog tooling is planned |
 | Desktop shell | Three-column resizable local application and activity panel | Responsive three-column Knowledge Studio with workflow navigation, working center desks, and a persistent source-to-decision evidence rail | Equivalent web adaptation | Add optional user-resizable widths after owner-session UX acceptance |
 
 ## Cloud adaptations for desktop-only behavior
@@ -71,7 +71,7 @@ prompts, templates, or UI.
 
 The companion watches only folders the owner explicitly selects. It computes
 content hashes locally and sends a signed change manifest plus changed files to
-WorkWiki. WorkWiki records every change before enqueueing ingest. Deletions are
+work-wiki. work-wiki records every change before enqueueing ingest. Deletions are
 proposals unless the owner enables a narrow automatic rule. The companion
 reports its last operation to Knowledge Studio and its status record can be
 retired there. Stopping the local process or rotating the shared owner
@@ -89,7 +89,7 @@ enforceable per-command network-egress declaration remains a hardening item.
 ### Browser extension
 
 The extension carries no token. It sends the current URL, title, and optional
-remembered tags into a compact WorkWiki-origin window, where the existing owner
+remembered tags into a compact work-wiki-origin window, where the existing owner
 session controls vault selection, final tag editing, and the verified ingest
 job. Selected-text and readable-content capture remain optional future work.
 
@@ -97,20 +97,22 @@ job. Selected-text and readable-content capture remain optional future work.
 
 ### Local implementation status — 2026-08-06
 
-Two Phase 1 slices are implemented locally. Settings now includes an
-owner-scoped Workspace Purpose editor with clean-room General, Research,
-Reading, Personal Growth, and Business scenario drafts. It stores purpose, key
-questions, scope boundaries, output language, and page conventions. The saved
-profile is included in ingest and reconciliation, query and native chat,
-source-monitor proposals, structured-knowledge extraction, action extraction,
-and specialized-agent instructions. It does not alter raw evidence or bypass
-citations and review. Chat also has a persistent evidence selector. Original
-Sources Only mode uses the readable wiki index solely to find candidate source
-documents, then builds answer context exclusively from captured raw snapshots.
-It uses bounded lexical chunk ranking, treats source text and metadata as
-untrusted data, requires exact raw API links with line ranges, and fails with a
-useful error when the selected scope has no captured originals. Existing
-conversations migrate safely to Wiki Pages mode.
+Two Phase 1 slices are implemented locally. Settings now includes a per-Wiki
+Workspace Purpose editor with clean-room General, Research, Reading, Personal
+Growth, and Business scenario drafts. Each Wiki keeps its own profile beside
+that Wiki's `purpose.md` and `schema.md`, so switching the active Wiki swaps
+which profile is live. It stores purpose, key questions, scope boundaries,
+output language, and page conventions. The saved profile is included in ingest
+and reconciliation, query and native chat, source-monitor proposals,
+structured-knowledge extraction, action extraction, and specialized-agent
+instructions. It does not alter raw evidence or bypass citations and review.
+Chat also has a persistent evidence selector. Original Sources Only mode uses
+the readable wiki index solely to find candidate source documents, then builds
+answer context exclusively from captured raw snapshots. It uses bounded lexical
+chunk ranking, treats source text and metadata as untrusted data, requires
+exact raw API links with line ranges, and fails with a useful error when the
+selected scope has no captured originals. Existing conversations migrate safely
+to Wiki Pages mode.
 
 Verification for these slices: 172 test files and 3,683 tests passed, full lint
 passed, the Next production build passed, the OpenNext Cloudflare build
@@ -157,7 +159,7 @@ coherent tranche:
    private evidence-backed Review proposal.
 4. Agent runs retain private artifacts and structured owner-input forms. Agents
    with the explicit `run-sandbox` grant can execute bounded commands through a
-   separately deployable Cloudflare Sandbox worker with no WorkWiki or provider
+   separately deployable Cloudflare Sandbox worker with no work-wiki or provider
    credentials mounted.
 5. PDF figures are extracted with page context, converted to PNG, captioned and
    transcribed through vision, cached by content hash, and preserved. EPUB,
@@ -166,9 +168,9 @@ coherent tranche:
    rebuild. A token-free browser clipper uses the normal owner session. The
    optional local companion supports archive replication plus journaled source
    folder preview, push, and explicit continuous watch.
-7. Markdown renders KaTeX math, and a persistent English/Chinese interface
-   selector translates catalogued application copy while leaving wiki/source
-   content untouched.
+7. Markdown renders KaTeX math. The persistent English/Chinese interface
+   selector has been retired along with its translation catalog and locale
+   cookie: the interface is English-only.
 
 The dedicated UX polish is also implemented locally: sandbox requests pause in
 an exact-command approval docket and retain execution receipts; preserved PDF
@@ -269,7 +271,9 @@ for owner input, and complete in a sandbox without gaining wiki write authority.
 1. Add full project export/import, collision preview, and deterministic rebuild.
 2. Ship the scoped browser clipper.
 3. Ship the authenticated local sync companion and scheduled local import.
-4. Internationalize the interface.
+4. ~~Internationalize the interface.~~ Declined — the interface is English-only
+   (see the Internationalization row above); the shipped zh-CN catalog and its
+   selector were retired rather than extended.
 5. Add the optional resizable research workspace and complete cross-page
    consistency review.
 

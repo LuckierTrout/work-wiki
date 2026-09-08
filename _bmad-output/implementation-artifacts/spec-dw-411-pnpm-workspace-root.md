@@ -1,0 +1,208 @@
+---
+title: 'Repo-root pnpm workspace so the documented pnpm commands run'
+type: 'bugfix'
+created: '2026-08-22'
+status: 'done'
+review_loop_iteration: 1
+followup_review_recommended: true
+context: []
+warnings: ['oversized']
+deferred:
+  - summary: >-
+      The Dockerfile's deps stage does not copy the new root pnpm-workspace.yaml
+      while its build stage's `COPY . .` does, so the two stages disagree about
+      whether /app is a workspace root, and no docker build was run against the
+      change.
+    evidence: |-
+      Dockerfile:5-6 copies only `package.json pnpm-lock.yaml` and then runs
+      `pnpm install --frozen-lockfile`; Dockerfile:13's `COPY . .` brings
+      `pnpm-workspace.yaml` into the build stage before `pnpm build`, and
+      `.dockerignore` does not exclude it. Nothing observably breaks today (the
+      image has no ancestor workspace file to adopt, and the build stage only
+      builds), but the divergence is unverified: `docker build .` was not part
+      of this story's verification.
+    location: >-
+      Dockerfile:5-13
+    severity: low
+  - summary: >-
+      `.github/workflows/deploy-cloudflare.yml`'s `paths:` filter does not list
+      pnpm-workspace.yaml, so changing or deleting that file alone never
+      triggers the workflow it protects.
+    evidence: |-
+      The filter names `pnpm-lock.yaml`, `package.json` and `workers/**`. The
+      root workspace file is now load-bearing for `pnpm --dir
+      workers/sandbox-runner install --frozen-lockfile` at deploy-cloudflare.yml:82,
+      but a commit touching only that file skips the workflow. `.github/` is
+      declared protected in AGENTS.md, so this run could not edit it.
+    location: >-
+      .github/workflows/deploy-cloudflare.yml (paths filter)
+    severity: low
+  - summary: >-
+      The bundle this story came from is keyed to DW-415, but its Intent prose
+      describes DW-411; the work done resolves DW-411 and leaves DW-415
+      untouched.
+    evidence: |-
+      `.bmad-loop/runs/20260820-220331-0f16/bundles/c3-pnpm-workspace-root/intent.md`
+      carries `dw_ids: DW-415` and pastes DW-415 verbatim (a CSS specificity
+      issue at src/app/globals.css:2690-2710), while its `## Intent` section is a
+      near-verbatim restatement of DW-411 (`pnpm vitest` / `pnpm lint` abort;
+      location `package.json / pnpm-workspace.yaml`). This story implemented the
+      Intent, so DW-411 is what is resolved. Recording DW-415 as resolved would
+      close a still-real cascade hazard that nothing in this change touches —
+      `src/app/globals.css` was not modified.
+    location: >-
+      _bmad-output/implementation-artifacts/deferred-work.md (DW-411, DW-415)
+    severity: medium
+  - summary: >-
+      The nested-package guard derives its targets from `--dir`/`-C` workflow
+      flags and on-disk lockfiles, so a package reached by `working-directory:`
+      or `cd x && pnpm install` is only caught once it has a lockfile of its own.
+    evidence: |-
+      `pnpmDirTargets` in src/lib/__tests__/pnpm-workspace-root.test.ts matches
+      pnpm's two directory flags. A workflow step using GitHub Actions'
+      `working-directory:` key, or a plain `cd`, is not scraped. The on-disk
+      lockfile walk added in review covers every real nested package (a pnpm
+      package installed with --frozen-lockfile necessarily has one), so the
+      residual gap is a directory installed without a committed lockfile.
+    location: >-
+      src/lib/__tests__/pnpm-workspace-root.test.ts (pnpmDirTargets)
+    severity: low
+baseline_revision: 'b18c539411beaf3bd0dec0d1ed353c0c5020870c'
+---
+
+<intent-contract>
+
+## Intent
+
+**Problem:** The repo has no `pnpm-workspace.yaml`, so pnpm walks up past the repo and adopts a machine-level `/Users/christianlee/pnpm-workspace.yaml` that declares only an `allowBuilds:` stub. Every `pnpm <cmd>` inside the repo — including `pnpm lint` and `pnpm test`, the entry points `README.md` and `.github/workflows/ci.yml` document — then aborts with `ERROR packages field missing or empty` before running anything.
+
+**Approach:** Add a repo-root `pnpm-workspace.yaml` declaring a non-empty `packages:` list containing the root project, so the upward walk stops inside the repo, and pin that file's existence with a test so a later cleanup cannot silently re-open the failure.
+
+## Boundaries & Constraints
+
+**Always:** The workspace file declares a non-empty `packages:` list that includes the root project (`.`) — an empty or missing `packages:` key reproduces the exact error being fixed. `pnpm-lock.yaml` must stay byte-identical: it already carries a single `.` importer, which is what makes this change invisible to `pnpm install --frozen-lockfile` in CI and in the Dockerfile (which does not copy the new file).
+
+**Block If:** Making the documented commands run would require editing `pnpm-lock.yaml`, `package.json` dependency or `packageManager` fields, or anything inside the `bmad:context` markers of `AGENTS.md` (that block is regenerated by `bmad-project-context` and must not be hand-edited here).
+
+**Never:** Do not delete or rewrite `/Users/christianlee/pnpm-workspace.yaml` — it is outside the repo and DW-97 and DW-115 already recorded that as the owner's own call. Do not add `onlyBuiltDependencies`: the pinned `pnpm@9.15.9` reads build approval from `package.json#pnpm`, not from the workspace file, so a key there would be inert under the pinned manager while implying the per-machine `pnpm approve-builds` step documented at `AGENTS.md:22` no longer applies. Do not convert the repo into a real multi-package workspace, add packages, or move source.
+
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior | Error Handling |
+|----------|--------------|---------------------------|----------------|
+| Workspace file on disk | the repo-root `pnpm-workspace.yaml` as committed | reading it yields a `packages` list that is non-empty and contains `.` | Test fails, naming the `packages field missing or empty` abort the file prevents |
+| File deleted | no `pnpm-workspace.yaml` at the repo root | the same test fails rather than passing vacuously | Test failure names the missing file |
+| Degenerate declarations | workspace text with no `packages:` key, and text with `packages:` followed by no list items | both read as "no packages declared" — the exact state pnpm rejects | Assertion message distinguishes the two from a healthy list |
+
+</intent-contract>
+
+## Code Map
+
+- `pnpm-workspace.yaml` -- NEW, repo root. The whole fix: a non-empty `packages:` list that terminates pnpm's upward search inside the repo.
+- `/Users/christianlee/pnpm-workspace.yaml` -- outside the repo, read-only evidence. Contains only `allowBuilds:` with four unresolved entries and no `packages:` key; this is what pnpm was adopting. Confirmed: `pnpm --version` in the repo exited 1 with `ERROR packages field missing or empty` before the fix and prints `9.15.9` after it.
+- `package.json:5,8-9` -- `packageManager: pnpm@9.15.9` (corepack resolves it), `scripts.lint` = `eslint`, `scripts.test` = `vitest run`. Unchanged by this story.
+- `pnpm-lock.yaml:1,11-13` -- `lockfileVersion: '9.0'` with `importers:` → `.:`. Already the shape a root-only workspace produces, so the new file changes nothing here.
+- `workers/sandbox-runner/` -- THE SECOND PNPM PACKAGE IN THIS REPO. It has its own `package.json` and its own `pnpm-lock.yaml` (the only other lockfile on disk: `find . -name pnpm-lock.yaml -not -path "*/node_modules/*"` returns exactly these two) and is installed separately, never through the root. A root workspace file that does not list it makes every pnpm command aimed at it resolve to the ROOT workspace instead, which is a silent no-op — reproduced with pnpm 9.15.9 on a scratch copy: `pnpm --dir <nested> install` printed `Done in 124ms` and created no `node_modules` at all, while the same command with no root workspace file installed the dependency. `pnpm --dir <nested> --ignore-workspace install` and a `pnpm-workspace.yaml` INSIDE the nested directory each restore it; a nested `.npmrc` with `ignore-workspace=true` does NOT (verified — pnpm 9 takes it only as a CLI flag).
+- `.github/workflows/ci.yml:86,89,92` and `.github/workflows/deploy-cloudflare.yml:82,88` -- the five commands that address that package: `pnpm --dir workers/sandbox-runner install --frozen-lockfile`, `… exec tsc --noEmit`, `… exec wrangler deploy --dry-run`, and the deploy pair. These are the consumers the root workspace file would break, and they are OFF LIMITS to edit: `AGENTS.md` Policy declares `.github/` protected — "change only when explicitly asked" — and this run was not asked. The fix therefore has to work without touching them.
+- `.github/workflows/ci.yml:30-52` -- pins pnpm 9.15.9, then runs `pnpm install --frozen-lockfile`, `pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm test`, `pnpm build`. The consumer that must stay green.
+- `Dockerfile:5` -- copies only `package.json` and `pnpm-lock.yaml` before `pnpm install --frozen-lockfile`; the new file is deliberately not part of that copy and does not need to be, since the lockfile is unchanged.
+- `README.md:139,150` and `AGENTS.md:22` -- the documented `pnpm install` / `pnpm dev` / `pnpm approve-builds` entry points this restores. Both stay as written; `AGENTS.md:22` sits inside the managed `bmad:context` block and must not be edited here.
+- `.gitignore` -- confirms `node_modules` is ignored, so running the nested install as a verification step does not dirty the tree.
+- `src/lib/__tests__/brand-copy.test.ts:742-759` -- reuse pointer and precedent: an existing root-file invariant test ("the sync script named by package.json exists on disk") that resolves the repo root as `path.resolve(SRC, "..")` and asserts on a documented entry point.
+- `vitest.config.ts:88-95` -- the `node` project collects `src/**/__tests__/**/*.test.ts`, so the new test must live under a `src/**/__tests__/` directory with a `.test.ts` extension to run at all.
+
+## Tasks & Acceptance
+
+**Execution:**
+- `pnpm-workspace.yaml` -- create at the repo root with `packages:` listing `.`, plus a comment recording why the file exists (it stops pnpm's upward walk; without it pnpm adopts an unrelated ancestor file and aborts) and that it deliberately does NOT list `workers/sandbox-runner` -- this is the fix, and the comment is what stops a later "empty config" cleanup from deleting it.
+- `workers/sandbox-runner/pnpm-workspace.yaml` -- create the same one-line declaration there, with a comment stating that it exists to stop the upward walk at THIS directory so the package keeps installing against its own `pnpm-lock.yaml` -- without it the new root file silently converts `pnpm --dir workers/sandbox-runner install --frozen-lockfile` (`.github/workflows/ci.yml:86`, `deploy-cloudflare.yml:82`) into an exit-0 no-op that installs nothing, and the `tsc`/`wrangler` steps after it fail on missing modules. Adding the directory to the ROOT `packages:` list instead is not an option: the root lockfile has no importer for it, so `--frozen-lockfile` would reject it.
+- `src/lib/__tests__/pnpm-workspace-root.test.ts` -- add a node-project test that pins BOTH files: the root one exists and declares a non-empty `packages:` list containing `.`, and every nested pnpm package is shielded. Derive the nested set from the repo, not from a hand-copied name: every `pnpm --dir <path>` target in `.github/workflows/*.yml` must either be covered by the root `packages:` list or hold its own `pnpm-workspace.yaml`. Quote the `packages field missing or empty` abort in the root assertions and the silent-no-op consequence in the nested one.
+- `src/lib/__tests__/pnpm-workspace-root.test.ts` -- read the `packages:` list through a small local helper (no YAML dependency is available in `package.json`, which is the real reason it is hand-rolled — say so) that: takes the LAST top-level `packages:` key, not the first, since that is the one YAML and pnpm honour; accepts block items at any indentation including column zero; treats a non-list scalar value (`packages: .`, `packages: null`) as no list; and tolerates a leading BOM. Assert the two degenerate matrix rows on synthetic text through it.
+- `src/lib/__tests__/pnpm-workspace-root.test.ts` -- anchor the repo root before asserting on it (read `package.json` and check `name === "work-wiki"`), guard EVERY file read so a missing file produces the explanatory message rather than a bare ENOENT stack, and use one spelling of the pnpm abort string across the test and both YAML comments.
+
+**Acceptance Criteria:**
+- Given the repo checked out on a machine whose home directory holds a `pnpm-workspace.yaml` with no `packages:` key, when `pnpm lint` is run from the repo root, then it runs ESLint to completion instead of aborting with `ERROR packages field missing or empty`.
+- Given the same state, when `pnpm test` (`vitest run`) is run from the repo root, then the full suite executes under the `node` and `dom` projects and reports its own pass/fail, with no pnpm workspace error.
+- Given the new root workspace file, when `pnpm --dir workers/sandbox-runner install --frozen-lockfile` is run, then it installs that package's own dependencies into `workers/sandbox-runner/node_modules` — it does not exit 0 having installed nothing.
+- Given the change is complete, when `git status --porcelain` is inspected, then `pnpm-lock.yaml`, `workers/sandbox-runner/pnpm-lock.yaml`, `package.json` and everything under `.github/` are unmodified.
+- Given someone later deletes either workspace file, or empties the root `packages:` list, or adds a new `pnpm --dir <path>` workflow step for a directory with no workspace file of its own, when the test suite runs, then `pnpm-workspace-root.test.ts` fails with a message naming the failure it prevents.
+
+## Spec Change Log
+
+### 2026-08-22 — Review pass 1 (bad_spec)
+
+- **Triggering finding:** the root `pnpm-workspace.yaml` silently shadows `workers/sandbox-runner`, the repo's second pnpm package (own `package.json` + own `pnpm-lock.yaml`, installed by `.github/workflows/ci.yml:86` and `deploy-cloudflare.yml:82`). Reproduced under pnpm 9.15.9: with a root workspace file that does not list the nested directory, `pnpm --dir <nested> install` exits 0 in ~120ms and creates no `node_modules`; without it, the same command installs normally.
+- **Amended:** Code Map now names the nested package, its five workflow commands, and the `.github/` protected-file policy that rules out editing them; Tasks now add `workers/sandbox-runner/pnpm-workspace.yaml` and a workflow-derived parity assertion; Acceptance and Verification now cover the nested install; Design Notes record the three candidate fixes and why the nested workspace file wins.
+- **Known-bad state avoided:** shipping a root workspace file that turns the sandbox-runner install into an exit-0 no-op — a failure that surfaces only later in CI as `TS2307: Cannot find module '@cloudflare/sandbox'`, and that precedes a real `wrangler deploy`.
+- **KEEP (must survive re-derivation):** the root file's comment block explaining that the file exists to stop pnpm's upward walk, that it is not a multi-package declaration, and why `onlyBuiltDependencies` is deliberately absent; the test's header docblock explaining that it asserts the file contract rather than shell behaviour, because what sits above the checkout is machine state a suite cannot stage; the degenerate-shape assertions on synthetic text; `pnpm-lock.yaml` untouched.
+
+### 2026-08-22 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 9: (high 0, medium 2, low 7)
+- defer: 4: (high 0, medium 1, low 3)
+- reject: 10: (high 0, medium 0, low 10)
+- addressed_findings:
+  - `[medium]` `[patch]` The guard skipped its nested check for any directory the root `packages:` list claimed, so widening that list to cover `workers/sandbox-runner` went green while breaking root `pnpm install --frozen-lockfile` (`ERR_PNPM_OUTDATED_LOCKFILE`, reproduced). A lockfile-bearing directory must now be absent from the root list AND hold its own workspace file; the root list is pinned to exactly `["."]`.
+  - `[medium]` `[patch]` Target discovery knew only the `--dir` spelling, missing pnpm's documented `-C` alias and any package installed outside CI. Discovery is now the union of `--dir`/`-C` workflow targets (skipping commands that already pass `--ignore-workspace`) and every directory on disk holding its own `pnpm-lock.yaml`.
+  - `[low]` `[patch]` The lockfile facts the design rests on were prose only; the suite now pins that the root lockfile has exactly one importer (`.`) and that `workers/sandbox-runner/pnpm-lock.yaml` exists.
+  - `[low]` `[patch]` The reader's "last duplicate `packages:` key wins" claim was wrong — pnpm parses the file with js-yaml, which rejects duplicate mapping keys (`duplicated mapping key`, confirmed under 9.15.9). Duplicates now read as no usable declaration, and the unit case was replaced.
+  - `[low]` `[patch]` The `onlyBuiltDependencies` prohibition rested on an unpinned premise; `package.json`'s `packageManager` is now asserted to still be `pnpm@9.`, with a message saying a pnpm 10+ bump reverses the reasoning.
+  - `[low]` `[patch]` Nothing checked either workspace file was parseable at all: a tab character (which js-yaml rejects) or a nested list of `..` would have passed. Both are now asserted, and each file's list must be exactly `["."]`.
+  - `[low]` `[patch]` `globToRegExp` expanded a trailing `**` so that `workers/**` matched nothing, understating what the root list claims. Fixed with unit coverage.
+  - `[low]` `[patch]` The nested file's comment and the test docblock claimed the failure lands "immediately before a real `wrangler deploy`"; AGENTS.md records those workflows as inert on this fork unless opted into. Reworded to make CI's Sandbox Worker job the concrete consequence.
+  - `[low]` `[patch]` The `beforeAll` failure message quoted a path expression that appears nowhere in the code; it now describes the actual resolution.
+
+## Design Notes
+
+`packages: ["."]` is the minimal declaration that is both non-empty (the condition pnpm checks) and truthful (this repo really is one package at the root). pnpm treats the workspace root as a project regardless; listing `.` is what makes the list non-empty without inventing a subdirectory.
+
+Three fixes were checked for the nested `workers/sandbox-runner` package, all under pnpm 9.15.9 on a scratch copy: (a) adding it to the root `packages:` list — rejected, the root lockfile has no importer for it, so `--frozen-lockfile` fails; (b) adding `--ignore-workspace` to the five `pnpm --dir` commands — works, but every one of them lives under `.github/`, which `AGENTS.md` declares protected; (c) giving the directory its own `pnpm-workspace.yaml` — works, touches no protected file and no lockfile, and is the same mechanism as the root fix one level down. (c) is what this spec adopts. A nested `.npmrc` with `ignore-workspace=true` was also tried and does not work: pnpm 9 honours that only as a CLI flag.
+
+The nested assertion is derived from `.github/workflows/*.yml` rather than hard-coding `workers/sandbox-runner`, so a future `pnpm --dir` step for a new directory fails the guard instead of quietly inheriting the same silent no-op.
+
+The test asserts the *file contract*, not the shell behaviour: whether `pnpm` aborts depends on what sits above the checkout, which is machine state a suite cannot stage, and a machine with nothing above the repo sees no change from this file at all. What every machine shares is that an absent or `packages:`-less file is what makes the abort reachable, so that is what gets pinned. The shell behaviour, and the lockfile staying untouched, are verified once by hand in Verification below.
+
+## Verification
+
+**Commands:**
+- `pnpm --version` -- expected: prints `9.15.9` and exits 0 (before the fix: exit 1, `ERROR packages field missing or empty`).
+- `pnpm lint` -- expected: ESLint runs to completion with no errors.
+- `pnpm test` -- expected: `vitest run` collects both projects and passes, including the new `pnpm-workspace-root` suite.
+- `pnpm --dir workers/sandbox-runner install --frozen-lockfile` -- expected: actually installs into `workers/sandbox-runner/node_modules` (verify the directory exists afterwards and contains `@cloudflare/sandbox`); an exit-0 run that creates nothing is the failure this guards against.
+- `git status --porcelain` -- expected: only the two new `pnpm-workspace.yaml` files, the new test file, and this spec appear; `pnpm-lock.yaml`, `workers/sandbox-runner/pnpm-lock.yaml`, `package.json` and everything under `.github/` are absent from the list (`node_modules` is gitignored).
+
+## Auto Run Result
+
+Status: done
+
+**Implemented change.** The repo now stops pnpm's upward search for a workspace root inside the checkout. A repo-root `pnpm-workspace.yaml` declaring `packages: ["."]` replaces the machine-level `~/pnpm-workspace.yaml` (an `allowBuilds:` stub with no `packages:` key) that pnpm was adopting, so `pnpm --version`, `pnpm lint` and `pnpm test` run instead of aborting with `ERROR packages field missing or empty`. Because that root file would otherwise capture `workers/sandbox-runner` — the repo's second pnpm package, with its own lockfile, installed by two workflows — and turn its `--frozen-lockfile` install into an exit-0 no-op, the same declaration is repeated inside that directory. A test suite pins both files and derives the set of directories that need shielding from the repo itself.
+
+**Files changed.**
+- `pnpm-workspace.yaml` (new) — the fix; `packages: ["."]` plus a comment recording why the file exists, why `workers/sandbox-runner` is deliberately absent, and why `onlyBuiltDependencies` is deliberately absent.
+- `workers/sandbox-runner/pnpm-workspace.yaml` (new) — stops the walk one level down so that package keeps installing against its own `pnpm-lock.yaml`.
+- `src/lib/__tests__/pnpm-workspace-root.test.ts` (new) — 10 node-project tests pinning both files, the root list's exact contents, the lockfile facts the design rests on, and every directory that needs shielding (union of `--dir`/`-C` targets scraped from `.github/workflows/*.yml` and every directory on disk holding its own `pnpm-lock.yaml`).
+- `_bmad-output/implementation-artifacts/spec-dw-411-pnpm-workspace-root.md` (new) — this spec.
+
+Nothing else was modified: `package.json`, `pnpm-lock.yaml`, `workers/sandbox-runner/pnpm-lock.yaml`, `AGENTS.md` and everything under `.github/` are byte-identical to `b18c539`, and `/Users/christianlee/pnpm-workspace.yaml` was left alone.
+
+**Review findings.** Two passes.
+- Pass 1: 1 bad_spec (high) — the root workspace file silently shadowed the nested package's install; reproduced under pnpm 9.15.9, spec amended, code reverted and re-derived. 5 patch findings folded into that amendment. 6 rejected.
+- Pass 2: 9 patches applied (2 medium, 7 low), 4 deferred (1 medium, 3 low), 10 rejected. No intent gaps, no further spec repairs.
+
+**Follow-up review recommended: true.** Patched this pass: 0 high, 2 medium, 7 low → 3 × 2 + 7 = 13, which is ≥ 5.
+
+**Verification performed** (all after the final patch round):
+- `pnpm --version` → `9.15.9`, exit 0 (before the change: exit 1, `ERROR packages field missing or empty`).
+- `pnpm lint` → exit 0. `pnpm exec tsc --noEmit` → exit 0.
+- `pnpm test` → 274 files, 6159 tests, all passing (the new suite included).
+- `pnpm --dir workers/sandbox-runner exec tsc --noEmit` → exit 0; a clean `rm -rf workers/sandbox-runner/node_modules` followed by `pnpm --dir workers/sandbox-runner install --frozen-lockfile` really installs (`@cloudflare/sandbox`, `typescript`, `wrangler`) rather than exiting 0 having installed nothing.
+- `pnpm build` → exit 0, no workspace-root warning; `next.config.ts` already pins `outputFileTracingRoot` and `turbopack.root` to `process.cwd()`, so the new file cannot move Next's inferred root.
+- `git status --porcelain` → only the four new files.
+- The guard was proven to fail, not just pass: root file deleted; root list emptied; root list as a scalar; root list claiming `workers/sandbox-runner` literally and via `workers/*`; nested file deleted; nested file listing `..`; a scratch directory holding a lockfile with no workspace file; a tab in the root file; a duplicated `packages:` key; a simulated second importer in the root lockfile. Each fails with the message that names the consequence; all scenarios were restored.
+
+**Residual risks.**
+- The bundle that dispatched this work is keyed to `dw_ids: DW-415`, but its Intent prose is DW-411 and DW-415's pasted entry is an unrelated CSS specificity issue at `src/app/globals.css:2690-2710`, which this change does not touch. **Resolution should be recorded against DW-411, not DW-415**; DW-415 remains genuinely open. Recorded as a `deferred` item as well, since this run must not edit the ledger.
+- The abort string in the root file's comment and the phrase `silent no-op` in each nested file's comment are pinned by the suite. Re-wrapping either comment across its pinned phrase fails the tests; the failure message says what to keep.
+- The nested-package guard walks the repo for `pnpm-lock.yaml` files (skipping `node_modules`, `.git`, `.next`, `.yoyo`). A vendored fixture containing a stray lockfile would be demanded to have a workspace file — a loud, readable false positive rather than a silent one.
+- Docker was not exercised: see the deferred item about the deps stage not copying the new file while `COPY . .` in the build stage does.

@@ -23,6 +23,7 @@ import { getVault } from "./vault";
 import { getOwnerIndex } from "./owner-index";
 import { getBacklinkIndex } from "./backlink-index";
 import { relatedByVector, searchByVector } from "./embeddings";
+import { getVectorSearchSettings } from "./config";
 import { RELATED_PAGES_LIMIT, RELATED_MIN_SCORE, RELATED_CANDIDATE_POOL } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -43,8 +44,13 @@ export async function findRelatedPages(
   newContent: string,
   existingEntries: IndexEntry[],
 ): Promise<string[]> {
-  // Nothing to cross-reference when there's no LLM or no existing pages
-  if (!hasLLMKey() || existingEntries.length === 0) {
+  // Nothing to cross-reference when there's no LLM or no existing pages.
+  //
+  // THE FREE TEST GOES FIRST (DW-548). The gate reads the store now, so the
+  // operand ORDER decides whether a workspace with nothing to cross-reference
+  // against pays a storage round-trip to find that out. `existingEntries` is
+  // already in hand; asking it first costs an array length.
+  if (existingEntries.length === 0 || !(await hasLLMKey())) {
     return [];
   }
 
@@ -55,7 +61,17 @@ export async function findRelatedPages(
   // (~RELATED_CANDIDATE_POOL lines) instead of listing every page. Fail-soft:
   // if the vector store is empty or errors, fall back to the full list (so small
   // wikis and no-embedding setups behave exactly as before).
-  if (candidates.length > RELATED_CANDIDATE_POOL) {
+  //
+  // THE SWITCH, NOT THE PREDICATE (DW-68, DW-686). A deployment that turned
+  // vector search off does no vector work HERE either — the prefilter is
+  // skipped and the LLM classifies against the full candidate list, exactly the
+  // fail-soft path an empty store already takes.
+  //
+  // THE FREE TEST GOES FIRST (DW-548), the same ordering the LLM-key conjunct
+  // above is written for: `candidates.length` is an array read,
+  // `getVectorSearchSettings()` is a cached config read, so the pool size
+  // answers first for the small wikis that never reach the prefilter at all.
+  if (candidates.length > RELATED_CANDIDATE_POOL && getVectorSearchSettings().enabled) {
     try {
       const allowed = new Set(candidates.map((e) => e.slug));
       const hits = (await searchByVector(newContent, RELATED_CANDIDATE_POOL))
@@ -123,16 +139,19 @@ export async function updateRelatedPages(
   newSlug: string,
   newTitle: string,
   relatedSlugs: string[],
+  options: { requireSource?: boolean; tenant?: string } = {},
 ): Promise<string[]> {
   return withFileLock("cross-ref", async () => {
     const updatedSlugs: string[] = [];
 
     for (const slug of relatedSlugs) {
+      let updated = false;
+      for (let attempt = 0; attempt < 3 && !updated; attempt += 1) {
       // Never append markdown cross-references to an HTML artifact — its body is
       // a self-contained document, and the "See also" markdown would render as
       // literal text below it. (Read frontmatter only for this type check.)
-      const meta = await readWikiPageWithFrontmatter(slug);
-      if (!meta) continue;
+      const meta = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (!meta) break;
       if (
         isArtifactType(
           typeof meta.frontmatter.type === "string"
@@ -140,53 +159,66 @@ export async function updateRelatedPages(
             : undefined,
         )
       ) {
-        continue;
+        break;
       }
 
       // Operate on the FULL file content (frontmatter + body) so the write-back
       // preserves the frontmatter block — writeWikiPageWithSideEffects writes
       // verbatim, and `readWikiPageWithFrontmatter.body` would have stripped
       // the frontmatter.
-      const page = await readWikiPage(slug);
-      if (!page) continue;
-
       // Skip if already links to the new page (use proper link detection
       // rather than substring matching to avoid false positives when the slug
       // appears in prose without being a wiki link).
-      if (hasLinkTo(page.content, newSlug)) continue;
+      if (hasLinkTo(meta.content, newSlug)) break;
 
       const link = `[${newTitle}](${newSlug}.md)`;
       let updatedContent: string;
 
       // Check if there's already a "See also" section
       const seeAlsoPattern = /^(\*\*See also:\*\*.*)$/m;
-      const seeAlsoMatch = page.content.match(seeAlsoPattern);
+      const seeAlsoMatch = meta.content.match(seeAlsoPattern);
 
       if (seeAlsoMatch) {
         // Append to existing "See also" line
-        updatedContent = page.content.replace(
+        updatedContent = meta.content.replace(
           seeAlsoPattern,
           `${seeAlsoMatch[1]}, ${link}`,
         );
       } else {
         // Add a new "See also" section at the end
-        updatedContent = `${page.content.trimEnd()}\n\n**See also:** ${link}\n`;
+        updatedContent = `${meta.content.trimEnd()}\n\n**See also:** ${link}\n`;
       }
 
-      await writeWikiPageWithSideEffects({
-        slug,
-        title: meta.frontmatter.title as string || slug,
-        content: updatedContent,
-        summary: (() => {
-          const m = meta.body.match(/^#\s+.+\n+(.+)/m);
-          return m ? m[1].slice(0, 120) : slug;
-        })(),
-        logOp: "edit",
-        logDetails: () => `cross-reference update from "${newSlug}"`,
-        crossRefSource: null,
-        author: "system",
-      });
-      updatedSlugs.push(slug);
+      try {
+        await writeWikiPageWithSideEffects({
+          slug,
+          title: meta.frontmatter.title as string || slug,
+          content: updatedContent,
+          summary: (() => {
+            const m = meta.body.match(/^#\s+.+\n+(.+)/m);
+            return m ? m[1].slice(0, 120) : slug;
+          })(),
+          logOp: "edit",
+          logDetails: () => `cross-reference update from "${newSlug}"`,
+          crossRefSource: null,
+          author: "system",
+          expectedContent: meta.content,
+          ...(options.requireSource
+            ? {
+                requiresExistingSlug: newSlug,
+                requiresExistingTenant: options.tenant,
+                requiredTargetTenant: options.tenant,
+              }
+            : {}),
+        });
+        updatedSlugs.push(slug);
+        updated = true;
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "LifecyclePageConflictError")) {
+          throw error;
+        }
+      }
+      }
     }
 
     return updatedSlugs;
@@ -266,6 +298,10 @@ export async function findBacklinks(
  * Visibility is enforced on READ (a private page never leaks to a viewer who
  * can't see it). Below-threshold matches are dropped so weakly-related pages
  * don't appear. Returns `{ slug, title, score }`, highest score first.
+ *
+ * Returns `[]` UNCONDITIONALLY when vector search is switched off (DW-686),
+ * before any vector call or page-cache scope is opened — which is what removes
+ * the "Related pages" section from the rendered article.
  */
 export async function findSimilarPages(
   slug: string,
@@ -273,6 +309,16 @@ export async function findSimilarPages(
   limit: number = RELATED_PAGES_LIMIT,
   minScore: number = RELATED_MIN_SCORE,
 ): Promise<Array<{ slug: string; title: string; score: number }>> {
+  // THE SWITCH, NOT THE PREDICATE (DW-68, DW-686). Off means the render path
+  // does no vector work at all — not "does it and discards it" — so the drift
+  // breadcrumb `relatedByVector` writes cannot tell a deployment to rebuild
+  // embeddings for a feature it turned off. `[]` is what this function already
+  // answers for an empty or unavailable store, and `ArticleView` renders no
+  // "related pages" section for it.
+  //
+  // BEFORE `withPageCache` (`./wiki`), not inside it: that wrapper is a
+  // begin/finally scope, and an off deployment should not pay even its setup.
+  if (!getVectorSearchSettings().enabled) return [];
   return withPageCache(async () => {
     // Over-fetch so visibility/threshold filtering still leaves up to `limit`.
     const scored = await relatedByVector(slug, limit + 10);

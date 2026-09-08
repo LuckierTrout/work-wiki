@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { parseArgs } from "../../cli";
+import { ollamaBaseUrlRefusedCopy } from "../workbench-settings";
+import type { EffectiveSettings } from "../config";
 
 describe("CLI argument parsing", () => {
   describe("ingest command", () => {
@@ -114,6 +116,18 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  describe("retired publish command", () => {
+    it("no longer parses publish — falls to the unknown-command error", () => {
+      // Publish-to-commons is retired; the CLI must not keep a live entry point.
+      const result = parseArgs(["publish", "my-topic", "--agent", "alice--yoyo"]);
+      expect(result.command).toBe("error");
+      if (result.command === "error") {
+        expect(result.message).toContain("Unknown command: publish");
+        expect(result.message).toContain('Run "pnpm cli help"');
+      }
+    });
+  });
+
   describe("history command", () => {
     it("parses history without flags (default limit 20)", () => {
       const result = parseArgs(["history"]);
@@ -173,28 +187,6 @@ describe("CLI argument parsing", () => {
       if (result.command === "error") {
         expect(result.message).toContain("Usage");
       }
-    });
-  });
-
-  describe("publish command", () => {
-    it("parses publish with slug and --agent", () => {
-      const result = parseArgs(["publish", "my-topic", "--agent", "alice--yoyo"]);
-      expect(result).toEqual({ command: "publish", slug: "my-topic", agentId: "alice--yoyo" });
-    });
-
-    it("returns error when publish has no slug", () => {
-      const result = parseArgs(["publish", "--agent", "alice--yoyo"]);
-      expect(result.command).toBe("error");
-    });
-
-    it("returns error when publish has no --agent", () => {
-      const result = parseArgs(["publish", "my-topic"]);
-      expect(result.command).toBe("error");
-    });
-
-    it("returns error when publish has neither slug nor --agent", () => {
-      const result = parseArgs(["publish"]);
-      expect(result.command).toBe("error");
     });
   });
 
@@ -334,10 +326,31 @@ vi.mock("../wiki", () => ({
 
 vi.mock("../raw", () => ({
   listRawSources: vi.fn(),
+  // `list --raw` and `status` union the flat listing with the hashed
+  // `raw/sources/<slug>/<id>.md` snapshots (DW-437). The export has to exist
+  // here or every listing case dies on `listRawSourceSnapshots is not a
+  // function` rather than on an assertion.
+  listRawSourceSnapshots: vi.fn(),
 }));
 
 vi.mock("../config", () => ({
   getEffectiveSettings: vi.fn(),
+  // `runStatus()` warms the sync config cache before reading it (DW-502), and
+  // since DW-549 it does that through `readConfig()` — the one door that tells
+  // an absent store from an unreadable one. The export has to exist here or
+  // every `runStatus` case below dies on `readConfig is not a function` rather
+  // than on an assertion.
+  //
+  // GIVEN A DEFAULT, not left as a bare `vi.fn()`: that returns `undefined` and
+  // `runStatus` reads `.status` off the answer, so every case here would die on
+  // a TypeError instead. `ok` with an empty config is the readable-and-empty
+  // store, which is what this mocked suite's row-shape cases assume.
+  readConfig: vi.fn(async () => ({
+    status: "ok",
+    config: {},
+    version: "unstamped",
+    etag: null,
+  })),
 }));
 
 vi.mock("../query", () => ({
@@ -374,21 +387,66 @@ vi.mock("../frontmatter", () => ({
   serializeFrontmatter: vi.fn(),
 }));
 
-vi.mock("../publish", () => ({
-  publishToCommons: vi.fn(),
-}));
+/**
+ * A whole `EffectiveSettings`, configured and clean, for `runStatus()` to read.
+ *
+ * The resolver returns one object with every field populated, so the fixture is
+ * one object too: a partial would let a `runStatus` that reads a NEW field pass
+ * against `undefined` rather than against the value the resolver would have
+ * supplied.
+ */
+function effectiveSettings(
+  overrides: Partial<EffectiveSettings> = {},
+): EffectiveSettings {
+  // `satisfies` on the SOURCE LITERAL, the convention `src/app/api/status/route.ts`
+  // already uses and explains. A type ASSERTION would permit a missing required
+  // property just as silently as a partial does, which would make this block's
+  // own claim untrue; `satisfies` makes the next field added to
+  // `EffectiveSettings` a compile error right here.
+  const base = {
+    provider: "anthropic",
+    providerSource: "env",
+    model: "claude-sonnet-4-20250514",
+    modelSource: "default",
+    configured: true,
+    embeddingSupport: true,
+    embeddingModel: null,
+    embeddingModelSource: "default",
+    embeddingModelInEffect: "text-embedding-3-small",
+    embeddingProviderInEffect: "openai",
+    embeddingModelOverridden: false,
+    hasApiKey: true,
+    apiKeySource: "env",
+    ollamaBaseUrl: null,
+    ollamaBaseUrlSource: "default",
+    ollamaBaseUrlIssue: null,
+    structuredKnowledgeProvider: "anthropic",
+    structuredKnowledgeProviderSource: "default",
+    structuredKnowledgeModel: "claude-sonnet-4-20250514",
+    structuredKnowledgeModelSource: "default",
+    structuredKnowledgeConfigured: true,
+    readOnly: false,
+  } satisfies EffectiveSettings;
+  return { ...base, ...overrides };
+}
 
 describe("CLI command execution", () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let exitSpy: MockInstance<(code?: number) => never>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     exitSpy = vi
       .spyOn(process, "exit")
       .mockImplementation((() => { throw new Error("process.exit"); }) as unknown as () => never);
+    // Empty by default so the cases that only care about one of the two raw
+    // listings keep saying exactly what they mean; `mockResolvedValueOnce`
+    // still takes precedence per case.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValue([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -433,6 +491,285 @@ describe("CLI command execution", () => {
     expect(logSpy).toHaveBeenCalledWith("source-b\tsource-b.md");
   });
 
+  it("runList(true) prints hashed snapshots when there is no flat source", async () => {
+    // A workspace built entirely through Workbench Intake has NOTHING at the
+    // flat `raw/sources/<id>.md` level — every Source is a hashed
+    // `raw/sources/<slug>/<id>.md` arrival. Before DW-437 that printed nothing
+    // at all, because `listRawSources` is non-recursive by contract.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc1230000000000.md");
+  });
+
+  it("runList(true) prints flat sources and snapshots together, sorted by slug", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    const calls = logSpy.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual(["alpha\tabc1230000000000.md", "note\tnote.md"]);
+  });
+
+  it("runList(true) prints ONE row for a slug ingest wrote both ways", async () => {
+    // `ingest()` writes BOTH keys for the same slug — the flat blob
+    // (`src/lib/ingest.ts:1953`) and the per-source snapshot
+    // (`src/lib/ingest.ts:2012`) — so a plain concatenation would print every
+    // normally-ingested page twice and roughly double the `status` count. The
+    // snapshot is the per-source view of the same page, so it wins and the flat
+    // row is dropped.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc1230000000000.md"]);
+  });
+
+  it("runList(true) keeps the flat row when the only snapshot is BINARY", async () => {
+    // The flat row is suppressed because `ingest()` writes the flat blob and
+    // the `.md` snapshot from the SAME text. A `.png` dropped on the same slug
+    // is a different Source, so suppressing on it would delete a real prose
+    // Source from the listing and the count to make room for an image.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        rawId: "abc1230000000000",
+        ext: "png",
+        mediaType: "image/png",
+        path: "raw/sources/alpha/abc1230000000000.png",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
+      "alpha\talpha.md",
+      "alpha\tabc1230000000000.png",
+    ]);
+  });
+
+  it("runStatus() counts a flat Source and a binary snapshot on one slug as 2", async () => {
+    // The count half of the case above: two Sources really are stored, and the
+    // suppression must not swallow one of them.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        rawId: "abc1230000000000",
+        ext: "png",
+        mediaType: "image/png",
+        path: "raw/sources/alpha/abc1230000000000.png",
+      },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).toContain(
+      "Raw sources:\t2",
+    );
+  });
+
+  it("runList(true) prints one row per snapshot for a multi-source page", async () => {
+    // Dropping the flat row must not collapse the page to a single row: a page
+    // built from three sources has three raws, and the per-source view is the
+    // whole reason the snapshots are listed at all.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "aaa1110000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/aaa1110000000000.md" },
+      { slug: "alpha", rawId: "bbb2220000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/bbb2220000000000.md" },
+      { slug: "alpha", rawId: "ccc3330000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/ccc3330000000000.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
+      "alpha\taaa1110000000000.md",
+      "alpha\tbbb2220000000000.md",
+      "alpha\tccc3330000000000.md",
+    ]);
+  });
+
+  it("runList(true) prints a stored PDF that no Markdown sits beside (DW-569)", async () => {
+    // The CLI is the caller that does NOT filter by extension: `list --raw`
+    // describes what is STORED, and before the listing carried binaries a
+    // PDF-only workspace printed nothing at all.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
+  });
+
+  it("runList(true) prints ONE row for a PDF and the Markdown extracted from it", async () => {
+    // `saveRawSourceBytes` stores the extract at `<slug>/<rawId>.md` beside the
+    // bytes under the SAME `rawId` — one arrival, two artefacts. Printing both
+    // would show one Source twice and double the `status` count. The original
+    // wins the row; the extract is derived from it.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/paper/abc1230000000000.md",
+      },
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
+  });
+
+  it("runList(true) prefers the original however the two artefacts are ordered", async () => {
+    // The walk's order is the provider's, so the preference cannot depend on
+    // which of the pair the listing happened to reach first.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
+      },
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/paper/abc1230000000000.md",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
+  });
+
+  it("runStatus() counts a PDF-only workspace as 1, not 0 (DW-569)", async () => {
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc1230000000000",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
+      },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).toContain(
+      "Raw sources:\t1",
+    );
+  });
+
+  it("runList(true) still prints snapshots when the flat listing throws", async () => {
+    // Each listing gets its own try/catch, as `wiki-retrieve.ts` does: one
+    // failing root must not blank the other — and the operator is TOLD, because
+    // a silently halved listing reads exactly like a small workspace.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc1230000000000.md");
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "listing failed",
+    );
+  });
+
+  it("runList(true) still prints flat sources when the snapshot walk throws", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockRejectedValueOnce(
+      new Error("snapshot walk failed"),
+    );
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["note\tnote.md"]);
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "snapshot walk failed",
+    );
+  });
+
   it("runStatus() prints page count, source count, and provider info", async () => {
     const { listWikiPages } = await import("../wiki");
     const { listRawSources } = await import("../raw");
@@ -455,10 +792,14 @@ describe("CLI command execution", () => {
       embeddingSupport: true,
       embeddingModel: null,
       embeddingModelSource: "default",
+      embeddingModelInEffect: "text-embedding-3-small",
+      embeddingProviderInEffect: "openai",
+      embeddingModelOverridden: false,
       hasApiKey: true,
       apiKeySource: "env",
       ollamaBaseUrl: null,
       ollamaBaseUrlSource: "default",
+      ollamaBaseUrlIssue: null,
       structuredKnowledgeProvider: "anthropic",
       structuredKnowledgeProviderSource: "default",
       structuredKnowledgeModel: "claude-sonnet-4-20250514",
@@ -475,6 +816,186 @@ describe("CLI command execution", () => {
     expect(output).toContain("Raw sources:\t1");
     expect(output).toContain("LLM provider:\tanthropic");
     expect(output).toContain("Embeddings:\tavailable");
+  });
+
+  it("runStatus() counts hashed snapshots alongside flat sources", async () => {
+    // 1 flat + 2 hashed = 3. A count taken from `listRawSources` alone reports
+    // 0 Sources for an Intake-only workspace (DW-437).
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+      { slug: "beta", rawId: "def4560000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/beta/def4560000000000.md" },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Raw sources:\t3");
+  });
+
+  it("runStatus() still prints a count when a raw listing throws", async () => {
+    // The four rows are a parsed shape, so a failing listing must not remove
+    // one — the count degrades to what the surviving listing can see, and the
+    // reason goes to stderr where it cannot be mistaken for a data row.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Raw sources:\t1");
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "listing failed",
+    );
+  });
+
+  it("runStatus() prints NO extra line when the resolver refused nothing", async () => {
+    // The other half of the case above, said out loud. `Label:\tvalue` is a
+    // parsed shape, so a clean config has to print exactly the four rows it
+    // always has — an unconditional fifth row carrying `null` would be a new
+    // field for every reader of this output.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls).toHaveLength(4);
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).not.toContain(
+      "Ollama endpoint:",
+    );
+  });
+
+  it("runStatus() prints the refusal beside the provider verdict (DW-418)", async () => {
+    // THE POINT. "not configured" is the same word for "nothing was ever set"
+    // and for "what you set was thrown away", and only the second one has an
+    // action attached. The resolver already knows which and carries the
+    // sentence; the headless operator is the reader least able to go look,
+    // since there is no Settings screen on this side of the product.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    const issue = ollamaBaseUrlRefusedCopy("env", "localhost:11434");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(
+      effectiveSettings({
+        provider: null,
+        providerSource: "none",
+        model: null,
+        modelSource: "none",
+        configured: false,
+        embeddingSupport: false,
+        hasApiKey: false,
+        apiKeySource: "none",
+        ollamaBaseUrlSource: "none",
+        ollamaBaseUrlIssue: issue,
+      }),
+    );
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const lines = logSpy.mock.calls.map((c) => c[0] as string);
+    expect(lines).toContain("LLM provider:\tnot configured");
+    expect(lines).toContain(`Ollama endpoint:\t${issue}`);
+    // BESIDE the verdict, not somewhere further down the output.
+    expect(lines.indexOf(`Ollama endpoint:\t${issue}`)).toBe(
+      lines.indexOf("LLM provider:\tnot configured") + 1,
+    );
+    // The row names its OWN subject. "Provider note" under a `LLM provider:`
+    // line reads as a qualification of that line, which is wrong even here and
+    // actively misleading on the configured case below.
+    expect(lines.join("\n")).not.toContain("Provider note:");
+    // The sentence is the resolver's, unchanged — not a second wording composed
+    // for the CLI, which would be free to drift from the one the web surface and
+    // the warn line already share.
+    expect(lines.join("\n")).toContain("OLLAMA_BASE_URL is not an absolute http(s) URL");
+  });
+
+  it("runStatus() still prints the endpoint refusal when a provider IS configured", async () => {
+    // A deployment running `anthropic` can still carry a typo'd
+    // `OLLAMA_BASE_URL`, and the resolver still refuses it. Suppressing the
+    // sentence whenever a provider resolved would hide it from the one reader
+    // with no Settings screen to go and look at — so the row is gated on the
+    // ISSUE, never on the verdict, and its label is what keeps it from reading
+    // as a note on a line that succeeded.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    const issue = ollamaBaseUrlRefusedCopy("env", "localhost:11434");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(
+      effectiveSettings({ ollamaBaseUrlIssue: issue }),
+    );
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const lines = logSpy.mock.calls.map((c) => c[0] as string);
+    expect(lines).toContain("LLM provider:\tanthropic");
+    expect(lines).toContain(`Ollama endpoint:\t${issue}`);
+    // NOT a note on the verdict above it: the label says what it is about, so
+    // the successful `anthropic` line is not read as being qualified.
+    expect(lines.join("\n")).not.toContain("Provider note:");
+  });
+
+  it("runStatus() warms the config cache BEFORE reading effective settings (DW-502)", async () => {
+    // ORDER is the whole assertion. `getEffectiveSettings()` is synchronous and
+    // reads the store through `loadConfigSync()`, which answers `{}` until an
+    // async load has warmed the cache — so a `readConfig()` that ran after it,
+    // or not at all, leaves a cold CLI process reporting env-only settings.
+    // `readConfig()` warms that cache exactly as `loadConfig()` did (DW-549);
+    // what it adds is the absent/unreadable distinction, not a different read.
+    //
+    // This suite mocks `../config` wholesale, so it can only pin the CALL, never
+    // the effect: a mocked `getEffectiveSettings` returns a full object whatever
+    // the cache holds. `cli-status-config-load.test.ts` pins the effect against
+    // the real module and a real store.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings, readConfig } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(vi.mocked(readConfig)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getEffectiveSettings)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(readConfig).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(getEffectiveSettings).mock.invocationCallOrder[0],
+    );
   });
 
   it("runQuery() prints answer to stdout and sources to stderr", async () => {
@@ -885,6 +1406,44 @@ describe("CLI command execution", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  /**
+   * Pins the LITERAL at the call site, independent of the behavioural rows in
+   * `cli-lifecycle.test.ts`. The conflict guard's `null` is what authorizes the
+   * create, so it must neither be served from the ref-counted global
+   * `pageCache` (`fresh`, DW-195) nor be a non-ENOENT storage failure flattened
+   * into "no page here" (`strict`, DW-378).
+   */
+  it("runCreate() reads the conflict guard fresh and strict", async () => {
+    const { readWikiPage, validateSlug } = await import("../wiki");
+    vi.mocked(validateSlug).mockImplementation(() => {});
+    vi.mocked(readWikiPage).mockResolvedValueOnce(null);
+
+    const { serializeFrontmatter } = await import("../frontmatter");
+    vi.mocked(serializeFrontmatter).mockReturnValueOnce("---\ntitle: Fresh Page\n---\nBody");
+
+    const { extractSummary } = await import("../ingest");
+    vi.mocked(extractSummary).mockReturnValueOnce("Body");
+
+    const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+    vi.mocked(writeWikiPageWithSideEffects).mockResolvedValueOnce({
+      slug: "fresh-page",
+      updatedSlugs: [],
+    });
+
+    const originalStdin = process.stdin;
+    const mockStdin = new (await import("stream")).Readable();
+    mockStdin.push("Body");
+    mockStdin.push(null);
+    Object.defineProperty(process, "stdin", { value: mockStdin, writable: true });
+
+    const { runCreate } = await import("../../cli");
+    await runCreate("fresh-page", "Fresh Page");
+
+    Object.defineProperty(process, "stdin", { value: originalStdin, writable: true });
+
+    expect(readWikiPage).toHaveBeenCalledWith("fresh-page", { fresh: true, strict: true });
+  });
+
   it("runCreate() propagates error for invalid slug", async () => {
     const { validateSlug } = await import("../wiki");
     vi.mocked(validateSlug).mockImplementation(() => {
@@ -996,6 +1555,9 @@ describe("CLI command execution", () => {
     expect(logSpy).toHaveBeenCalledWith("Updated: test-page");
     expect(logSpy).toHaveBeenCalledWith("  Title: New Title");
     expect(logSpy).toHaveBeenCalledWith("  Cross-referenced: related-page");
+    expect(writeWikiPageWithSideEffects).toHaveBeenCalledWith(
+      expect.objectContaining({ validateNewLinkTargets: true }),
+    );
   });
 
   it("runUpdate() preserves existing title when --title omitted", async () => {
@@ -1143,6 +1705,54 @@ describe("CLI command execution", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  /**
+   * Pins the LITERAL at the call site. These bytes are the merge base — they
+   * become `expectedContent` on the write below — so they must come from
+   * storage rather than a superseded entry a bulk scan is holding open
+   * (`fresh`, DW-195), and a non-ENOENT blip must not read back as a Page that
+   * does not exist (`strict`, DW-378).
+   */
+  it("runUpdate() reads the merge base fresh and strict", async () => {
+    const { readWikiPageWithFrontmatter, validateSlug } = await import("../wiki");
+    vi.mocked(validateSlug).mockImplementation(() => {});
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "fresh-base",
+      title: "Fresh Base",
+      content: "---\ntitle: Fresh Base\n---\nOld body",
+      path: "/wiki/fresh-base.md",
+      frontmatter: { title: "Fresh Base" },
+      body: "Old body",
+    });
+
+    const { serializeFrontmatter } = await import("../frontmatter");
+    vi.mocked(serializeFrontmatter).mockReturnValueOnce("---\ntitle: Fresh Base\n---\nNew body");
+
+    const { extractSummary } = await import("../ingest");
+    vi.mocked(extractSummary).mockReturnValueOnce("New body");
+
+    const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+    vi.mocked(writeWikiPageWithSideEffects).mockResolvedValueOnce({
+      slug: "fresh-base",
+      updatedSlugs: [],
+    });
+
+    const originalStdin = process.stdin;
+    const mockStdin = new (await import("stream")).Readable();
+    mockStdin.push("New body");
+    mockStdin.push(null);
+    Object.defineProperty(process, "stdin", { value: mockStdin, writable: true });
+
+    const { runUpdate } = await import("../../cli");
+    await runUpdate("fresh-base");
+
+    Object.defineProperty(process, "stdin", { value: originalStdin, writable: true });
+
+    expect(readWikiPageWithFrontmatter).toHaveBeenCalledWith("fresh-base", {
+      fresh: true,
+      strict: true,
+    });
+  });
+
   it("runUpdate() exits with error when stdin is empty", async () => {
     const { readWikiPageWithFrontmatter, validateSlug } = await import("../wiki");
     vi.mocked(validateSlug).mockImplementation(() => {});
@@ -1214,36 +1824,5 @@ describe("CLI command execution", () => {
     await expect(runDelete("nonexistent")).rejects.toThrow(
       "page not found: nonexistent",
     );
-  });
-
-  it("runPublish() prints publish result", async () => {
-    const { publishToCommons } = await import("../publish");
-    vi.mocked(publishToCommons).mockResolvedValueOnce({
-      slug: "my-topic",
-      previousType: "agent-knowledge",
-      owner: "alice",
-      agent: "alice--yoyo",
-    });
-
-    const { runPublish } = await import("../../cli");
-    await runPublish("my-topic", "alice--yoyo");
-
-    expect(logSpy).toHaveBeenCalledWith('Published "my-topic" to commons');
-    expect(logSpy).toHaveBeenCalledWith("  Previous type: agent-knowledge");
-    expect(logSpy).toHaveBeenCalledWith("  Owner: alice");
-    expect(logSpy).toHaveBeenCalledWith("  Agent: alice--yoyo");
-  });
-
-  it("runPublish() exits 1 on error", async () => {
-    const { publishToCommons } = await import("../publish");
-    vi.mocked(publishToCommons).mockRejectedValueOnce(
-      new Error("Page not found: no-such-page"),
-    );
-
-    const { runPublish } = await import("../../cli");
-    await expect(runPublish("no-such-page", "alice--yoyo")).rejects.toThrow("process.exit");
-
-    expect(errorSpy).toHaveBeenCalledWith("Publish failed: Page not found: no-such-page");
-    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

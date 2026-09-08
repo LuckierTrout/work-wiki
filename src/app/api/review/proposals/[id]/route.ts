@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 import {
   applyMemoryChangeProposal,
   getMemoryProposalReview,
@@ -81,6 +82,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       { status: 400 },
     );
   } catch (error) {
+    // Deployment read-only (DW-188). NO route-level gate here on purpose: the
+    // rule says a route adds its own check only where the kernel refusal lands
+    // too late, and it does not. `applyMemoryChangeProposal` reaches
+    // `writeWikiPageWithSideEffects` before it marks the proposal accepted,
+    // before `recordOperationSafe` and before the knowledge enqueue — so the
+    // refusal aborts with the proposal still pending and nothing committed.
+    // All this catch has to do is not call it a 500.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     const message = getErrorMessage(error);
     return NextResponse.json(
       { error: message },

@@ -1,6 +1,8 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { proposeActionItems, type ActionItem } from "./action-items";
+import { humanOwnerOf } from "./agent-handle";
+import { llmTimeoutOption } from "./config";
 import { getConfiguredModel, hasLLMKey, retryWithBackoff } from "./llm";
 import {
   canonicalizeNamesTerm,
@@ -8,7 +10,7 @@ import {
   renderNamesTermsGuidance,
 } from "./names-terms";
 import { readWikiPageWithFrontmatter } from "./wiki";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 const actionExtractionSchema = z.object({
   actions: z.array(
@@ -33,14 +35,22 @@ export async function extractActionsFromPage(
   owner: string,
   slug: string,
 ): Promise<ActionItem[]> {
-  if (!hasLLMKey()) return [];
+  if (!(await hasLLMKey())) return [];
   const page = await readWikiPageWithFrontmatter(slug);
   if (!page) throw new Error(`Page "${slug}" not found`);
 
   const model = await getConfiguredModel();
-  const dictionary = await listNamesTerms(owner);
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709). A
+  // Workspace Purpose and a Names & Terms dictionary belong to a PERSON, not to
+  // each of that person's agents — `alice--yoyo` keys its own empty tenant, so
+  // resolving guidance from the raw handle would extract against no Purpose and
+  // no dictionary. Reduce ONCE, here, and use it for the two guidance reads
+  // below; `proposeActionItems` keeps the RAW handle, because that one names a
+  // SILO and a reduced handle there would silently repoint the write.
+  const guidanceOwner = humanOwnerOf(owner);
+  const dictionary = await listNamesTerms(guidanceOwner);
   const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
-  const workspaceGuidance = await buildWorkspaceGuidance(owner);
+  const workspaceGuidance = await buildWorkspaceGuidance(guidanceOwner);
   const { output } = await retryWithBackoff(() =>
     generateText({
       model,
@@ -55,6 +65,8 @@ export async function extractActionsFromPage(
         (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : ""),
       prompt: `Source page: ${page.title} (${slug}.md)\n\n${page.content.slice(0, 80_000)}`,
       maxOutputTokens: 2_500,
+      // Inside the thunk, so each retry gets its own fresh deadline.
+      ...llmTimeoutOption(),
     }),
   );
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as embeddings from "../embeddings";
+import * as config from "../config";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -11,9 +12,12 @@ import type { WritePageOptions } from "../lifecycle";
 import {
   ensureDirectories,
   readWikiPage,
+  readWikiPageWithFrontmatter,
   writeWikiPage,
   listWikiPages,
+  listReadableWikiPages,
   readLog,
+  tenantForOwner,
 } from "../wiki";
 import { updateIndex } from "../wiki";
 import { listRevisions, readRevisionMeta, saveRevision } from "../revisions";
@@ -21,6 +25,10 @@ import { resolveAlias, buildAliasIndex, resetAliasIndex } from "../alias-index";
 import { serializeFrontmatter } from "../frontmatter";
 import { getStorage, _resetStorage } from "../storage";
 import { registerAgent, getAgent } from "../agents";
+import { _resetLocks, _setDurableLocksForTests, withDurableLock } from "../lock";
+import { getPageIndexDirtySlugs, rebuildPageIndex } from "../page-index";
+import { canReadSlug } from "../authz";
+import { logger } from "../logger";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -41,7 +49,9 @@ beforeEach(async () => {
   // Isolate DATA_DIR so the per-tenant silo mirror (tenants/…, relative to the
   // data dir) and derived indexes land under tmp, not the repo cwd.
   process.env.DATA_DIR = tmpDir;
+  _resetLocks();
   _resetStorage();
+  _setDurableLocksForTests(false);
   await ensureDirectories();
 });
 
@@ -62,6 +72,7 @@ afterEach(async () => {
     process.env.DATA_DIR = originalDataDir;
   }
   _resetStorage();
+  _setDurableLocksForTests(false);
   await fs.rm(tmpDir, { recursive: true, force: true });
   resetAliasIndex();
 });
@@ -88,11 +99,106 @@ async function readIndex(): Promise<string> {
   return fs.readFile(indexPath, "utf-8");
 }
 
+const enoent = (key: string): Error =>
+  Object.assign(new Error(`ENOENT: no such file, open '${key}'`), { code: "ENOENT" });
+
+/**
+ * Present a genuinely case-SENSITIVE store for ONE slug: only the exact keys in
+ * `present` answer, and every OTHER `.md` case spelling of that slug — under any
+ * root — is ENOENT to `readFile` and `deleteFile` and ABSENT to
+ * `writeFileIfAbsent`. Every key outside that slug's spellings goes to the real
+ * filesystem provider.
+ *
+ * MODULE SCOPE because both case-variant describes below read the same store:
+ * the delete door (DW-741) and the create door (DW-740) ask the same question of
+ * the same simulation, and a copy per describe would let the two drift.
+ *
+ * BLACKLISTING ONLY THE CANONICAL NAME IS NOT ENOUGH, which is the trap here:
+ * the host volume folds case, so `cased.Md` and `cased.mD` would still resolve
+ * the file staged as `cased.MD` and the probe would see THREE hits where a
+ * case-sensitive store presents one — the test would then pass on the election's
+ * tie-break rather than on the fix.
+ *
+ * `writeFileIfAbsent` IS FAKED FOR HIDDEN KEYS RATHER THAN DELEGATED, and that
+ * is what makes the create rows mean anything: a hidden spelling is genuinely
+ * absent in the store being simulated, so the create must be reported as having
+ * landed — but performing it for real on the folding host volume would resolve
+ * `wiki/cased.md` onto the staged `wiki/cased.MD` and overwrite the very object
+ * under test, and the row would then pass on the host's case folding instead of
+ * on the refusal. Present (staged) keys and every unrelated key still go to the
+ * real provider, so an ordinary create is unaffected.
+ *
+ * `restore` is hygiene rather than isolation (this file's `afterEach` calls
+ * `_resetStorage()`, so the next `getStorage()` is a fresh provider anyway), but
+ * a spy left on would still see the rest of THIS test.
+ */
+function simulateCaseSensitive(slug: string, present: string[]) {
+  const presentKeys = new Set(present);
+  const spellingOfSlug = new RegExp(`(?:^|/)${slug}\\.md$`, "i");
+  const hidden = (key: string): boolean =>
+    spellingOfSlug.test(key) && !presentKeys.has(key);
+
+  const storage = getStorage();
+  const realRead = storage.readFile.bind(storage);
+  const realDelete = storage.deleteFile.bind(storage);
+  const realWriteIfAbsent = storage.writeFileIfAbsent.bind(storage);
+  const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
+    if (hidden(key)) throw enoent(key);
+    return realRead(key);
+  });
+  const deleteFile = vi.spyOn(storage, "deleteFile").mockImplementation(async (key) => {
+    if (hidden(key)) throw enoent(key);
+    return realDelete(key);
+  });
+  const writeFileIfAbsent = vi
+    .spyOn(storage, "writeFileIfAbsent")
+    .mockImplementation(async (key, content) => {
+      if (hidden(key)) return true;
+      return realWriteIfAbsent(key, content);
+    });
+  return {
+    readFile,
+    deleteFile,
+    writeFileIfAbsent,
+    restore: () => {
+      readFile.mockRestore();
+      deleteFile.mockRestore();
+      writeFileIfAbsent.mockRestore();
+    },
+  };
+}
+
 // ===========================================================================
 // writeWikiPageWithSideEffects
 // ===========================================================================
 
 describe("writeWikiPageWithSideEffects", () => {
+  it("resumes side effects when Page bytes landed before the lifecycle receipt", async () => {
+    const content = "# Recovered Page\n\nThe Page bytes landed first.\n";
+    // Production create order is silo first, flat compatibility copy second.
+    // Seed only the silo to reproduce a crash between those two writes.
+    await writeWikiPage("recovered-page", content, undefined, undefined, "yopedia");
+    const receiptPath = "lifecycle-receipts/recovered-page.json";
+    const options = makeOpts({
+      slug: "recovered-page",
+      title: "Recovered Page",
+      content,
+      summary: "Recovered lifecycle",
+      createOnly: true,
+      idempotency: { key: "research-recovered-page-v1", receiptPath },
+    });
+
+    await writeWikiPageWithSideEffects(options);
+    await writeWikiPageWithSideEffects(options);
+
+    expect((await listWikiPages()).filter((entry) => entry.slug === "recovered-page"))
+      .toHaveLength(1);
+    expect(await fs.readFile(path.join(process.env.WIKI_DIR!, "recovered-page.md"), "utf-8"))
+      .toBe(content);
+    expect(await getStorage().readFile(receiptPath)).toContain("research-recovered-page-v1");
+    expect((await readLog())?.match(/ingest \| Recovered Page/g)).toHaveLength(1);
+  });
+
   // 1. Creates page file
   it("creates the wiki page file with correct content", async () => {
     const opts = makeOpts();
@@ -132,6 +238,13 @@ describe("writeWikiPageWithSideEffects", () => {
 
   // Embedding: skipped for saved html artifacts, run for normal pages.
   it("embeds a normal page but SKIPS embedding for an html artifact", async () => {
+    vi.spyOn(config, "getVectorSearchSettings").mockReturnValue({
+      enabled: true,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
     const spy = vi.spyOn(embeddings, "upsertEmbedding").mockResolvedValue();
 
     await writeWikiPageWithSideEffects(makeOpts({ slug: "normal-page" }));
@@ -149,6 +262,20 @@ describe("writeWikiPageWithSideEffects", () => {
     );
     expect(spy).not.toHaveBeenCalled();
 
+    spy.mockRestore();
+  });
+
+  it("does not embed when vector search is off", async () => {
+    vi.spyOn(config, "getVectorSearchSettings").mockReturnValue({
+      enabled: false,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    });
+    const spy = vi.spyOn(embeddings, "upsertEmbedding").mockResolvedValue();
+    await writeWikiPageWithSideEffects(makeOpts({ slug: "no-embed" }));
+    expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
 
@@ -293,6 +420,309 @@ describe("writeWikiPageWithSideEffects", () => {
     expect(entries.map((e) => e.slug)).toContain("second");
   });
 
+  it("serializes shared index read-modify-write across simulated Worker isolates", async () => {
+    _setDurableLocksForTests(true);
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let releaseRead!: () => void;
+    let firstIndexRead!: () => void;
+    const paused = new Promise<void>((resolve) => { firstIndexRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let indexReads = 0;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      if (String(rel).endsWith("index.md")) {
+        indexReads += 1;
+        if (indexReads === 1) {
+          firstIndexRead();
+          await release;
+        }
+      }
+      return originalRead(rel);
+    });
+
+    const first = writeWikiPageWithSideEffects(
+      makeOpts({ slug: "isolate-one", title: "Isolate One", crossRefSource: null }),
+    );
+    await paused;
+    _resetLocks();
+    const second = writeWikiPageWithSideEffects(
+      makeOpts({ slug: "isolate-two", title: "Isolate Two", crossRefSource: null }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(indexReads).toBe(1);
+
+    releaseRead();
+    await Promise.all([first, second]);
+    const slugs = (await listWikiPages()).map((entry) => entry.slug);
+    expect(slugs).toEqual(expect.arrayContaining(["isolate-one", "isolate-two"]));
+  }, 15_000);
+
+  it("serializes one Page and its derived metadata across simulated Worker isolates", async () => {
+    const initial = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared\n\nInitial.",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Shared", content: initial, summary: "Initial", crossRefSource: null,
+    }));
+    _setDurableLocksForTests(true);
+    const research = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Research title\n\nResearch body.",
+    );
+    const owner = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Owner title\n\nOwner body.",
+    );
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let paused!: () => void;
+    let release!: () => void;
+    const atIndex = new Promise<void>((resolve) => { paused = resolve; });
+    const continueIndex = new Promise<void>((resolve) => { release = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      if (pauseOnce && String(rel).endsWith("index.md")) {
+        pauseOnce = false;
+        paused();
+        await continueIndex;
+      }
+      return originalRead(rel);
+    });
+
+    const first = writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Research title", content: research,
+      summary: "Research summary", expectedContent: initial, crossRefSource: null,
+    }));
+    await atIndex;
+    _resetLocks();
+    let ownerFinished = false;
+    const second = writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Owner title", content: owner,
+      summary: "Owner summary", expectedContent: research, crossRefSource: null,
+    })).then((value) => {
+      ownerFinished = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(ownerFinished).toBe(false);
+
+    release();
+    await Promise.all([first, second]);
+    expect((await readWikiPage("same-page"))?.content).toBe(owner);
+    expect((await listWikiPages()).find((entry) => entry.slug === "same-page"))
+      .toMatchObject({ title: "Owner title", summary: "Owner summary", owner: "alice", visibility: "private" });
+  }, 15_000);
+
+  it("rejects a stale flat merge base when the authoritative silo has newer bytes", async () => {
+    const initial = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nInitial.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "stale-flat",
+      title: "Page",
+      content: initial,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    const ownerEdit = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nOwner edit.\n",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/stale-flat.md", ownerEdit);
+    const staleAutomation = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Page\n\nStale automation.\n",
+    );
+
+    await expect(writeWikiPageWithSideEffects(makeOpts({
+      slug: "stale-flat",
+      title: "Page",
+      content: staleAutomation,
+      crossRefSource: null,
+      expectedContent: initial,
+    }))).rejects.toThrow(/changed/i);
+    expect(await getStorage().readFile("tenants/alice/wiki/stale-flat.md"))
+      .toBe(ownerEdit);
+  });
+
+  it("prefers the globally indexed owner over a caller's crash-recovery hint", async () => {
+    const bob = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Shared slug\n\nBob committed this Page.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "shared-owner",
+      title: "Shared slug",
+      content: bob,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    await rebuildPageIndex();
+
+    const aliceOrphan = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared slug\n\nAlice crash-left orphan.\n",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/shared-owner.md", aliceOrphan);
+
+    const page = await readWikiPageWithFrontmatter("shared-owner", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    });
+    expect(page?.frontmatter.owner).toBe("bob");
+    expect(page?.body).toContain("Bob committed this Page");
+    expect(page?.body).not.toContain("Alice crash-left orphan");
+  });
+
+  it("recovers a crash-left silo that neither the index nor the flat path knows", async () => {
+    // The POSITIVE twin of the case above, and the branch DW-432's ingest-
+    // history orphan listing stands on. Every other owner-hint case in this
+    // repo names an already-committed slug and asserts the hint must NOT
+    // displace it; none proves the hint ever resolves anything. Break this
+    // branch and that listing silently becomes a no-op for its primary orphan
+    // class — a first write whose silo landed before its flat copy and index
+    // entry did — with nothing going red.
+    const orphan = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Crash left\n\nAlice's silo landed; the flat copy never did.\n",
+    );
+    await getStorage().writeFile(
+      `tenants/${tenantForOwner("alice")}/wiki/silo-only.md`,
+      orphan,
+    );
+    await rebuildPageIndex();
+
+    // The drift is real, not a fixture shortcut: no index row, no flat copy.
+    expect((await listWikiPages()).map((e) => e.slug)).not.toContain(
+      "silo-only",
+    );
+    await expect(
+      getStorage().fileExists("wiki/silo-only.md"),
+    ).resolves.toBe(false);
+
+    const page = await readWikiPageWithFrontmatter("silo-only", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    });
+
+    expect(page?.frontmatter.owner).toBe("alice");
+    expect(page?.body).toContain("Alice's silo landed");
+
+    // …and it stays invisible WITHOUT the hint, which is what makes the hint —
+    // rather than some other fallback — the thing this case actually pins.
+    await expect(
+      readWikiPageWithFrontmatter("silo-only", { fresh: true, strict: true }),
+    ).resolves.toBeNull();
+  });
+
+  it("leaves no global Page when authoritative create fails and succeeds on retry", async () => {
+    const content = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Partial\n\nRetryable publication.\n",
+    );
+    const options = makeOpts({
+      slug: "partial-create",
+      title: "Partial",
+      content,
+      crossRefSource: null,
+      createOnly: true,
+    });
+    const storage = getStorage();
+    const originalCreate = storage.writeFileIfAbsent.bind(storage);
+    let failSilo = true;
+    const createSpy = vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(
+      async (target, body) => {
+        if (failSilo && target === "tenants/alice/wiki/partial-create.md") {
+          throw new Error("silo unavailable");
+        }
+        return originalCreate(target, body);
+      },
+    );
+
+    await expect(writeWikiPageWithSideEffects(options)).rejects.toThrow("silo unavailable");
+    await expect(storage.fileExists("wiki/partial-create.md")).resolves.toBe(false);
+    await expect(readWikiPage("partial-create", { fresh: true, strict: true }))
+      .resolves.toBeNull();
+
+    failSilo = false;
+    await expect(writeWikiPageWithSideEffects(options)).resolves.toMatchObject({
+      slug: "partial-create",
+    });
+    createSpy.mockRestore();
+    expect((await readWikiPageWithFrontmatter("partial-create", {
+      fresh: true,
+      strict: true,
+    }))?.frontmatter.owner).toBe("alice");
+  });
+
+  it("compensates a new silo when the global slug claim is already held", async () => {
+    const alice = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared\n\nAlice.\n",
+    );
+    const storage = getStorage();
+    const originalCreate = storage.writeFileIfAbsent.bind(storage);
+    let injectClaim = true;
+    const createSpy = vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(async (target, body) => {
+      const created = await originalCreate(target, body);
+      if (injectClaim && target === "tenants/alice/wiki/claimed-create.md") {
+        injectClaim = false;
+        await storage.writeFile(
+          "wiki/claimed-create.md",
+          serializeFrontmatter({ owner: "bob", visibility: "private" }, "# Shared\n\nBob.\n"),
+        );
+      }
+      return created;
+    });
+    const options = makeOpts({
+      slug: "claimed-create",
+      title: "Shared",
+      content: alice,
+      crossRefSource: null,
+      createOnly: true,
+    });
+
+    await expect(writeWikiPageWithSideEffects(options)).rejects.toThrow(/already exists/i);
+    await expect(storage.fileExists("tenants/alice/wiki/claimed-create.md"))
+      .resolves.toBe(false);
+
+    await storage.deleteFile("wiki/claimed-create.md");
+    await expect(writeWikiPageWithSideEffects(options)).resolves.toMatchObject({
+      slug: "claimed-create",
+    });
+    createSpy.mockRestore();
+  });
+
+  it("fails a slug authorization check closed when its authoritative silo cannot be read", async () => {
+    const content = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Private\n\nSecret Page.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "authz-read-failure",
+      title: "Private",
+      content,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "tenants/alice/wiki/authz-read-failure.md") {
+        throw new Error("injected authoritative read failure");
+      }
+      return originalRead(target);
+    });
+
+    await expect(canReadSlug("authz-read-failure", null)).resolves.toBe(false);
+  });
+
   it("crossRefSource defaults to content when undefined", async () => {
     // Without an LLM key, findRelatedPages returns []. We just verify
     // it doesn't throw and completes successfully (exercising the
@@ -397,6 +827,234 @@ describe("deleteWikiPage", () => {
     expect(result.strippedBacklinksFrom).not.toContain("bystander");
   });
 
+  it("serializes target recreation after delete backlink cleanup", async () => {
+    await writeWikiPage("linker", "# Linker\n\nSee [Target](target.md).\n");
+    await writeWikiPage("target", "# Target\n\nOld target.\n");
+    await updateIndex([
+      { title: "Linker", slug: "linker", summary: "Has link" },
+      { title: "Target", slug: "target", summary: "Target" },
+    ]);
+
+    let releaseLinker!: () => void;
+    let markLinkerHeld!: () => void;
+    const linkerHeld = new Promise<void>((resolve) => { markLinkerHeld = resolve; });
+    const held = withDurableLock("page-lifecycle:linker", async () => {
+      markLinkerHeld();
+      await new Promise<void>((resolve) => { releaseLinker = resolve; });
+    });
+    await linkerHeld;
+
+    const deleting = deleteWikiPage("target");
+    while (await readWikiPage("target", { fresh: true })) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const recreating = writeWikiPageWithSideEffects({
+      slug: "target",
+      title: "Target",
+      content: "# Target\n\nRecreated target.\n",
+      summary: "Recreated",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    releaseLinker();
+    await held;
+    const result = await deleting;
+    await recreating;
+
+    expect((await readWikiPage("target"))!.content).toContain("Recreated target");
+    expect((await readWikiPage("linker"))!.content).not.toContain("target.md");
+    expect(result.strippedBacklinksFrom).toContain("linker");
+  }, 15_000);
+
+  it("retries backlink stripping against a concurrent owner edit", async () => {
+    await writeWikiPage("linker", "# Linker\n\nSee [Target](target.md).\n");
+    await writeWikiPage("target", "# Target\n\nOld target.\n");
+    await updateIndex([
+      { title: "Linker", slug: "linker", summary: "Has link" },
+      { title: "Target", slug: "target", summary: "Target" },
+    ]);
+
+    let releaseLinker!: () => void;
+    let markLinkerHeld!: () => void;
+    const linkerHeld = new Promise<void>((resolve) => { markLinkerHeld = resolve; });
+    const held = withDurableLock("page-lifecycle:linker", async () => {
+      markLinkerHeld();
+      await new Promise<void>((resolve) => { releaseLinker = resolve; });
+    });
+    await linkerHeld;
+
+    const deleting = deleteWikiPage("target");
+    while (await readWikiPage("target", { fresh: true })) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    await writeWikiPage(
+      "linker",
+      "# Linker\n\nOwner edit retained [Target](target.md).\n",
+    );
+    releaseLinker();
+    await held;
+    const result = await deleting;
+
+    const linker = await readWikiPage("linker");
+    expect(linker!.content).toContain("Owner edit retained");
+    expect(linker!.content).not.toContain("target.md");
+    expect(result.strippedBacklinksFrom).toContain("linker");
+  }, 15_000);
+
+  it("fails closed for a nested slug after a page-index sync failure", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Secret\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "queries/secret",
+      title: "Secret",
+      content: publicContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    const writeSpy = vi.spyOn(storage, "writeFile").mockImplementation(
+      async (target, content) => {
+        if (target === "derived-indexes/pages.json") {
+          throw new Error("page index unavailable");
+        }
+        return originalWrite(target, content);
+      },
+    );
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Secret\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "queries/secret",
+      title: "Secret",
+      content: privateContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    writeSpy.mockRestore();
+
+    expect(await getPageIndexDirtySlugs()).toContain("queries/secret");
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("queries/secret");
+    expect((await listReadableWikiPages({ id: "alice-id", handle: "alice" }))
+      .map((entry) => entry.slug)).toContain("queries/secret");
+  });
+
+  it("keeps the privacy dirty marker when page-index sync cannot read its base", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Secret Read\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret-read",
+      title: "Secret Read",
+      content: publicContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let pageIndexReads = 0;
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "derived-indexes/pages.json" && ++pageIndexReads === 2) {
+        throw new Error("page index read unavailable");
+      }
+      return originalRead(target);
+    });
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Secret Read\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret-read",
+      title: "Secret Read",
+      content: privateContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    readSpy.mockRestore();
+
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("secret-read");
+  });
+
+  it("does not expose a stale public flat copy during a later page-index outage", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Index Outage\n\nPublic body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "index-outage",
+      title: "Index Outage",
+      content: publicContent,
+      summary: "Public",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    const matchSpy = vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => {
+        if (target === "wiki/index-outage.md") return false;
+        return originalMatch(target, content, etag);
+      },
+    );
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Index Outage\n\nPrivate body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "index-outage",
+      title: "Index Outage",
+      content: privateContent,
+      summary: "Private",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    matchSpy.mockRestore();
+
+    expect(await storage.readFile("wiki/index-outage.md")).toBe(publicContent);
+    expect(await getPageIndexDirtySlugs()).not.toContain("index-outage");
+
+    const originalRead = storage.readFile.bind(storage);
+    let failIndexOnce = true;
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "derived-indexes/pages.json" && failIndexOnce) {
+        failIndexOnce = false;
+        throw new Error("transient page-index outage");
+      }
+      return originalRead(target);
+    });
+
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("index-outage");
+    failIndexOnce = true;
+    const direct = await readWikiPageWithFrontmatter("index-outage", { fresh: true });
+    expect(direct?.frontmatter.visibility).toBe("private");
+    expect(direct?.body).toContain("Private body");
+    readSpy.mockRestore();
+  });
+
   // 14b. Backlink-strip revisions carry author="system"
   it("creates a revision with author 'system' when stripping backlinks", async () => {
     await writeWikiPage(
@@ -442,16 +1100,46 @@ describe("deleteWikiPage", () => {
     await saveRevision("rev-page", "# Rev Page\n\nOld version.\n");
     await new Promise((r) => setTimeout(r, 15));
     await saveRevision("rev-page", "# Rev Page\n\nOlder version.\n");
+    await saveRevision("rev-page", "# Rev Page\n\nTenant version.\n", undefined, undefined, "yopedia");
 
     // Verify revisions exist
     const revsBefore = await listRevisions("rev-page");
     expect(revsBefore.length).toBeGreaterThanOrEqual(1);
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(1);
 
     await deleteWikiPage("rev-page");
 
     // Revisions should be gone
     const revsAfter = await listRevisions("rev-page");
     expect(revsAfter).toHaveLength(0);
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(0);
+  });
+
+  it("keeps the Page retryable when required tenant revision erasure fails", async () => {
+    await writeWikiPage("rev-page", "# Rev Page\n\nVersion 1.\n");
+    await updateIndex([
+      { title: "Rev Page", slug: "rev-page", summary: "Has revisions" },
+    ]);
+    await saveRevision("rev-page", "# Rev Page\n\nTenant history.\n", undefined, undefined, "yopedia");
+    const storage = getStorage();
+    const originalDeleteDirectory = storage.deleteDirectory.bind(storage);
+    let failTenantCleanup = true;
+    vi.spyOn(storage, "deleteDirectory").mockImplementation(async (target) => {
+      if (failTenantCleanup && target === "tenants/yopedia/wiki/.revisions/rev-page") {
+        failTenantCleanup = false;
+        throw new Error("tenant revision store unavailable");
+      }
+      return originalDeleteDirectory(target);
+    });
+
+    await expect(deleteWikiPage("rev-page"))
+      .rejects.toThrow(/tenant revision store unavailable/i);
+    expect(await readWikiPage("rev-page", { fresh: true, strict: true })).not.toBeNull();
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(1);
+
+    await deleteWikiPage("rev-page");
+    expect(await readWikiPage("rev-page", { fresh: true, strict: true })).toBeNull();
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(0);
   });
 
   // 17. Validates slug
@@ -507,6 +1195,403 @@ describe("deleteWikiPage", () => {
 
     const result = await deleteWikiPage("my-page");
     expect(result.slug).toBe("my-page");
+  });
+});
+
+// ===========================================================================
+// deleteWikiPage on a case-SENSITIVE store (DW-741)
+//
+// DW-489/490 moved the read and write doors onto the stored OBJECT that carries
+// a slug, so a Page held on `wiki/cased.MD` is live, listed, readable and
+// writable. The delete door did not move with it: it unlinked exactly
+// `<slug>.md` and swallowed ENOENT, so a hard delete of a variant-held Page
+// reported success, removed nothing, and the next read served the full body.
+//
+// The store is SIMULATED because the dev host's volume folds case — every
+// spelling is one file there, so the object this describe is about cannot be
+// staged on disk at all.
+// ===========================================================================
+
+describe("deleteWikiPage case-variant targets", () => {
+  it("removes the variant object the pre-delete read was shown", async () => {
+    // The headline data-loss symptom: before DW-741 this delete reported success
+    // while `wiki/cased.MD` survived, and the very next read served the body back.
+    const storage = getStorage();
+    await storage.writeFile("wiki/cased.MD", "# Cased\n\nvariant body.\n");
+    await updateIndex([{ title: "Cased", slug: "cased", summary: "Variant-held" }]);
+
+    const sim = simulateCaseSensitive("cased", ["wiki/cased.MD"]);
+    try {
+      await expect(deleteWikiPage("cased")).resolves.toMatchObject({ slug: "cased" });
+
+      // The reported success is real, not vacuous: no spelling reads back.
+      expect(await readWikiPage("cased", { fresh: true })).toBeNull();
+      expect(sim.deleteFile).toHaveBeenCalledWith("wiki/cased.MD");
+    } finally {
+      sim.restore();
+    }
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.MD");
+  });
+
+  it("removes a variant held inside the tenant silo the index routes to", async () => {
+    // The silo is the PRODUCTION-normal root, and it is the primary delete
+    // target — a fix pinned only on the flat copy would leave the authoritative
+    // object behind. `deleteTenant` comes from the pre-delete read's owner
+    // frontmatter, which the recovery had to serve for this to resolve at all.
+    await writeWikiPageWithSideEffects({
+      slug: "cased",
+      title: "Cased",
+      content: serializeFrontmatter({ owner: "alice" }, "# Cased\n\nSilo body."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    // The page index is what routes a slug to its silo, and it must be built
+    // while the canonical spellings are still on disk — after the rename the
+    // scan that feeds it has nothing to walk.
+    await rebuildPageIndex();
+    // Park the silo object on the variant spelling and drop the flat copy, so
+    // `tenants/alice/wiki/cased.MD` is the only object carrying the slug.
+    const siloDir = path.join(tmpDir, "tenants", "alice", "wiki");
+    await fs.rename(path.join(siloDir, "cased.md"), path.join(siloDir, "cased.MD"));
+    await fs.rm(path.join(tmpDir, "wiki", "cased.md"));
+
+    const sim = simulateCaseSensitive("cased", ["tenants/alice/wiki/cased.MD"]);
+    try {
+      await expect(deleteWikiPage("cased")).resolves.toMatchObject({ slug: "cased" });
+
+      expect(sim.deleteFile).toHaveBeenCalledWith("tenants/alice/wiki/cased.MD");
+      expect(await readWikiPage("cased", { fresh: true })).toBeNull();
+    } finally {
+      sim.restore();
+    }
+    expect(await fs.readdir(siloDir)).not.toContain("cased.MD");
+  });
+
+  it("removes a variant under BOTH roots, each resolved independently", async () => {
+    // The delete runs two resolutions, one per root, and the flat copy is what
+    // `readWikiPage` falls back to. A fix that moved only one of them would
+    // leave a readable object behind, so the both-roots shape is its own case —
+    // and the two spellings differ here so neither resolution can stand in for
+    // the other.
+    await writeWikiPageWithSideEffects({
+      slug: "cased",
+      title: "Cased",
+      content: serializeFrontmatter({ owner: "alice" }, "# Cased\n\nBoth roots."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await rebuildPageIndex();
+    const siloDir = path.join(tmpDir, "tenants", "alice", "wiki");
+    await fs.rename(path.join(siloDir, "cased.md"), path.join(siloDir, "cased.MD"));
+    await fs.rename(
+      path.join(tmpDir, "wiki", "cased.md"),
+      path.join(tmpDir, "wiki", "cased.Md"),
+    );
+
+    const sim = simulateCaseSensitive("cased", [
+      "tenants/alice/wiki/cased.MD",
+      "wiki/cased.Md",
+    ]);
+    try {
+      await expect(deleteWikiPage("cased")).resolves.toMatchObject({ slug: "cased" });
+
+      expect(sim.deleteFile).toHaveBeenCalledWith("tenants/alice/wiki/cased.MD");
+      expect(sim.deleteFile).toHaveBeenCalledWith("wiki/cased.Md");
+      expect(await readWikiPage("cased", { fresh: true })).toBeNull();
+    } finally {
+      sim.restore();
+    }
+    expect(await fs.readdir(siloDir)).not.toContain("cased.MD");
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.Md");
+  });
+
+  it("unlinks the canonical key and probes no variant when `<slug>.md` is present", async () => {
+    // The case-INSENSITIVE store's shape: the canonical spelling resolves the
+    // object under both roots, so the ENOENT-gated probe is unreachable and this
+    // delete targets exactly the keys it targeted before DW-741.
+    const storage = getStorage();
+    await writeWikiPageWithSideEffects({
+      slug: "plain",
+      title: "Plain",
+      content: "# Plain\n\nBody.\n",
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    const realRead = storage.readFile.bind(storage);
+    const realDelete = storage.deleteFile.bind(storage);
+    const readFile = vi.spyOn(storage, "readFile").mockImplementation(realRead);
+    // Snapshot BOTH call lists at the flat unlink. That is the delete branch's
+    // last storage act, and everything after it — `removeSiloForPage`'s
+    // fail-soft `deleteSafe` on the same canonical silo key, the index rebuild,
+    // the trail — would otherwise satisfy these assertions on the delete
+    // branch's behalf, leaving its own unlink unpinned.
+    let callsAtUnlink: { reads: string[]; deletes: string[] } | null = null;
+    const deleteFile = vi.spyOn(storage, "deleteFile").mockImplementation(async (key) => {
+      if (key === "wiki/plain.md" && callsAtUnlink === null) {
+        callsAtUnlink = {
+          reads: readFile.mock.calls.map(([k]) => String(k)),
+          deletes: deleteFile.mock.calls.map(([k]) => String(k)),
+        };
+      }
+      return realDelete(key);
+    });
+    try {
+      await deleteWikiPage("plain");
+
+      expect(callsAtUnlink).not.toBeNull();
+      expect(callsAtUnlink!.deletes).toContain(
+        `tenants/${tenantForOwner(undefined)}/wiki/plain.md`,
+      );
+      expect(callsAtUnlink!.reads.filter((key) => /plain\.(MD|Md|mD)$/.test(key))).toEqual([]);
+    } finally {
+      readFile.mockRestore();
+      deleteFile.mockRestore();
+    }
+    expect(await readWikiPage("plain", { fresh: true })).toBeNull();
+  });
+
+  it("still issues the canonical unlink under a root that holds no spelling", async () => {
+    // Resolution NARROWS the target; it never turns the delete into a no-op. The
+    // silo holds nothing here, so the canonical silo unlink goes out exactly as
+    // it does today and its ENOENT is swallowed. Snapshotted at the flat unlink
+    // for the same reason as above: the fail-soft cleanup unlinks that key too.
+    const storage = getStorage();
+    await writeWikiPage("flat-only", "# Flat Only\n\nBody.\n");
+    await updateIndex([{ title: "Flat Only", slug: "flat-only", summary: "Flat" }]);
+
+    const realDelete = storage.deleteFile.bind(storage);
+    let deletesAtUnlink: string[] | null = null;
+    const deleteFile = vi.spyOn(storage, "deleteFile").mockImplementation(async (key) => {
+      if (key === "wiki/flat-only.md" && deletesAtUnlink === null) {
+        deletesAtUnlink = deleteFile.mock.calls.map(([k]) => String(k));
+      }
+      return realDelete(key);
+    });
+    try {
+      await expect(deleteWikiPage("flat-only")).resolves.toMatchObject({ slug: "flat-only" });
+      expect(deletesAtUnlink).toEqual([
+        `tenants/${tenantForOwner(undefined)}/wiki/flat-only.md`,
+        "wiki/flat-only.md",
+      ]);
+    } finally {
+      deleteFile.mockRestore();
+    }
+    expect(await readWikiPage("flat-only", { fresh: true })).toBeNull();
+  });
+
+  it("fails the delete before destroying anything when the resolution is indeterminate", async () => {
+    // A non-ENOENT fault must not flatten into "no variant here, nothing to
+    // remove": that is a delete reporting success while the object survives,
+    // which is the very defect DW-741 closes. And because both keys resolve
+    // BEFORE the revision erasure, the abort leaves the Page whole rather than
+    // stripping its history out from under it.
+    const storage = getStorage();
+    await storage.writeFile("wiki/faulty.MD", "# Faulty\n\nvariant body.\n");
+    await updateIndex([{ title: "Faulty", slug: "faulty", summary: "Variant-held" }]);
+    const defaultTenant = tenantForOwner(undefined);
+
+    // The fault is on the SILO variant probe, which only the delete branch's
+    // resolution reaches: with no page-index entry for this slug the pre-delete
+    // read never touches a silo, so the reads that door depends on all succeed.
+    const realRead = storage.readFile.bind(storage);
+    const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
+      if (key === `tenants/${defaultTenant}/wiki/faulty.MD`) {
+        throw new Error("variant store unavailable");
+      }
+      if (/(?:^|\/)faulty\.md$/i.test(key) && key !== "wiki/faulty.MD") throw enoent(key);
+      return realRead(key);
+    });
+    const deleteFile = vi.spyOn(storage, "deleteFile");
+    const deleteDirectory = vi.spyOn(storage, "deleteDirectory");
+    try {
+      await expect(deleteWikiPage("faulty")).rejects.toThrow("variant store unavailable");
+
+      // Nothing was destroyed: no unlink, and the revisions were never erased.
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(deleteDirectory).not.toHaveBeenCalled();
+      expect(await fs.readdir(path.join(tmpDir, "wiki"))).toContain("faulty.MD");
+    } finally {
+      readFile.mockRestore();
+      deleteFile.mockRestore();
+      deleteDirectory.mockRestore();
+    }
+  });
+});
+
+// ===========================================================================
+// createOnly on a case-SENSITIVE store (DW-740)
+//
+// The create door was left addressing the NAME after DW-489/490/741 moved the
+// read, save, delete and existence doors onto the stored OBJECT, because "does
+// `cased.MD` count as the page `cased` already existing?" is a create-conflict
+// RULING rather than a retarget. A human ruled that it does.
+//
+// The gate here is its own half of that ruling: `createOnly` carried a
+// canonical-only precondition of its own, so fixing `createWikiPage` alone would
+// still have published the authoritative SILO copy before anything refused, and
+// the refusal would have arrived through the compensation path instead of ahead
+// of it.
+//
+// Same simulation as the delete describe, for the same reason: the dev host's
+// volume folds case, so the collision cannot be staged on disk at all.
+// ===========================================================================
+
+describe("createOnly on a case-SENSITIVE store (DW-740)", () => {
+  it("refuses a create whose slug is held by a lone flat VARIANT", async () => {
+    // The gate's own row: `wiki/cased.MD` holds the slug, `wiki/cased.md` is
+    // genuinely absent, and before DW-740 the canonical-only precondition read
+    // that absence as "the slug is free".
+    const storage = getStorage();
+    const variantBytes = "# Cased\n\nvariant body.\n";
+    await storage.writeFile("wiki/cased.MD", variantBytes);
+
+    const sim = simulateCaseSensitive("cased", ["wiki/cased.MD"]);
+    try {
+      await expect(
+        writeWikiPageWithSideEffects(makeOpts({
+          slug: "cased",
+          title: "Cased",
+          content: "# Cased\n\nsecond object.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        })),
+      ).rejects.toThrow("already exists");
+
+      // Refused BEFORE the silo was published, which is why the gate had to
+      // move too: not one create-only claim went out, under either root.
+      expect(sim.writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      sim.restore();
+    }
+
+    // The object that holds the slug is untouched, byte for byte.
+    expect(await storage.readFile("wiki/cased.MD")).toBe(variantBytes);
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+  });
+
+  it("refuses a create whose slug is held only by a SILO variant", async () => {
+    // The flat root is genuinely empty here, so the gate passes and the refusal
+    // has to come from `createWikiPage`'s own probe on the authoritative root —
+    // the half of the ruling that lives in `wiki.ts`.
+    const storage = getStorage();
+    const tenant = tenantForOwner(undefined);
+    const siloKey = `tenants/${tenant}/wiki/cased.MD`;
+    const variantBytes = "# Cased\n\nsilo variant body.\n";
+    await storage.writeFile(siloKey, variantBytes);
+
+    const sim = simulateCaseSensitive("cased", [siloKey]);
+    try {
+      await expect(
+        writeWikiPageWithSideEffects(makeOpts({
+          slug: "cased",
+          title: "Cased",
+          content: "# Cased\n\nsecond object.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        })),
+      ).rejects.toThrow("already exists");
+
+      // THE ASSERTION WITH TEETH. The staged variant is hidden from
+      // `writeFileIfAbsent` as well as from `readFile`, so a create over it
+      // would be reported as landing without touching the volume — which means
+      // the two disk assertions below are structurally green either way. Only
+      // this one distinguishes "refused" from "published a second object".
+      expect(sim.writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      sim.restore();
+    }
+
+    expect(await storage.readFile(siloKey)).toBe(variantBytes);
+    // And no flat compatibility copy was published for a slug that was refused.
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+  });
+
+  it("still creates both copies for a slug no spelling holds", async () => {
+    // Refusal must not become the answer for every create: an unrelated free
+    // slug goes to the real provider end to end and lands exactly where it
+    // always landed, silo first and flat compatibility copy second. The
+    // variant-held slug is staged alongside it so the row also pins the
+    // refusal's BLAST RADIUS — a create for `fresh` must not disturb `cased`.
+    const storage = getStorage();
+    const casedBytes = "# Cased\n\nvariant body.\n";
+    await storage.writeFile("wiki/cased.MD", casedBytes);
+    const tenant = tenantForOwner(undefined);
+    const content = "# Fresh\n\nBrand new.\n";
+
+    const sim = simulateCaseSensitive("cased", ["wiki/cased.MD"]);
+    try {
+      await writeWikiPageWithSideEffects(makeOpts({
+        slug: "fresh",
+        title: "Fresh",
+        content,
+        summary: "x",
+        crossRefSource: null,
+        createOnly: true,
+      }));
+    } finally {
+      sim.restore();
+    }
+
+    expect(await storage.readFile(`tenants/${tenant}/wiki/fresh.md`)).toContain("Brand new.");
+    expect(await storage.readFile("wiki/fresh.md")).toContain("Brand new.");
+    // The unrelated slug's object is byte-for-byte untouched.
+    expect(await storage.readFile("wiki/cased.MD")).toBe(casedBytes);
+  });
+
+  it("fails the create with the STORAGE error when the GATE's probe is indeterminate", async () => {
+    // The gate is its own call site with its own new failure mode, and its
+    // comment claims a re-throw that nothing else in this file exercises:
+    // `findStoredPageKey` is always strict, so a non-ENOENT fault on a VARIANT
+    // spelling now fails a create that used to succeed — the canonical-only
+    // precondition never read that key at all.
+    //
+    // Flattening the fault into "no key here" would be the worse answer: the
+    // gate would wave a create through onto a root whose contents it could not
+    // determine, which is exactly the second object DW-740 refuses.
+    const storage = getStorage();
+    const realRead = storage.readFile.bind(storage);
+    const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
+      // The FLAT variant probe only the gate reaches. Every canonical spelling
+      // still answers ENOENT, so the slug looks free by the old precondition.
+      if (key === "wiki/faulty.MD") throw new Error("variant store unavailable");
+      if (/(?:^|\/)faulty\.md$/i.test(key)) throw enoent(key);
+      return realRead(key);
+    });
+    const writeFileIfAbsent = vi.spyOn(storage, "writeFileIfAbsent");
+    try {
+      let caught: unknown;
+      try {
+        await writeWikiPageWithSideEffects(makeOpts({
+          slug: "faulty",
+          title: "Faulty",
+          content: "# Faulty\n\nShould never land.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        }));
+      } catch (error) {
+        caught = error;
+      }
+
+      // The caller is told the STORE failed — CLASSIFICATION, not wording: a
+      // conflict sentence would send them to fix a slug collision that does not
+      // exist.
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain("variant store unavailable");
+      expect((caught as Error).message).not.toContain("already exists");
+
+      // And not one create-only claim went out, under either root.
+      expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      readFile.mockRestore();
+      writeFileIfAbsent.mockRestore();
+    }
   });
 });
 
@@ -837,6 +1922,118 @@ describe("per-tenant silo mirror", () => {
     );
     expect(siloAfter).not.toContain("page-a.md");
   });
+
+  // ── DW-609: a hard delete must clear the WHOLE silo, not just the wiki md ──
+  // Step 2 of the delete branch removes the silo wiki md directly. That used to
+  // be all it did, so the page's other mirrored artifacts — flat and hashed raw
+  // Sources, the discuss thread, binary assets — leaked, and `reconcileSilos`'
+  // reverse-orphan pass could not recover them: it discovers ghosts by scanning
+  // the very wiki md the delete already removed.
+
+  it("clears every per-page silo artifact on delete, leaving no ghost (DW-609)", async () => {
+    const storage = getStorage();
+    const hex = "a".repeat(64);
+    await writeWikiPageWithSideEffects({
+      slug: "alpha",
+      title: "Alpha",
+      content: serializeFrontmatter({ owner: "alice" }, "# Alpha\n\nBody."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    // The artifacts `syncSiloForPage` mirrors beyond the wiki md.
+    const mirrored = [
+      "tenants/alice/raw/sources/alpha.md",
+      "tenants/alice/raw/alpha.md",
+      `tenants/alice/raw/sources/alpha/${hex}.md`,
+      `tenants/alice/raw/alpha/${hex}.md`,
+      "tenants/alice/discuss/alpha.json",
+      "tenants/alice/raw/assets/alpha/pic.png",
+    ];
+    for (const rel of mirrored) await storage.writeFile(rel, "mirrored bytes");
+    expect(await storage.fileExists("tenants/alice/wiki/alpha.md")).toBe(true);
+
+    await deleteWikiPage("alpha");
+
+    for (const rel of ["tenants/alice/wiki/alpha.md", ...mirrored]) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+  });
+
+  it("completes the delete and warns when the silo cleanup rejects", async () => {
+    const storage = getStorage();
+    await writeWikiPageWithSideEffects({
+      slug: "fragile",
+      title: "Fragile",
+      content: serializeFrontmatter({ owner: "alice" }, "# Fragile\n\nBody."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await storage.writeFile("tenants/alice/raw/assets/fragile/pic.png", "bytes");
+
+    const originalDeleteDirectory = storage.deleteDirectory.bind(storage);
+    vi.spyOn(storage, "deleteDirectory").mockImplementation(async (target) => {
+      // Only the SILO RAW arms fail — the required tenant revision erasure
+      // (tenants/<t>/wiki/.revisions/…) must still succeed, or this would be
+      // testing the throwing pre-delete step instead.
+      if (target.startsWith("tenants/") && target.includes("/raw/")) {
+        throw new Error("silo raw store unavailable");
+      }
+      return originalDeleteDirectory(target);
+    });
+    // `logger` is a module singleton and this file's `afterEach` does not
+    // restore mocks, so the stub MUST come back off in a `finally` — otherwise
+    // a failure below would silently mute warnings for every later test here.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      // The delete is already committed by the time the cleanup batch runs, so
+      // a cleanup failure is logged and swallowed — never rethrown.
+      await expect(deleteWikiPage("fragile")).resolves.toMatchObject({
+        slug: "fragile",
+      });
+      expect(await readWikiPage("fragile", { fresh: true, strict: true })).toBeNull();
+      expect(
+        warn.mock.calls.some(
+          (call) =>
+            call[0] === "wiki" && String(call[1]).includes("removeSiloForPage"),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("cleans the default tenant's silo when the deleted page has no owner", async () => {
+    // `deletedOwner` is undefined both for an ownerless page and for one whose
+    // frontmatter read failed; either way the cleanup must target the SAME
+    // tenant the primary md delete and `deleteRevisions` used.
+    const storage = getStorage();
+    const hex = "b".repeat(64);
+    const tenant = tenantForOwner(undefined);
+    await writeWikiPageWithSideEffects({
+      slug: "ownerless",
+      title: "Ownerless",
+      content: "# Ownerless\n\nNo owner frontmatter.",
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    const mirrored = [
+      `tenants/${tenant}/raw/sources/ownerless.md`,
+      `tenants/${tenant}/raw/sources/ownerless/${hex}.md`,
+      `tenants/${tenant}/discuss/ownerless.json`,
+      `tenants/${tenant}/raw/assets/ownerless/pic.png`,
+    ];
+    for (const rel of mirrored) await storage.writeFile(rel, "mirrored bytes");
+
+    await deleteWikiPage("ownerless");
+
+    for (const rel of [`tenants/${tenant}/wiki/ownerless.md`, ...mirrored]) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+  });
 });
 
 // ===========================================================================
@@ -1034,5 +2231,276 @@ describe("agent page cleanup on delete", () => {
 
     const agentB = await getAgent("agent-b");
     expect(agentB!.socialPages).not.toContain(slug);
+  });
+});
+
+describe("Stories 2.4–2.12 compile remnants", () => {
+  it("regenerates overview.md and writes a Source summary that cites the Source", async () => {
+    const { runIngestBookkeeping } = await import("../ingest-bookkeeping");
+    await writeWikiPageWithSideEffects(
+      makeOpts({ slug: "alpha", title: "Alpha", summary: "First concept" }),
+    );
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "We agreed to ship the digest on Friday.",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
+      sourceType: "text",
+    });
+    const overview = await readWikiPage("overview");
+    expect(overview?.content).toContain("# Overview");
+    expect(overview?.content).toContain("[[alpha]]");
+    expect(overview?.content).not.toMatch(/^sources:/m);
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const body = await readWikiPage(summary!.slug);
+    expect(body?.content).toContain("raw/sources/standup/abc0000000000000.md");
+    expect(body?.content).toContain("We agreed to ship the digest on Friday.");
+  });
+
+  it("keeps disputed true when rewriting an existing source summary", async () => {
+    const { runIngestBookkeeping } = await import("../ingest-bookkeeping");
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "first",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
+      sourceType: "text",
+      rawId: "abc0000000000000",
+    });
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const existing = await readWikiPage(summary!.slug);
+    const { serializeFrontmatter } = await import("../frontmatter");
+    const { parseFrontmatter } = await import("../frontmatter");
+    const parsed = parseFrontmatter(existing!.content);
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: summary!.slug,
+        title: summary!.title,
+        content: serializeFrontmatter(
+          { ...parsed.data, disputed: true, type: "summary" },
+          parsed.body,
+        ),
+      }),
+    );
+    await runIngestBookkeeping({
+      owner: "alice",
+      actor: "alice",
+      sourceTitle: "Standup",
+      sourceText: "second",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
+      sourceType: "text",
+      rawId: "abc0000000000000",
+    });
+    const rewritten = await readWikiPage(summary!.slug);
+    expect(rewritten?.content).toContain("disputed: true");
+    expect(rewritten?.content).toContain("second");
+  }, 15_000);
+
+  it("bookkeeping cites options.sourcePath when ingest is given one", async () => {
+    const { ingest } = await import("../ingest");
+    await ingest("Hello notes", "# Hello\n\nBody of the note.", {
+      owner: "alice",
+      author: "alice",
+      sourceType: "text",
+      sourcePath: "raw/sources/custom/real.md",
+    });
+    const pages = await listWikiPages();
+    const summary = pages.find((entry) => entry.title.includes("source summary"));
+    expect(summary).toBeTruthy();
+    const body = await readWikiPage(summary!.slug);
+    expect(body?.content).toContain("raw/sources/custom/real.md");
+    expect(body?.content).not.toMatch(/raw\/sources\/hello-notes\//);
+  });
+
+  it("loadIngestAnalysis returns null on invalid JSON", async () => {
+    const { loadIngestAnalysis } = await import("../ingest-analysis");
+    await getStorage().writeFile("ingest-analysis/job-bad.json", "{not-json");
+    expect(await loadIngestAnalysis("job-bad")).toBeNull();
+  });
+
+  it("cascades Source delete: summary first, sole page gone, shared page kept, prose ignored", async () => {
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { serializeSources, buildSourceEntry } = await import("../sources");
+    const { rawSourceRelPath } = await import("../raw");
+    const { proposeActionItems, listActionItems } = await import("../action-items");
+    const path = "raw/sources/meet/deadbeef.md";
+    await getStorage().writeFile(rawSourceRelPath("meet/deadbeef.md"), "# Meet\n");
+    const cited = serializeSources([
+      buildSourceEntry(path, "text", "alice", "deadbeef"),
+    ]);
+    const shared = serializeSources([
+      buildSourceEntry(path, "text", "alice", "deadbeef"),
+      buildSourceEntry("raw/sources/other/keep.md", "text", "alice", "keep"),
+    ]);
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "meet-summary",
+        title: "Meet — source summary",
+        content: serializeFrontmatter(
+          { type: "summary", sources: cited, owner: "alice" },
+          "# Meet — source summary\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "sole",
+        title: "Sole",
+        content: serializeFrontmatter(
+          { sources: cited, owner: "alice" },
+          "# Sole\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "shared",
+        title: "Shared",
+        content: serializeFrontmatter(
+          { sources: shared, disputed: true, owner: "alice" },
+          "# Shared\n",
+        ),
+      }),
+    );
+    await writeWikiPageWithSideEffects(
+      makeOpts({
+        slug: "prose-only",
+        title: "Prose Only",
+        content: serializeFrontmatter(
+          { owner: "alice" },
+          `# Prose\n\nSee ${path} in the body.\n`,
+        ),
+      }),
+    );
+    await proposeActionItems("alice", [
+      { title: "Follow up", sourceSlug: path },
+    ]);
+    const { enqueueTodoCandidates, listTodos } = await import("../todos");
+    await enqueueTodoCandidates("alice", {
+      wikiId: "current",
+      sourceId: path,
+      pageSlug: "meet-summary",
+      candidates: [{ title: "Send recap", rationale: "Asked in the meeting." }],
+    });
+
+    const result = await cascadeDeleteSource({ owner: "alice", path });
+    expect(result.deletedPages[0]).toBe("meet-summary");
+    expect(result.deletedPages).toContain("sole");
+    expect(result.updatedPages).toContain("shared");
+    expect(await readWikiPage("meet-summary")).toBeNull();
+    expect(await readWikiPage("sole")).toBeNull();
+    expect(await readWikiPage("prose-only")).toMatchObject({
+      content: expect.stringContaining("raw/sources/meet/deadbeef.md"),
+    });
+    const kept = await readWikiPage("shared");
+    expect(kept?.content).toContain("keep.md");
+    expect(kept?.content).toContain("disputed: true");
+    expect(kept?.content).not.toContain("deadbeef");
+    const todos = await listActionItems("alice");
+    expect(todos[0]?.sourceMissing).toBe(true);
+    const kernelTodos = await listTodos("alice");
+    expect(kernelTodos).toHaveLength(1);
+    expect(kernelTodos[0]?.sourceMissing).toBe(true);
+    expect(kernelTodos[0]?.title).toBe("Send recap");
+    await expect(
+      getStorage().readFile(rawSourceRelPath("meet/deadbeef.md")),
+    ).rejects.toThrow();
+  }, 20_000);
+
+  it("retries a failed job without storing Source bytes again", async () => {
+    const { createIngestJob, retryIngestJob } = await import("../ingest-jobs");
+    const { saveIngestAnalysis, loadIngestAnalysis } = await import(
+      "../ingest-analysis"
+    );
+    const { sourceSha256 } = await import("../source-sha256");
+    const { contentHash } = await import("../embeddings");
+    const digest = await sourceSha256("same bytes");
+    expect(digest).toHaveLength(64);
+    expect(digest).not.toBe(contentHash("same bytes"));
+    await createIngestJob({
+      jobId: "job-retry-1",
+      owner: "alice",
+      title: "Meet",
+      sourceRel: "raw/sources/meet/abc.md",
+    });
+    const { updateIngestJob } = await import("../ingest-jobs");
+    await updateIngestJob("job-retry-1", { status: "failed", error: "LLM timeout" });
+    await saveIngestAnalysis("job-retry-1", {
+      entities: ["Ada"],
+      concepts: [],
+      arguments: [],
+      existingLinks: [],
+      tensions: [],
+      recommendedStructure: "one page",
+    });
+    const retried = await retryIngestJob("job-retry-1", "alice");
+    expect(retried?.status).toBe("queued");
+    expect(retried?.sourceRel).toBe("raw/sources/meet/abc.md");
+    expect(retried?.reuseAnalysis).toBe(true);
+    expect((await loadIngestAnalysis("job-retry-1"))?.entities).toEqual(["Ada"]);
+  });
+
+  it("deletes a folder-imported Source by stored path, not by leaf name", async () => {
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { saveRawSourceTree } = await import("../raw");
+    const { ingest } = await import("../ingest");
+    const stored = await saveRawSourceTree(
+      "papers/energy/note.md",
+      "# Energy notes\n\nGrid facts.\n",
+      { owner: "alice" },
+    );
+    await ingest("Energy notes", "# Energy notes\n\nGrid facts.\n", {
+      owner: "alice",
+      author: "alice",
+      sourceType: "text",
+      sourcePath: stored.path,
+      relativePath: "papers/energy/note.md",
+    });
+    const pages = await listWikiPages();
+    const concept = pages.find(
+      (entry) =>
+        entry.slug !== "overview" &&
+        entry.slug !== "index" &&
+        entry.slug !== "log" &&
+        !entry.title.includes("source summary"),
+    );
+    expect(concept).toBeTruthy();
+    await cascadeDeleteSource({ owner: "alice", path: stored.path });
+    expect(await readWikiPage(concept!.slug)).toBeNull();
+    await expect(
+      getStorage().readFile("raw/sources/papers/energy/note.md"),
+    ).rejects.toThrow();
+  }, 15_000);
+
+  it("does not offer Retry while a job is automatically retrying", async () => {
+    const { createIngestJob, retryIngestJob, updateIngestJob } =
+      await import("../ingest-jobs");
+    await createIngestJob({ jobId: "job-auto-1", owner: "alice", title: "Meet" });
+    await updateIngestJob("job-auto-1", { status: "retrying", error: "LLM timeout" });
+    expect(await retryIngestJob("job-auto-1", "alice")).toBeNull();
+  });
+
+  it("fails a tracked compile when Analysis is not valid JSON", async () => {
+    const llm = await import("../llm");
+    const hasKey = vi.spyOn(llm, "hasLLMKey").mockResolvedValue(true);
+    const call = vi
+      .spyOn(llm, "callLLM")
+      .mockResolvedValue("# Not JSON\n\nWiki body.");
+    const { ingest } = await import("../ingest");
+    await expect(
+      ingest("Meet", "# Meet\n\nNotes.", {
+        owner: "alice",
+        author: "alice",
+        jobId: "job-analysis-1",
+      }),
+    ).rejects.toThrow(/Analysis did not return valid JSON/);
+    hasKey.mockRestore();
+    call.mockRestore();
   });
 });

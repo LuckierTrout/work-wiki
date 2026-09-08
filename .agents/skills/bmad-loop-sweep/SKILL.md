@@ -27,6 +27,18 @@ If the invocation carries `--migrate <manifest-path>`, this is a **migration
 session**, not triage: read `./migration-mode.md` and follow it instead of
 Steps 1–4 below.
 
+If the invocation carries `--only DW-<number>`, scope every instruction about
+"every open entry" to that single ID. Never combine `--only` with `--migrate`.
+This overrides Step 1's full-ledger read and automation-mode.md's whole-ledger
+`open_ids` equality rule: locate and read only the selected block (plus its
+referenced archive body when present), without auditing the other entries.
+Verify only that selected open entry; `open_ids` must contain exactly that ID,
+and every category, decision and bundle must contain only that ID. Never trim
+a mixed bundle's intent to fit: report a CRITICAL scope conflict instead.
+Do not write the ledger or pre-answer store. Keep unrelated findings only in
+run artifacts; scoped sweeps never harvest new ledger rows. The orchestrator
+persists this immutable scope across resumes.
+
 ### Step 1: Locate the ledger
 
 Read `{project-root}/_bmad/bmm/config.yaml` to resolve `implementation_artifacts`,
@@ -34,6 +46,13 @@ then read `{implementation_artifacts}/deferred-work.md` in full. Open entries
 are `### DW-<n>:` blocks whose `status:` line is `open`. If the ledger is
 missing or unreadable, escalate `CRITICAL` (`type: missing-ledger`) per
 automation-mode.md and end your turn.
+
+An entry carrying an `archived:` line keeps only a stub here — its full body
+lives in the sibling `deferred-work-archive.md`, keyed by the same DW- id; read
+it there before classifying that entry. An `archived-body:` line says the same
+of an entry that was archived and later reopened: it is live work again, but the
+body it carried before that close is still in the archive file, in the block
+stamped with the date the line carries.
 
 If the invocation carries `--feedback <path>`, read that file FIRST — it lists
 the deterministic validation errors your previous attempt's result.json failed
@@ -64,8 +83,9 @@ Classify each open entry into exactly ONE category:
   future story has to land first. Group entries that share a touchpoint (same
   file, same subsystem, same validator pattern) into cohesive single-goal
   bundles sized for one dev session; an entry that stands alone is a
-  one-entry bundle. `name` is kebab-case (e.g. `unicode-string-hardening`),
-  `intent` is 2–6 sentences describing the one cohesive goal.
+  one-entry bundle. `name` matches `^[a-z0-9][a-z0-9-]{1,39}\Z` (kebab-case,
+  at most 40 characters; e.g. `unicode-string-hardening`), and `intent` is
+  2–6 sentences describing the one cohesive goal.
 - **blocked** — the fix is only meaningful (or meaningfully easier) after a
   named future story/epic lands. Name the blocker verbatim.
 - **skip** — superseded, moot, or tied to a scenario the project explicitly

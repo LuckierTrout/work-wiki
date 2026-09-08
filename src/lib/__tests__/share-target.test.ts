@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { resolveSharedUrl, buildBookmarklet, hostOf } from "../share-target";
+import {
+  resolveSharedUrl,
+  buildBookmarklet,
+  hostOf,
+  isolateCaptureClip,
+  captureFromQuery,
+} from "../share-target";
 import manifest from "@/app/manifest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 describe("resolveSharedUrl", () => {
   it("prefers an explicit url param", () => {
@@ -39,13 +47,81 @@ describe("resolveSharedUrl", () => {
   });
 });
 
+describe("isolateCaptureClip", () => {
+  it("returns leftover share text after stripping the resolved URL", () => {
+    expect(
+      isolateCaptureClip(
+        "Great read: https://example.com/post via @x",
+        "https://example.com/post",
+      ),
+    ).toBe("Great read: via @x");
+  });
+
+  it("does not treat a longer URL as a prefix of the resolved one", () => {
+    expect(
+      isolateCaptureClip("https://example.com/article", "https://example.com/a"),
+    ).toBe("https://example.com/article");
+  });
+
+  it("treats a share that is only the URL as clipless", () => {
+    expect(isolateCaptureClip("https://example.com/post", "https://example.com/post")).toBe(
+      "",
+    );
+    expect(isolateCaptureClip("  https://example.com/post  ", "https://example.com/post")).toBe(
+      "",
+    );
+  });
+
+  it("keeps a selection that does not contain the URL", () => {
+    expect(isolateCaptureClip("Selected paragraph.", "https://example.com/post")).toBe(
+      "Selected paragraph.",
+    );
+  });
+
+  it("returns the whole text when there is no URL to strip", () => {
+    expect(isolateCaptureClip("just words", null)).toBe("just words");
+  });
+});
+
+describe("captureFromQuery", () => {
+  it("is a capture attempt when url or text is present, even if neither is a URL", () => {
+    expect(captureFromQuery(undefined, "just words")).toEqual({
+      url: "",
+      clip: "just words",
+      attempted: true,
+    });
+    expect(captureFromQuery("", undefined)).toEqual({
+      url: "",
+      clip: "",
+      attempted: true,
+    });
+    expect(captureFromQuery(undefined, undefined)).toEqual({
+      url: "",
+      clip: "",
+      attempted: false,
+    });
+  });
+
+  it("resolves the URL and isolates leftover clip text", () => {
+    expect(
+      captureFromQuery("https://example.com/a", "https://example.com/a extra notes"),
+    ).toEqual({
+      url: "https://example.com/a",
+      clip: "extra notes",
+      attempted: true,
+    });
+  });
+});
+
 describe("buildBookmarklet", () => {
-  it("opens the given origin's /save with the encoded current url + title", () => {
+  it("opens the given origin's /save with the encoded current url, title, and selection", () => {
     const bm = buildBookmarklet("https://yopedia.yolog.dev");
     expect(bm.startsWith("javascript:")).toBe(true);
     expect(bm).toContain("https://yopedia.yolog.dev/save?url=");
     expect(bm).toContain("encodeURIComponent(location.href)");
     expect(bm).toContain("encodeURIComponent(document.title)");
+    expect(bm).toContain("&text=");
+    expect(bm).toContain("getSelection()");
     expect(bm).toContain("window.open(");
   });
 
@@ -85,5 +161,20 @@ describe("PWA manifest share target", () => {
     expect(m.share_target?.method).toBe("GET");
     expect(m.share_target?.params.url).toBe("url");
     expect(m.share_target?.params.text).toBe("text");
+  });
+});
+
+describe("the /save page", () => {
+  it("passes the isolated clip and shows Capture when text is a clipless non-URL", async () => {
+    const page = await readFile(
+      path.join(__dirname, "../../app/save/page.tsx"),
+      "utf8",
+    );
+    expect(page).toContain("captureFromQuery");
+    expect(page).toContain("clip={clip}");
+    expect(page).toContain("attempted ? <SaveCapture");
+    expect(page).not.toContain("initialTags");
+    expect(page).not.toContain("first(sp.tags)");
+    expect(page).not.toContain("title={title}");
   });
 });

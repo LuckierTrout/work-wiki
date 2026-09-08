@@ -13,8 +13,8 @@ export default function LogError({
     <PageError
       title="Log error"
       description="Something went wrong loading the activity log."
-      backHref="/wiki"
-      backLabel="← Back to wiki"
+      backHref="/"
+      backLabel="← Home"
       error={error}
       reset={reset}
     />

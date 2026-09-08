@@ -6,9 +6,10 @@ import {
   extractDocumentTextAsync,
   parseCsv,
 } from "@/lib/document-extract";
+import { ClientInputError } from "@/lib/errors";
 
-function office(filename: string, files: Record<string, string | Uint8Array>) {
-  const zipped = zipSync(
+function officeBytes(files: Record<string, string | Uint8Array>): Uint8Array {
+  return zipSync(
     Object.fromEntries(
       Object.entries(files).map(([name, value]) => [
         name,
@@ -16,10 +17,107 @@ function office(filename: string, files: Record<string, string | Uint8Array>) {
       ]),
     ),
   );
+}
+
+function office(filename: string, files: Record<string, string | Uint8Array>) {
   return extractDocumentText({
-    bytes: Uint8Array.from(zipped).buffer,
+    bytes: Uint8Array.from(officeBytes(files)).buffer,
     filename,
   });
+}
+
+/**
+ * `../<member>` from `ppt/presentation.xml` is boiled down by
+ * `resolveArchiveTarget` to the bare key `<member>`. Against a plain-object
+ * archive `constructor` / `toString` / `valueOf` answer with an inherited
+ * FUNCTION and `__proto__` with `Object.prototype` itself (an inherited
+ * ACCESSOR, so an object rather than a function) — every one of them a truthy
+ * non-entry. The bogus slides then survived `Boolean(files[slide.path])`,
+ * displaced the deck's real slides, and `TextDecoder.decode` threw an uncaught
+ * `TypeError` instead of the promised `ClientInputError` (DW-695).
+ */
+const PROTOTYPE_MEMBERS = ["constructor", "__proto__", "toString", "valueOf"] as const;
+
+/**
+ * A deck whose presentation order aims one `p:sldId` at each
+ * {@link PROTOTYPE_MEMBERS} key. `realSlide` prepends a genuine
+ * `slides/slide1.xml` relationship AND its part, so the ordered list is
+ * non-empty once the crafted entries are dropped — the case where a bogus
+ * slide would otherwise override the real one rather than merely emptying the
+ * list.
+ */
+function craftedDeck(options: { realSlide?: string } = {}): Record<string, string> {
+  const targets = [
+    ...(options.realSlide ? ["slides/slide1.xml"] : []),
+    ...PROTOTYPE_MEMBERS.map((member) => `../${member}`),
+  ];
+  const id = (index: number) => `rId${index + 1}`;
+  return {
+    "ppt/presentation.xml": `<p:presentation><p:sldIdLst>${targets
+      .map((_, index) => `<p:sldId r:id="${id(index)}"/>`)
+      .join("")}</p:sldIdLst></p:presentation>`,
+    "ppt/_rels/presentation.xml.rels": `<Relationships>${targets
+      .map((target, index) => `<Relationship Id="${id(index)}" Target="${target}"/>`)
+      .join("")}</Relationships>`,
+    ...(options.realSlide
+      ? {
+          "ppt/slides/slide1.xml":
+            `<p:sld><a:p><a:r><a:t>${options.realSlide}</a:t></a:r></a:p></p:sld>`,
+        }
+      : {}),
+  };
+}
+
+/**
+ * A deck whose presentation order aims `p:sldId` rels at REAL non-slide parts.
+ * `media/photo.jpg` and `theme/theme1.xml` are resolved against
+ * `ppt/presentation.xml` into `ppt/media/photo.jpg` and `ppt/theme/theme1.xml`
+ * — keys this archive genuinely holds, so — unlike {@link craftedDeck} —
+ * nothing here leans on `Object.prototype`: the entries EXIST, which is why
+ * `Boolean(files[slide.path])` alone kept them, made `ordered` non-empty,
+ * shadowed the numbered fallback and handed JPEG bytes to `TextDecoder` as
+ * slide XML (DW-724).
+ *
+ * `orderedSlideRel` prepends a genuine `slides/slide1.xml` relationship so the
+ * ordered list still has a real member once the crafted entries are dropped;
+ * `slideText` writes the real `ppt/slides/slide1.xml` part, independently of
+ * whether any rel points at it (the numbered fallback finds it either way).
+ */
+function nonSlidePartDeck(
+  options: { orderedSlideRel?: boolean; slideText?: string } = {},
+): Record<string, string | Uint8Array> {
+  const targets = [
+    ...(options.orderedSlideRel ? ["slides/slide1.xml"] : []),
+    "media/photo.jpg",
+    "theme/theme1.xml",
+  ];
+  const id = (index: number) => `rId${index + 1}`;
+  return {
+    "ppt/presentation.xml": `<p:presentation><p:sldIdLst>${targets
+      .map((_, index) => `<p:sldId r:id="${id(index)}"/>`)
+      .join("")}</p:sldIdLst></p:presentation>`,
+    "ppt/_rels/presentation.xml.rels": `<Relationships>${targets
+      .map((target, index) => `<Relationship Id="${id(index)}" Target="${target}"/>`)
+      .join("")}</Relationships>`,
+    // A real JPEG SOI marker: bytes that are neither slide XML nor valid UTF-8,
+    // so decoding them as a slide leaves U+FFFD in the output.
+    "ppt/media/photo.jpg": new Uint8Array([255, 216, 255, 224, 0, 16]),
+    // A real XML part that is NOT a slide: it decodes cleanly, so only the
+    // slide-path test — not a decode failure — can keep it out of the deck.
+    "ppt/theme/theme1.xml":
+      "<a:theme><a:p><a:r><a:t>Theme placeholder text</a:t></a:r></a:p></a:theme>",
+    ...(options.slideText
+      ? {
+          "ppt/slides/slide1.xml":
+            `<p:sld><a:p><a:r><a:t>${options.slideText}</a:t></a:r></a:p></p:sld>`,
+        }
+      : {}),
+  };
+}
+
+/** How many `## Slide N` sections the extractor actually emitted. */
+function slideHeadings(text: string): string[] {
+  return text.match(/^## Slide \d+$/gm) ?? [];
 }
 
 describe("document extraction", () => {
@@ -66,6 +164,112 @@ describe("document extraction", () => {
     expect(result.text).toContain("Embedded image: System architecture");
   });
 
+  /**
+   * `mediaTypeFor` reads its extension out of `IMAGE_MEDIA_TYPES` through
+   * `ownLookup`, not `table[ext]`. A plain index hit finds `Object.prototype`
+   * members, so an archive entry named `logo.constructor` looks like a
+   * supported image: `archiveEntryKind` admits it into the unzip filter and
+   * `assetFromArchive` emits an asset whose `mediaType` is the `Object`
+   * constructor *function*. Every fixture in this suite used a real extension,
+   * so reverting to `IMAGE_MEDIA_TYPES[ext] ?? null` shipped green (DW-254).
+   */
+  it("ignores an archive entry whose extension names an Object.prototype member", () => {
+    const result = office("prototype-named.docx", {
+      "word/document.xml": `<w:document><w:body>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:graphic><a:blip r:embed="rId1"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+      </w:body></w:document>`,
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="media/logo.constructor"/><Relationship Id="rId2" Target="media/chart.png"/></Relationships>',
+      "word/media/logo.constructor": new Uint8Array([1, 2, 3, 4]),
+      // The real image alongside it: the fix must reject the prototype-named
+      // entry without also rejecting anything legitimate.
+      "word/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      // Second `w:p` block, so the surviving asset must report Paragraph 2 --
+      // pinning it rules out an asset that merely inherited the right name.
+      context: "Paragraph 2",
+    });
+    // The PNG magic bytes, not the prototype-named entry's payload: a
+    // regression that emitted `chart.png`'s name and media type over
+    // `logo.constructor`'s bytes passes every assertion above.
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.assets.map((asset) => asset.filename)).not.toContain("logo.constructor");
+    // The count alone would still pass if `chart.png` were the one dropped and
+    // the inherited member had produced the surviving asset, so the shape of
+    // every `mediaType` is pinned too -- the mutation yields a function here.
+    for (const asset of result.assets) {
+      expect(typeof asset.mediaType).toBe("string");
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    expect(result.text).toContain("Embedded image: Revenue chart");
+    expect(result.text).not.toContain("Company logo");
+  });
+
+  /**
+   * A relationship `Target` is attacker-supplied, and `resolveArchiveTarget`
+   * boils `../constructor` down to the bare key `constructor` — which a plain
+   * `files[target]` answers with the inherited `Object.prototype` function
+   * rather than entry bytes. `valueOf` is the same hazard through another
+   * inherited function and `__proto__` through an inherited accessor, so all
+   * three are in the fixture. `assetFromArchive` now reads that map through
+   * `ownLookup` (DW-365).
+   *
+   * Be honest about what this row is: it is green both with and without the
+   * `ownLookup` change, because `mediaTypeFor` returns `null` for every
+   * extensionless name and no `Object.prototype` member name carries an
+   * extension, so both versions return `null` here. It is a characterization
+   * pin on the OUTCOME, not a red-then-green proof: no asset for the
+   * prototype-named target, the real sibling image unaffected, and no
+   * `TypeError` out of the extractor. What it protects is that outcome should
+   * `mediaTypeFor`'s extensionless rejection ever change — the accident that
+   * currently keeps the raw index inert.
+   */
+  it("produces no asset when a DOCX relationship target names an Object.prototype member", () => {
+    const result = office("prototype-target.docx", {
+      "word/document.xml": `<w:document><w:body>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:graphic><a:blip r:embed="rId1"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Value" descr="Value badge"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Proto" descr="Proto banner"/><a:graphic><a:blip r:embed="rId3"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId4"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+      </w:body></w:document>`,
+      // `../constructor` from `word/document.xml` resolves to the bare string
+      // `constructor` — no archive entry of that name exists, so the only way
+      // the lookup answers is through the prototype chain. `valueOf` is the
+      // same hazard through a different inherited function, and `__proto__`
+      // through an inherited ACCESSOR, which returns the prototype object
+      // itself rather than a function.
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="../constructor"/><Relationship Id="rId2" Target="../valueOf"/><Relationship Id="rId3" Target="../__proto__"/><Relationship Id="rId4" Target="media/chart.png"/></Relationships>',
+      "word/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      context: "Paragraph 4",
+    });
+    // Its OWN bytes: an asset carrying `chart.png`'s name over something
+    // else's payload would pass every assertion above.
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    for (const member of ["constructor", "valueOf", "__proto__"]) {
+      expect(result.assets.map((asset) => asset.filename)).not.toContain(member);
+    }
+    // Same strength as the DW-254 row above: a `mediaType` that is the
+    // `Object` constructor function fails this, a `typeof` check would not.
+    for (const asset of result.assets) {
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    expect(result.text).toContain("Embedded image: Revenue chart");
+    for (const alt of ["Company logo", "Value badge", "Proto banner"]) {
+      expect(result.text).not.toContain(alt);
+    }
+  });
+
   it("extracts PPTX slides in presentation order with linked speaker notes", () => {
     const result = office("deck.pptx", {
       "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',
@@ -87,6 +291,181 @@ describe("document extraction", () => {
         context: "Slide 1",
       }),
     ]);
+  });
+
+  /**
+   * The same `mediaTypeFor` gate guards a second, independent call site:
+   * `archiveEntryKind` applies it to `^ppt/media/[^/]+$` at
+   * `src/lib/document-extract.ts:392` exactly as it does to `word/media` at
+   * `:382`. Fixing one arm does not fix the other, and no PPTX fixture in this
+   * suite used anything but a real extension, so this arm stayed unpinned
+   * (DW-254).
+   */
+  it("ignores a PPTX media entry whose extension names an Object.prototype member", () => {
+    const result = office("prototype-named.pptx", {
+      "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',
+      "ppt/_rels/presentation.xml.rels": '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
+      // The two `p:cNvPr` descriptions are consumed in document order, one per
+      // `a:blip`, so the surviving image must report the SECOND description --
+      // proof the prototype-named blip was walked past rather than never seen.
+      "ppt/slides/slide1.xml": '<p:sld><a:p><a:r><a:t>Quarter in review</a:t></a:r></a:p><p:cNvPr name="Logo" descr="Company logo"/><a:blip r:embed="imgLogo"/><p:cNvPr name="Chart" descr="Revenue chart"/><a:blip r:embed="imgChart"/></p:sld>',
+      "ppt/slides/_rels/slide1.xml.rels": '<Relationships><Relationship Id="imgLogo" Target="../media/logo.constructor"/><Relationship Id="imgChart" Target="../media/chart.png"/></Relationships>',
+      "ppt/media/logo.constructor": new Uint8Array([1, 2, 3, 4]),
+      "ppt/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      context: "Slide 1",
+    });
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.assets.map((asset) => asset.filename)).not.toContain("logo.constructor");
+    for (const asset of result.assets) {
+      expect(typeof asset.mediaType).toBe("string");
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    // The slide's image list names the real image only.
+    expect(result.text).toContain("- Revenue chart (chart.png)");
+    expect(result.text).not.toContain("logo.constructor");
+    expect(result.text).not.toContain("Company logo");
+  });
+
+  it("keeps the readable fallback slides when every presentation rel resolves to an Object.prototype key", () => {
+    const result = office("crafted.pptx", {
+      ...craftedDeck(),
+      "ppt/slides/slide1.xml":
+        "<p:sld><a:p><a:r><a:t>Readable slide</a:t></a:r></a:p></p:sld>",
+    });
+    // The ordered list resolves to nothing, so the numbered fallback survives —
+    // and it is the ONLY slide: a surviving crafted entry would emit a second
+    // `## Slide` section (or throw before either was written).
+    expect(result.text).toContain("Readable slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+  });
+
+  it("drops only the crafted slides when the presentation order mixes real and Object.prototype targets", () => {
+    const result = office("mixed.pptx", craftedDeck({ realSlide: "Real slide" }));
+    // The case the ledger actually names: `ordered` is NON-empty here, so it
+    // REPLACES the fallback list rather than leaving it alone. The crafted
+    // entries have to be filtered out of it, leaving exactly one slide's worth
+    // of content under the real slide's own number.
+    expect(result.text).toContain("Real slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    for (const member of PROTOTYPE_MEMBERS) {
+      expect(result.text).not.toContain(member);
+    }
+  });
+
+  it("throws ClientInputError, not TypeError, when a crafted PPTX yields no readable slide", () => {
+    let thrown: unknown;
+    try {
+      office("crafted-empty.pptx", craftedDeck());
+    } catch (error) {
+      thrown = error;
+    }
+    // The 400 door, not the 500 one: a `TypeError` here is answered 500 by
+    // `/api/ingest/document`.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("extracts a crafted PPTX nested inside a ZIP without a TypeError escaping", async () => {
+    // `zip` is not an extract format, so this is the live Worker-side route
+    // into `extractPptx`: a bare `.pptx` at the HTTP doors is diverted to the
+    // sidecar, but a ZIP wrapping one keeps the inline path.
+    const zipped = zipSync({
+      "decks/crafted.pptx": officeBytes(craftedDeck({ realSlide: "Nested readable slide" })),
+    });
+    const archive = await extractDocumentTextAsync({
+      bytes: Uint8Array.from(zipped).buffer,
+      filename: "decks.zip",
+    });
+    expect(archive.text).toContain("## File: decks/crafted.pptx");
+    expect(archive.text).toContain("Nested readable slide");
+    expect(slideHeadings(archive.text)).toEqual(["## Slide 1"]);
+  });
+
+  it("rejects a ZIP whose nested crafted deck has no readable slide with ClientInputError", async () => {
+    const zipped = zipSync({ "decks/crafted.pptx": officeBytes(craftedDeck()) });
+    let thrown: unknown;
+    try {
+      await extractDocumentTextAsync({
+        bytes: Uint8Array.from(zipped).buffer,
+        filename: "decks.zip",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    // The ZIP branch swallows only the "no extractable text layer"
+    // `ClientInputError` and rethrows the rest, so this is the value that
+    // reaches the door — and `src/app/api/ingest/document/route.ts:193-198`
+    // maps exactly it to 400. A `TypeError` here is the 500 the ledger
+    // reported, pinned without an HTTP harness.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("keeps the numbered fallback when every presentation rel resolves to a real non-slide part", () => {
+    const result = office("image-rel.pptx", nonSlidePartDeck({ slideText: "Readable slide" }));
+    // `ppt/media/photo.jpg` and `ppt/theme/theme1.xml` really are in the
+    // archive, so the existence check passed both; only the slide-path test
+    // drops them. With `ordered` empty the numbered fallback survives and is
+    // the ONLY slide.
+    expect(result.text).toContain("Readable slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    expect(result.text).not.toContain("Theme placeholder text");
+    // U+FFFD is what `TextDecoder` leaves behind when JPEG bytes are read as
+    // slide XML — the DW-724 symptom, in the output.
+    expect(result.text).not.toContain("\uFFFD");
+  });
+
+  it("drops only the non-slide parts when the presentation order mixes a real slide and real non-slide keys", () => {
+    const result = office(
+      "mixed-image-rel.pptx",
+      nonSlidePartDeck({ orderedSlideRel: true, slideText: "Real slide" }),
+    );
+    // `ordered` is non-empty here, so it REPLACES the fallback: the image and
+    // theme entries have to be filtered out of it, leaving exactly one slide's
+    // worth of text and no decoded image bytes.
+    expect(result.text).toContain("Real slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    expect(result.text).not.toContain("Theme placeholder text");
+    expect(result.text).not.toContain("\uFFFD");
+  });
+
+  it("throws ClientInputError when a non-slide rel is all the deck offers", () => {
+    let thrown: unknown;
+    try {
+      office("image-rel-only.pptx", nonSlidePartDeck());
+    } catch (error) {
+      thrown = error;
+    }
+    // No `ppt/slides/slideN.xml` part at all, so both lists are empty: the 400
+    // door, and never a deck built out of an image and a theme part.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("extracts a non-slide-rel PPTX nested inside a ZIP without decoding image bytes", async () => {
+    // The live Worker-side route into `extractPptx`: a bare `.pptx` at the HTTP
+    // doors is diverted to the sidecar, but a ZIP wrapping one stays inline.
+    const zipped = zipSync({
+      "decks/image-rel.pptx": officeBytes(
+        nonSlidePartDeck({ orderedSlideRel: true, slideText: "Nested real slide" }),
+      ),
+    });
+    const archive = await extractDocumentTextAsync({
+      bytes: Uint8Array.from(zipped).buffer,
+      filename: "decks.zip",
+    });
+    expect(archive.text).toContain("## File: decks/image-rel.pptx");
+    expect(archive.text).toContain("Nested real slide");
+    expect(slideHeadings(archive.text)).toEqual(["## Slide 1"]);
   });
 
   it("extracts XLSX shared strings, inline strings, values, and sheet names", () => {

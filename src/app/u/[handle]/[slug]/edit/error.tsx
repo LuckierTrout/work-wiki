@@ -13,8 +13,8 @@ export default function EditError({
     <PageError
       title="Edit error"
       description="Something went wrong while editing this page."
-      backHref="/wiki"
-      backLabel="← Wiki"
+      backHref="/"
+      backLabel="← Home"
       error={error}
       reset={reset}
     />

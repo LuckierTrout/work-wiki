@@ -10,9 +10,14 @@ import {
   type Frontmatter,
 } from "./wiki";
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
-import { ensureReconciliationThread } from "./talk";
-import { callLLM, hasLLMKey } from "./llm";
-import { fetchUrlContent, fetchImageBytes, storeImageBytes } from "./fetch";
+import { callLLM, hasLLMKey, type LlmWorkload } from "./llm";
+import {
+  fetchUrlContent,
+  fetchImageBytes,
+  storeImageBytes,
+  assetRefPath,
+  rekeyImageAsset,
+} from "./fetch";
 import { describeImage } from "./vision";
 import { isYouTubeUrl, fetchYouTubeContent } from "./youtube";
 import { isXPostUrl, fetchXPostContent, isXArticleTeaser } from "./x-post";
@@ -29,7 +34,9 @@ import {
   canonicalizeNamesTerm,
   listNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
+import { createGuidanceCache, type GuidanceCache } from "./guidance-cache";
+import { humanOwnerOf } from "./agent-handle";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -58,9 +65,10 @@ export function mergeSourceEntry(sources: SourceEntry[], entry: SourceEntry): So
       ...base[idx],
       fetched: entry.fetched,
       triggered_by: entry.triggered_by,
-      // Carry the new snapshot id (same URL → same id; also upgrades a legacy
-      // entry that predates per-source raw).
+      // Carry the new snapshot id (a new body mints a new content-hashed
+      // id; also upgrades a legacy entry that predates per-source raw).
       ...(entry.raw_id ? { raw_id: entry.raw_id } : {}),
+      ...(entry.origin ? { origin: entry.origin } : {}),
     };
   } else {
     base.push(entry);
@@ -77,6 +85,7 @@ const SOURCE_TYPE_WEIGHT: Record<SourceEntry["type"], number> = {
   docx: 0.68,
   pptx: 0.65,
   xlsx: 0.65,
+  xls: 0.65,
   csv: 0.62,
   md: 0.62,
   txt: 0.55,
@@ -138,13 +147,34 @@ import { loadPageConventions } from "./schema";
 import { resolveAlias } from "./alias-index";
 import {
   resolveSourceUrl,
-  resolveContentHash,
+  resolveContentSha256,
   updateSourceIndexForPage,
 } from "./source-index";
-import { contentHash, searchByVector, hasEmbeddingSupport } from "./embeddings";
+import { contentHash, searchByVector } from "./embeddings";
+import { getVectorSearchSettings } from "./config";
 import { getStorage } from "./storage";
 import { logger } from "./logger";
 import { preserveDocumentSources } from "./document-sources";
+import { sourceSha256 } from "./source-sha256";
+import {
+  emptyIngestAnalysis,
+  loadIngestAnalysis,
+  parseIngestAnalysis,
+  saveIngestAnalysis,
+  type IngestAnalysis,
+} from "./ingest-analysis";
+import {
+  hasBookkeepingComplete,
+  markBookkeepingComplete,
+  runIngestBookkeeping,
+} from "./ingest-bookkeeping";
+import {
+  getIngestJob,
+  INGEST_CANCELLED_COPY,
+  updateIngestJob,
+} from "./ingest-jobs";
+import { withDurableLock } from "./lock";
+import { sourceRestFromPath, workbenchSourcePath } from "./source-delete";
 
 // ---------------------------------------------------------------------------
 // Ingest ledger — append-only JSONL record of each ingest operation
@@ -399,8 +429,18 @@ export async function ingestImage(
     humanizeFilename(filename || imageUrl || "image");
   const slug = slugify(title);
 
-  // 4. Store the asset under the final slug.
-  const { localPath } = await storeImageBytes(bytes, slug, filename);
+  // 4. Store the asset under the slug derived from the title. NOT necessarily
+  //    the final page slug: `ingest()` below uniquifies it when the realm-fork
+  //    guard forks off another owner's private page, and the key has to be
+  //    minted here because it is embedded in the body handed to `ingest()`.
+  //    That is why the three `asset*` fields travel with the body — `ingest()`
+  //    re-keys the directory onto the final slug and rewrites the ref (DW-738),
+  //    and `assetCreated` is what tells it whether it may delete the old key.
+  const {
+    localPath,
+    filename: assetFile,
+    created: assetCreated,
+  } = await storeImageBytes(bytes, slug, filename);
 
   const body =
     `# ${title}\n\n![${title}](${localPath})` + (vision ? `\n\n${vision.text}` : "");
@@ -412,7 +452,14 @@ export async function ingestImage(
     title,
     body,
     { ...options, sourceUrl: imageUrl ?? "upload", sourceType: "image" },
-    { prebuiltContent: body },
+    {
+      prebuiltContent: body,
+      assetSlug: slug,
+      assetFile,
+      assetCreated,
+      // Still in hand here, so the re-key below never has to read the key back.
+      assetBytes: bytes,
+    },
   );
 }
 
@@ -508,7 +555,21 @@ export async function ingestDocument(
  * Reads the page's frontmatter to find the original URL, fetches fresh content,
  * and runs the standard ingest pipeline to update the page.
  *
- * @throws {Error} When the page doesn't exist or has no `source_url` in its frontmatter.
+ * @throws {Error} When the page doesn't exist or has no `source_url` in its
+ * frontmatter. A non-ENOENT storage failure on the merge base is rethrown AS
+ * ITSELF (`{ strict: true }`) rather than flattened into "no such page".
+ *
+ * What that buys is the removal of the BOGUS `not found` sentence — the one
+ * `POST /api/tasks/run` poisons at 422, a permanent verdict on a page that is
+ * fine. Where the rethrown error lands instead depends on its SHAPE, and only
+ * two shapes reach the infrastructure-fault row: a `StoreFaultError`, or an
+ * `Error` carrying an errno `code` (see `isInfrastructureFault` in
+ * `./errors`). Those get a transient 500 and the queue's bounded retry.
+ * Anything else — an R2 provider failure carries neither, `./storage/r2`
+ * propagates non-miss failures raw — falls through to the generic transient
+ * 500 at the bottom of the same ladder.
+ * Both are retried; neither is the 422 poison, unless the provider's own
+ * sentence happens to contain "not found".
  */
 export async function reingest(
   slug: string,
@@ -518,8 +579,14 @@ export async function reingest(
     triggeredBy?: string;
   },
 ): Promise<IngestResult> {
-  const page = await readWikiPageWithFrontmatter(slug);
+  // Write base (DW-195/DW-379). The whole re-ingest rewrites from the
+  // `source_url` this read returns, so it must see the STORED bytes — not an
+  // entry the module-global `pageCache` is holding open for a concurrent bulk
+  // scan — and a provider blip must not read as an absence, which would raise
+  // the bogus `not found` below and poison the queued task at 422.
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (!page) {
+    // ENOENT only — a storage fault throws above.
     throw new Error(`Cannot re-ingest: page "${slug}" not found`);
   }
 
@@ -975,22 +1042,59 @@ Reply with ONLY the slug of the matching existing page, copied exactly from the 
 
 /**
  * Find existing pages that might be the SAME concept as a freshly-synthesized
- * one, for {@link adjudicateMerge}. Uses embedding similarity when available (a
- * wide recall net at {@link CONCEPT_ADJUDICATE_FLOOR}); otherwise a title+summary
- * BM25 pass over the index (`fullBody:false` → no disk reads, no LLM) so merge
- * still works before the vector store is backfilled. Returns candidate slugs,
- * best-first.
+ * one, for {@link adjudicateMerge}. Uses embedding similarity when VECTOR SEARCH
+ * IS SWITCHED ON (a wide recall net at {@link CONCEPT_ADJUDICATE_FLOOR});
+ * otherwise a title+summary BM25 pass over the index (`fullBody:false` → no disk
+ * reads, no LLM) so merge still works with the switch off, and before the vector
+ * store is backfilled. Returns candidate slugs, best-first.
  */
 async function findMergeCandidates(
   concept: string,
   embedBody: string,
 ): Promise<string[]> {
   const query = `${concept}\n\n${embedBody}`;
-  if (hasEmbeddingSupport()) {
+  // THE SWITCH, NOT THE PREDICATE (DW-68). `hasEmbeddingSupport()` answers
+  // "could this deployment embed?" — a question a stored key alone makes true.
+  // A key pasted into Settings → Embeddings is not consent to do vector work;
+  // the vector-search switch is, and it ships OFF. Gating retrieval on the
+  // predicate meant saving a key silently flipped ingest's merge step onto
+  // `searchByVector` against a store nothing had necessarily backfilled.
+  // `getVectorSearchSettings().enabled` is the gate `lifecycle.ts`'s embed step
+  // and the `tasks/run` backfill already read, so ingest's WRITE side and its
+  // merge-retrieval side now answer "do we do vector work?" the same way.
+  //
+  // And now every reader: the three DW-68 left ungated — `search.ts`'s
+  // `findRelatedPages` prefilter, `browse.ts`'s `hybridRank` and
+  // `query-search.ts`'s `searchIndex` — plus `search.ts`'s `findSimilarPages`
+  // read the same switch at their own doors (DW-686), so the whole set of
+  // vector-backed doors answers "do we do vector work?" one way. The claim
+  // stays this narrow deliberately: it is about the CALL SITES, one enumerated
+  // list of them, not about the primitives. `searchByVector`/`relatedByVector`
+  // still do not gate themselves, on purpose — `wiki-retrieve.ts`'s
+  // `mergeVectorHits` has to tell "off" from "failed", which it can only do by
+  // reading the switch itself.
+  if (getVectorSearchSettings().enabled) {
     const hits = await searchByVector(query, MAX_MERGE_CANDIDATES + 3);
-    return hits
-      .filter((h) => h.score >= CONCEPT_ADJUDICATE_FLOOR)
-      .map((h) => h.slug);
+    // A PREFERENCE, NOT AN EXCLUSIVE (DW-710). `searchByVector` answers `[]`
+    // for every way the vector leg can have nothing to SAY: no query embedding
+    // (the unresolvable-provider case — `vectorSearchEnabled: true` with
+    // `embeddingProvider: "workers-ai"` off Workers reports `enabled: true`
+    // from a switch that cannot actually run, the `hasWorkersAiBinding: null`
+    // hole), a query throw, a whole-window model-drift drop, and an
+    // un-backfilled store. Returning that `[]` forked every ingest silently.
+    // So: zero hits → fall through to the BM25 branch below, which is what
+    // this function's own docblock already promises "before the vector store
+    // is backfilled".
+    //
+    // Deliberately `hits.length === 0`, NOT "no hits above the floor". A leg
+    // that returned topK hits which all scored under
+    // {@link CONCEPT_ADJUDICATE_FLOOR} is a WORKING leg saying "nothing is
+    // near" — a real answer, and not one to second-guess with a lexical pass.
+    if (hits.length > 0) {
+      return hits
+        .filter((h) => h.score >= CONCEPT_ADJUDICATE_FLOOR)
+        .map((h) => h.slug);
+    }
   }
   const entries = await listWikiPages();
   if (entries.length === 0) return [];
@@ -1017,7 +1121,10 @@ async function adjudicateMerge(
   embedBody: string,
   candidates: { slug: string; title: string; snippet: string }[],
 ): Promise<string | null> {
-  if (!hasLLMKey()) return null;
+  // `{workload: "ingest"}` on the gate and on the call it guards (DW-711):
+  // ingest is Epic 2's call site, so the provider an owner saves for Ingest is
+  // the one this adjudication runs on. Nothing saved inherits the primary.
+  if (!(await hasLLMKey({ workload: "ingest" }))) return null;
   const list = candidates
     .map((c) => `- slug: ${c.slug}\n  title: ${c.title}\n  snippet: ${c.snippet}`)
     .join("\n");
@@ -1029,6 +1136,7 @@ async function adjudicateMerge(
   try {
     out = await callLLM(MERGE_ADJUDICATION_SYSTEM_PROMPT, user, {
       maxOutputTokens: 24,
+      workload: "ingest",
     });
   } catch (err) {
     logger.warn("ingest", "merge adjudication failed; forking to a new page", err);
@@ -1145,39 +1253,172 @@ export function parseDisputedMarker(raw: string): {
 }
 
 /**
+ * Did this fold leave any PROSE behind? (DW-702) — not "is this valid
+ * Markdown", just "is there anything here worth writing over a page".
+ *
+ * A line INDENTED four or more columns (a tab counts as four) is a Markdown
+ * code line, so it is prose whatever it says — the scaffolding tests below are
+ * never applied to it. `    # step one` is a shell comment inside a code block,
+ * not a heading.
+ *
+ * Every other line is scaffolding, and dropped, if it is:
+ *  - blank;
+ *  - a `DISPUTED:` / `CONCEPT:` / `ALIASES:` / `TAGS:` header line. Tested at
+ *    ANY position, not just the head of the body: the parsers consume only a
+ *    LEADING run, so residue can sit anywhere. {@link parseDisputedMarker}
+ *    matches only `yes|true`, so a `DISPUTED: no` line is returned verbatim IN
+ *    the body; and {@link parseConceptMarker} only strips `CONCEPT:` (and then
+ *    `ALIASES:`/`TAGS:`) when `CONCEPT:` LEADS, so a stray first line strands
+ *    all three. All four spellings have to be tolerated here — without
+ *    changing either parser. (Position-independence is deliberate: these four
+ *    words followed by a colon at the very start of an unindented line are not
+ *    a shape real prose takes, and the cost of matching one is only an
+ *    unfolded survivor.)
+ *  - an ATX heading (`# …`);
+ *  - a horizontal rule or setext underline (`---`, `***`, `===`).
+ *
+ * ANYTHING else is prose: a sentence, a list item, a table row, a blockquote,
+ * a fenced-code delimiter or an indented code line. BOTH doors run this one
+ * predicate (DW-739); only the DEGRADE differs, and at each the bias is safe in
+ * exactly one direction:
+ *  - `emptyFallback: "throw"` (the merge door): the degrade is the lossless
+ *    `into.body + "\n\n" + from.body` append, so a false "no prose" costs an
+ *    unfolded survivor while a false "prose" costs the survivor's prose
+ *    outright.
+ *  - `emptyFallback: "new"` (the ingest door): the degrade is `newBody`, the
+ *    fresh synthesis, so a false "no prose" costs an unfolded page — the old
+ *    body's prose is still in its revision history — while a false "prose"
+ *    publishes the literal scaffolding as the page body.
+ */
+function foldCarriesProse(body: string): boolean {
+  for (const raw of body.split(/\r?\n/)) {
+    // A BOM can arrive before OR after the leading whitespace, so normalize
+    // both away in ONE pass rather than ordering two strips (`\s` already
+    // covers U+FEFF; naming it keeps that from looking accidental).
+    const line = raw.replace(/^[\s﻿]+/, "").replace(/[\s﻿]+$/, "");
+    if (line === "") continue;
+    // Indent measured on the BOM-free line so a leading BOM can't shift the
+    // column count. 4+ columns → code line → prose, tests below skipped.
+    const indent = raw.replace(/﻿/g, "").match(/^[ \t]*/)![0];
+    if (indent.replace(/\t/g, "    ").length >= 4) return true;
+    if (/^(?:DISPUTED|CONCEPT|ALIASES|TAGS):/i.test(line)) continue;
+    if (/^#{1,6}(?:\s|$)/.test(line)) continue;
+    // `---`, `***`, `___`, `- - -` (rules) and `===` / `---` (setext).
+    if (/^(?:[-*_=][ \t]*){3,}$/.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Reconcile an existing page body with a newly ingested article on the same
  * concept via a single LLM call (the accumulate-and-reconcile step). Returns
  * the merged body and whether the new source contradicts the existing page
  * (→ `disputed`).
  *
  * Defensive about the model's output: strips a `DISPUTED:` marker, then any
- * echoed `CONCEPT:`/`ALIASES:` synthesis headers. Falls back to the new body on
- * an empty/failed response so a reconcile hiccup never blanks the page.
+ * echoed `CONCEPT:`/`ALIASES:` synthesis headers.
+ *
+ * `emptyFallback` picks what an EMPTY fold means, because the two doors that
+ * call this disagree about it and the wrong answer destroys prose:
+ *
+ *  - `"new"` (default, the ingest door): `newBody` is the freshly synthesized
+ *    article, so falling back to it degrades to the pre-reconcile overwrite —
+ *    the page keeps a real body rather than the fold's nothing. (This covers
+ *    the empty/whitespace response AND a response that survives that check but
+ *    strips down to nothing; see the note at the second check below.)
+ *  - `"throw"` (the merge door): there `newBody` is the ABSORBED page's body,
+ *    and the caller writes the result over the SURVIVOR and then hard-deletes
+ *    the absorbed Page and its revisions. Returning `newBody` would silently
+ *    replace the survivor's prose with the absorbed page's — recoverable only
+ *    by hand, from the survivor's revision history and the merge receipt, and
+ *    replayed verbatim by any Retry. Throwing hands the caller its own
+ *    reconcile-failed path (append both bodies) instead, which loses nothing.
+ *
+ * At BOTH doors an empty fold is any response that CARRIES NO PROSE — see
+ * {@link foldCarriesProse}. That covers the empty/whitespace response and, once
+ * the markers above are stripped, a residue of nothing but scaffolding: a
+ * leftover `DISPUTED:` / `CONCEPT:` / `ALIASES:` / `TAGS:` header line the
+ * parsers did not consume (notably `DISPUTED: no`, which
+ * {@link parseDisputedMarker} deliberately leaves in the body), a bare heading,
+ * or a horizontal rule. ONE RULE, TWO DEGRADES (DW-739): `"throw"` throws,
+ * `"new"` falls back to `newBody` exactly as it does on an empty response.
+ * The ingest door used to return such text VERBATIM, which published the
+ * literal `DISPUTED: no` over the existing page's whole body.
+ *
+ * THE VERDICT GOES WITH THE BODY, at both doors. Neither degrade carries the
+ * `DISPUTED: yes` the fold emitted — throwing discards it, and the `"new"`
+ * fallback resolves `disputed: false` — so `"DISPUTED: yes\n\n# X\n"`, a verdict
+ * over a bare heading, no longer escalates the `disputed` flag (which also
+ * feeds {@link computeConfidence}); the merge caller appends bodies and the
+ * survivor keeps whatever verdict its own frontmatter already held, and the
+ * ingest caller (which only ever escalates) leaves the page's preserved flag
+ * alone. That is the rule the marker-only case has always followed — a fold
+ * that produced nothing produces no verdict either — and it is the only
+ * coherent one: `disputed` asserts that THIS body reconciles contradictory
+ * sources, and there is no such body here. A verdict is trusted only when it
+ * arrives with the prose it is about.
  */
 export async function reconcilePage(
   existingBody: string,
   newBody: string,
-  owner?: string,
+  /** The HUMAN principal whose workspace standards guide the fold — see
+   * {@link humanOwnerOf}. Callers reduce the raw handle BEFORE calling. */
+  guidanceOwner?: string,
+  cache?: GuidanceCache,
+  options?: { emptyFallback?: "new" | "throw"; workload?: LlmWorkload },
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
-  const [workspaceGuidance, dictionaryGuidance] = owner
+  const [workspaceGuidance, dictionaryGuidance] = guidanceOwner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+        buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
       ])
     : ["", ""];
   const systemPrompt = RECONCILE_SYSTEM_PROMPT +
     (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
     (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : "");
+  // THE ROUTE IS THE CALLER'S TO NAME, not this function's (DW-711). Two doors
+  // reach here and they are gated by different questions: `ingest()` below gates
+  // on `hasLLMKey` with `{workload: "ingest"}` and passes the matching workload,
+  // while `mergePages` (`src/lib/merge.ts`) gates on the argument-less gate — the
+  // PRIMARY question — and `merge.ts` is not a workload owner. Baking
+  // `workload: "ingest"` in here would hand the merge fold a provider its own
+  // gate never asked about: with an `ingestProvider` the deployment cannot
+  // construct, merge's gate opens and this call throws into `mergePages`' catch,
+  // which silently appends the two bodies. A gate and the call it guards must
+  // answer to one provider, so the caller supplies it.
   const out = await callLLM(systemPrompt, user, {
     maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS,
+    workload: options?.workload,
   });
+  const emptyFallback = options?.emptyFallback ?? "new";
   if (!out || out.trim() === "") {
+    if (emptyFallback === "throw") {
+      throw new Error("reconcile returned an empty body");
+    }
     return { body: newBody, disputed: false };
   }
   const { disputed, body: afterDisputed } = parseDisputedMarker(out);
   // Guard against the model echoing the synthesis headers into the merged body.
   const { body } = parseConceptMarker(afterDisputed);
+  // One rule, two degrades: a fold that carries no prose is the same empty fold
+  // as an empty response (DW-702, DW-739). Both doors run the check; only the
+  // degrade differs — the merge door throws into its lossless append, the
+  // ingest door falls back to `newBody`, the fresh synthesis, exactly as the
+  // empty/whitespace branch above does. The verdict goes with the body.
+  if (!foldCarriesProse(body)) {
+    if (emptyFallback === "throw") {
+      throw new Error("reconcile returned an empty body (the fold carried no prose)");
+    }
+    // SAY SO. This degrade resolves NORMALLY, so without a line here the caller
+    // cannot tell "the model folded the page" from "the model emitted
+    // scaffolding and we threw its answer away" — the adjacent degrade at the
+    // ingest call site logs its own. Only on this path: under `"throw"` the
+    // thrown error already IS the caller's signal.
+    logger.warn("ingest", "reconcile fold carried no prose; using new body");
+    return { body: newBody, disputed: false };
+  }
   return { body, disputed };
 }
 
@@ -1214,7 +1455,21 @@ export async function collectTagVocabulary(
   }
 }
 
-export async function buildIngestSystemPrompt(owner?: string): Promise<string> {
+export async function buildIngestSystemPrompt(
+  /** The HUMAN principal whose workspace standards guide the prompt — see
+   * {@link humanOwnerOf}. NOT a storage key. */
+  guidanceOwner?: string,
+  cache?: GuidanceCache,
+): Promise<string> {
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `guidanceOwner`
+  // parameter used for guidance below. `guidanceOwner` is a PRINCIPAL, not a
+  // tenant — it can be `"system"` or a monitor's owner, neither of which may
+  // become a Schema storage key. Correct while work-wiki is single-owner; a second
+  // tenant means threading a tenant argument through `loadPageConventions()`
+  // and passing it here — the caller's TENANT, which is not necessarily
+  // `owner`. See the invariant on `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   const vocab = await collectTagVocabulary();
 
@@ -1234,10 +1489,10 @@ Follow these conventions when generating the page.`;
 Tags already used across this wiki (PREFER reusing an existing tag when it fits; only coin a new one when none apply):
 ${vocab.join(", ")}`;
   }
-  if (owner) {
+  if (guidanceOwner) {
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(owner),
-      buildNamesTermsGuidance(owner),
+      buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+      buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
     ]);
     if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
     if (dictionaryGuidance) prompt += `\n\n${dictionaryGuidance}`;
@@ -1261,7 +1516,7 @@ export interface IngestOptions {
    * default `"url"` / `"text"` heuristic when building the `sources[]` entry.
    * Used by `ingestXMention()` to set `"x-mention"` provenance.
    */
-  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
+  sourceType?: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   /**
    * Who triggered the ingest (user handle or agent ID). Defaults to `"system"`.
    * Passed through to the `triggered_by` field on the `SourceEntry`.
@@ -1300,6 +1555,52 @@ export interface IngestOptions {
    * `agentic-systems`). Only honored on the direct synthesis path.
    */
   pinSlug?: string;
+  /**
+   * Widen the guidance memo from ONE DOCUMENT to the caller's whole operation
+   * (DW-324). Omitted, `ingest()` mints its own handle and behaves exactly as
+   * before: one Workspace Purpose resolution and one dictionary read per
+   * document. Supplied, every document sharing the handle resolves both once —
+   * which is what `POST /api/ingest/batch`'s queue-unavailable fallback wants,
+   * since one batch is one user action.
+   *
+   * NOT serializable, and it must never reach a queue task payload — a queued
+   * task is a different, later request and must resolve guidance fresh. That
+   * is ENFORCED, not merely conventional: the `kind: "ingest"` variant of
+   * `Task` declares `guidanceCache?: never` (DW-396), so spreading an options
+   * object carrying this handle onto a payload literal is a compile error.
+   * Routes still hand-write their payloads separately; the guard is there for
+   * the day one of them stops.
+   */
+  guidanceCache?: GuidanceCache;
+  /**
+   * Folder-import relative path (Story 2.2). Persisted on the options object so
+   * Analysis can later treat `papers > energy` as classification context.
+   * Unused by Generation in this story — do not interpolate it into prompts.
+   */
+  relativePath?: string;
+  /** Plaud-origin Intake. */
+  origin?: "plaud";
+  /** Durable job — Analysis persist, cancel checks, Activity stages. */
+  jobId?: string;
+  /** Generation-only retry: reuse persisted Analysis JSON. */
+  reuseAnalysis?: boolean;
+  /** SHA-256 of stored Source bytes when the door already computed it. */
+  contentSha256?: string;
+  /** Stored Source path (`raw/sources/…`) for bookkeeping citations. */
+  sourcePath?: string;
+}
+
+export class IngestCancelledError extends Error {
+  constructor() {
+    super(INGEST_CANCELLED_COPY);
+    this.name = "IngestCancelledError";
+  }
+}
+
+async function assertNotCancelled(jobId?: string): Promise<void> {
+  if (!jobId) return;
+  const job = await getIngestJob(jobId);
+  if (job?.cancelled || job?.sourceDeleted) throw new IngestCancelledError();
 }
 
 /**
@@ -1311,32 +1612,70 @@ export interface IngestOptions {
  * (stale index) so the caller can fall through to a normal ingest.
  */
 /**
- * Reduce a handle to its human identity: an agent id `<user>--<name>` collapses
- * to `<user>` (slugified), a plain handle slugifies as-is. Mirrors the
- * owner-equivalence `canReadPage`/`canWritePage` use, at the handle level.
- */
-function humanOf(handle: string): string {
-  const i = handle.indexOf("--");
-  return slugify(i >= 0 ? handle.slice(0, i) : handle);
-}
-
-/**
  * True iff ingest actor `actorOwner` belongs to the same human-owner class as a
  * page owned by `pageOwner` — i.e. the actor (or their agent) owns it. Used to
  * decide whether an ingest may converge onto a PRIVATE page: private content is
  * owner-only, so a non-owner must never dedup/merge into it.
+ *
+ * The reduction is {@link humanOwnerOf}; the `slugify` stays HERE, at the
+ * comparison site, because a comparison key is what this guard wants and the
+ * shared reduction must stay unslugified for its other caller (guidance
+ * addressing, which feeds the raw segment to `ownerToTenant`).
  */
 export function sameHumanOwner(actorOwner: string | undefined, pageOwner: unknown): boolean {
   if (typeof pageOwner !== "string" || pageOwner.trim() === "") return false;
   if (!actorOwner || actorOwner.trim() === "") return false;
-  return humanOf(actorOwner) === humanOf(pageOwner);
+  return ownerClassKey(actorOwner) === ownerClassKey(pageOwner);
 }
 
-/** Find a slug not taken by any existing page (`base`, `base-2`, `base-3`, …). */
+/**
+ * The owner-equivalence key {@link sameHumanOwner} compares — the slugified
+ * human behind a handle, with ONE deliberate divergence from `humanOwnerOf`.
+ *
+ * The two callers of the reduction want OPPOSITE things about the class of
+ * handles carrying no usable human prefix (`--yoyo`, `" --yoyo"`, `--`):
+ *
+ *  - GUIDANCE addressing must never hand `ownerToTenant` an empty principal —
+ *    it would collapse onto the DEFAULT tenant and guide the fold with the
+ *    default silo's Purpose and dictionary. So `humanOwnerOf` returns the
+ *    WHOLE handle there, keeping it on its own tenant.
+ *  - THIS guard wants the opposite: a handle naming no human is its own
+ *    equivalence class, so it matches only other handles naming no human and
+ *    never a real person. Letting `--yoyo` reduce to the whole handle would
+ *    slugify to `"yoyo"` and make `sameHumanOwner("yoyo", "--yoyo")` true —
+ *    widening an authorization-adjacent guard that gates private-page dedup.
+ *
+ * So the class is folded back to the empty key here. That reproduces the old
+ * private `humanOf` (`slugify(i >= 0 ? handle.slice(0, i) : handle)`) exactly
+ * for every input, which is the point: DW-543 promoted the reduction without
+ * moving a single handle between classes.
+ */
+function ownerClassKey(handle: string): string {
+  const human = humanOwnerOf(handle);
+  // `humanOwnerOf` returns its argument UNCHANGED exactly when there was no
+  // usable human prefix. With a `--` present that means the degenerate class
+  // above; without one it is an ordinary prefix-less handle, which the old
+  // `humanOf` slugified whole.
+  return human === handle && handle.includes("--") ? "" : slugify(human);
+}
+
+/**
+ * Find a slug not taken by any existing page (`base`, `base-2`, `base-3`, …).
+ *
+ * Reads `{ fresh: true, strict: true }` because this is NOT a pure existence
+ * probe. Its only caller is the realm-fork guard below, so a `false` here is a
+ * decision to WRITE onto the probed slug. A non-ENOENT provider failure or a
+ * stale `pageCache` entry answering "free" flattens the loop on its first
+ * candidate and hands back `base` itself — the very private page the fork
+ * exists to get off — or forks onto some other occupied slug. Fail the ingest
+ * closed instead; ENOENT still answers `null`, so genuine absence is unchanged.
+ */
 async function findFreeSlug(base: string): Promise<string> {
   let candidate = base;
   let n = 2;
-  while (await readWikiPageWithFrontmatter(candidate)) {
+  while (
+    await readWikiPageWithFrontmatter(candidate, { fresh: true, strict: true })
+  ) {
     candidate = `${base}-${n++}`;
   }
   return candidate;
@@ -1352,8 +1691,15 @@ async function attachIngestTrigger(
     actorOwner?: string;
   },
 ): Promise<IngestResult | null> {
-  const existing = await readWikiPageWithFrontmatter(slug);
-  if (!existing) return null; // index drifted — let the caller ingest normally
+  // Write base (DW-195/DW-379): the frontmatter merged below and the
+  // `expectedContent` CAS precondition must describe the STORED bytes, so this
+  // read bypasses `pageCache` and refuses to flatten a provider blip into an
+  // absence — that fall-through would mint a DUPLICATE page and precondition
+  // the write on bytes nobody stored.
+  const existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+  // ENOENT only — the index drifted, so let the caller ingest normally. A
+  // storage fault throws above rather than arriving here as a `null`.
+  if (!existing) return null;
 
   // Realm-aware dedup: private content is owner-only, so a caller who isn't the
   // owner (or their agent) must NOT dedup into a private page — no write, no
@@ -1404,6 +1750,7 @@ async function attachIngestTrigger(
     logOp: "ingest",
     crossRefSource: null, // skip the cross-ref LLM — pure dedup attach
     author: triggeredBy,
+    expectedContent: existing.content,
     logDetails: () => `dedup: attached trigger to existing page "${slug}"`,
   });
 
@@ -1441,6 +1788,130 @@ async function attachIngestTrigger(
 }
 
 /**
+ * Attach a re-see to an already-ingested page (SHA-256 skip). Same write path
+ * as URL/content dedup — no Analysis, no Generation.
+ */
+export async function recordSourceResee(
+  slug: string,
+  source: {
+    url: string;
+    type: SourceEntry["type"];
+    triggeredBy?: string;
+    actorOwner?: string;
+  },
+): Promise<IngestResult | null> {
+  const result = await attachIngestTrigger(slug, source);
+  return result ? { ...result, skipped: true, deduped: true } : null;
+}
+
+function classificationContext(relativePath?: string): string | undefined {
+  if (!relativePath) return undefined;
+  const dirs = relativePath.split("/").slice(0, -1).filter(Boolean);
+  return dirs.length > 0 ? dirs.join(" > ") : undefined;
+}
+
+const ANALYSIS_SYSTEM_PROMPT = `You analyze a source document for a wiki ingest. Reply with ONLY a JSON object, no markdown fences, with these keys:
+- entities: string[] (people, orgs, tools)
+- concepts: string[]
+- arguments: string[] (claims the source makes)
+- existingLinks: string[] (likely wiki titles or slugs this should link)
+- tensions: string[] (contradictions or open questions)
+- recommendedStructure: string (short note on how to organize the page)
+- classificationContext: string (echo any folder location you were given, or "")
+- searchQueries: string[] (follow-up research queries if a human should decide what to look up)
+- reviewItems: optional array of { kind: "warning"|"lightbulb", title, summary, queries }
+Write all string values in English.`;
+
+async function analyzeSource(
+  title: string,
+  content: string,
+  relativePath?: string,
+): Promise<IngestAnalysis> {
+  const context = classificationContext(relativePath);
+  // THE SHARPEST OF THE GATES: there is no `try` around the `callLLM` below, so
+  // this must stay a degrade. Asking the workload keeps the two in step —
+  // opening for a route the call does not take is what would turn the empty
+  // analysis into a thrown ingest (DW-711).
+  if (!(await hasLLMKey({ workload: "ingest" }))) {
+    return emptyIngestAnalysis(context);
+  }
+  const user = [
+    `Title: ${title}`,
+    context ? `Folder location (classification context): ${context}` : "",
+    "",
+    content.slice(0, MAX_LLM_INPUT_CHARS),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const raw = await callLLM(ANALYSIS_SYSTEM_PROMPT, user, {
+    maxOutputTokens: 2_000,
+    workload: "ingest",
+  });
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  const parsed =
+    start >= 0 && end > start
+      ? parseIngestAnalysis(JSON.parse(raw.slice(start, end + 1)))
+      : null;
+  if (!parsed) {
+    throw new Error("Analysis did not return valid JSON.");
+  }
+  if (context && !parsed.classificationContext) {
+    parsed.classificationContext = context;
+  }
+  return parsed;
+}
+
+async function runTwoStepSynthesis(input: {
+  title: string;
+  content: string;
+  /**
+   * The RAW acting owner handle — an agent keeps its `--<name>` suffix. Used
+   * only for the durable lock key below, which must stay keyed exactly as it is
+   * written today (DW-543).
+   */
+  owner: string;
+  /**
+   * The HUMAN behind {@link owner} ({@link humanOwnerOf}) — the principal whose
+   * Workspace Purpose and Names & Terms dictionary govern the prompts. Separate
+   * from `owner` precisely so reducing guidance never repoints the lock.
+   */
+  guidanceOwner: string;
+  cache?: GuidanceCache;
+  jobId?: string;
+  reuseAnalysis?: boolean;
+  relativePath?: string;
+}): Promise<string> {
+  return withDurableLock(`ingest-llm:${input.owner}`, async () => {
+    // Classic ingest (no tracked job) stays one Generation call. The two-step
+    // Analysis → Generation contract is the Workbench compile path.
+    if (!input.jobId) {
+      return synthesizeBody(
+        input.title,
+        input.content,
+        input.guidanceOwner,
+        input.cache,
+      );
+    }
+    let analysis: IngestAnalysis | null = await loadIngestAnalysis(input.jobId);
+    if (!analysis) {
+      await updateIngestJob(input.jobId, { stage: "analysis" });
+      analysis = await analyzeSource(input.title, input.content, input.relativePath);
+      await saveIngestAnalysis(input.jobId, analysis);
+    }
+    await assertNotCancelled(input.jobId);
+    await updateIngestJob(input.jobId, { stage: "generation" });
+    return synthesizeBody(
+      input.title,
+      input.content,
+      input.guidanceOwner,
+      input.cache,
+      analysis,
+    );
+  });
+}
+
+/**
  * Synthesize the wiki body from IMAGE-FREE source text: a single LLM call for
  * short content, MAP/REDUCE for long content (parallel map in bounded-concurrency
  * batches → merge), or a deterministic fallback page when there's no LLM key.
@@ -1450,17 +1921,27 @@ async function attachIngestTrigger(
 async function synthesizeBody(
   title: string,
   content: string,
-  owner?: string,
+  /** The HUMAN principal whose workspace standards guide the prompts — see
+   * {@link humanOwnerOf}. NOT a storage key and not the lock key. */
+  guidanceOwner?: string,
+  cache?: GuidanceCache,
+  analysis?: IngestAnalysis,
 ): Promise<string> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey({ workload: "ingest" }))) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  const systemPrompt = await buildIngestSystemPrompt(owner);
+  let systemPrompt = await buildIngestSystemPrompt(guidanceOwner, cache);
+  systemPrompt += `\n\nWrite the wiki page in English only.`;
+  if (analysis) {
+    systemPrompt += `\n\nConsume this Analysis JSON when writing the page. Do not ignore it:\n${JSON.stringify(analysis)}`;
+  }
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
-  const llmOptions = { maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS };
+  // The workload rides on the shared options objects, so the single-chunk call
+  // and the reduce call below cannot drift from the gate above (DW-711).
+  const llmOptions = { maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS, workload: "ingest" as const };
 
   if (chunks.length === 1) {
     return callLLM(systemPrompt, chunks[0], llmOptions);
@@ -1470,7 +1951,7 @@ async function synthesizeBody(
   // bounded-concurrency batches), then merge the partials into one article.
   // Mapping from source keeps coverage faithful and stops cross-chunk drift;
   // the parallel map keeps a long transcript well under the request budget.
-  const mapOptions = { maxOutputTokens: INGEST_MAP_MAX_OUTPUT_TOKENS };
+  const mapOptions = { maxOutputTokens: INGEST_MAP_MAX_OUTPUT_TOKENS, workload: "ingest" as const };
   const partials: string[] = [];
   for (let i = 0; i < chunks.length; i += INGEST_MAP_CONCURRENCY) {
     const batch = chunks.slice(i, i + INGEST_MAP_CONCURRENCY);
@@ -1506,10 +1987,10 @@ async function synthesizeBody(
     // reducing nothing into a hallucinated page.
     throw new Error("synthesis produced no content from the source");
   }
-  const [workspaceGuidance, dictionaryGuidance] = owner
+  const [workspaceGuidance, dictionaryGuidance] = guidanceOwner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner),
-        buildNamesTermsGuidance(owner),
+        buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+        buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
       ])
     : ["", ""];
   return callLLM(
@@ -1531,12 +2012,36 @@ async function synthesizeBody(
  * routes import) precisely so an API/UI caller can never set a "write this body
  * verbatim" payload. The sole caller is `ingestImage()` — the image body (embed
  * + vision text) is already final, so re-synthesizing it would be wasteful.
+ *
+ * The `asset*` fields ride the same INTERNAL channel and for the same reason
+ * (DW-738): `ingestImage` must mint the image's storage key before this
+ * function has settled the slug, so when the realm-fork guard below uniquifies
+ * it, the bytes are sitting in the OTHER page's asset directory and only this
+ * function knows the final slug to move them onto.
  */
 export async function ingest(
   title: string,
   content: string,
   options?: IngestOptions,
-  internal?: { prebuiltContent?: string },
+  internal?: {
+    prebuiltContent?: string;
+    /** Slug the image asset's directory was keyed on (`slugify(title)`). */
+    assetSlug?: string;
+    /** The digest-prefixed filename `storeImageBytes` actually wrote. */
+    assetFile?: string;
+    /**
+     * Did that write CREATE the key? `writeAssetIfAbsent` answering `false`
+     * means the content-addressed key already held these exact bytes belonging
+     * to the other page — deleting it on a re-key would be data loss.
+     */
+    assetCreated?: boolean;
+    /**
+     * The stored bytes, still in memory. Lets the re-key write the new key
+     * directly instead of reading the old one back — one less read, and no
+     * dependency on a key a concurrent ingest may already have reclaimed.
+     */
+    assetBytes?: ArrayBuffer;
+  },
 ): Promise<IngestResult> {
   const startedAt = new Date().toISOString();
   // Title is optional for pasted text — derive a provisional one from the
@@ -1571,22 +2076,86 @@ export async function ingest(
   // can scope a semantic merge to the same owner's silo.
   const actor = options?.author?.trim() || "system";
   const owner = options?.owner?.trim() || actor;
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543). `owner` stays
+  // the RAW handle everywhere it addresses or attributes: the frontmatter
+  // `owner`, the silo it writes into, the dedup/private-page guards, the
+  // concept resolver's same-silo scoping, the bookkeeping and the
+  // `ingest-llm:` lock key. But a Workspace Purpose and a Names & Terms
+  // dictionary belong to a PERSON, not to each of that person's agents — an
+  // agent handle like `alice--yoyo` keys its own empty tenant, so guidance
+  // resolved from it would come back blank while the same-owner guard above
+  // already collapses it onto `alice`. Reduce it once, here, and hand the
+  // reduced principal to every guidance consumer below.
+  const guidanceOwner = humanOwnerOf(owner);
+  // ONE guidance resolution for this document (DW-141, DW-322). Synthesis, the
+  // map/reduce REDUCE step, reconcile-on-merge and the concept canonicalization
+  // below all ask for the same active Wiki's Workspace Purpose and the same
+  // Names & Terms dictionary, neither of which can change mid-document.
+  //
+  // A caller may supply its own handle to widen that scope to its whole
+  // operation (DW-324). With none supplied the handle is local to this call, so
+  // a Purpose or dictionary entry saved between two ingests is still picked up
+  // by the next one.
+  const guidanceCache = options?.guidanceCache ?? createGuidanceCache();
 
-  // Dedup by content: if identical content was already ingested (any slug),
-  // attach the triggerer and skip the LLM + embedding.
+  // Dedup by SHA-256 of stored Source bytes — not FNV-1a. FNV `contentHash`
+  // stays on the page for embedding stale-check only.
   const hash = contentHash(content);
+  const sha256 = options?.contentSha256 ?? (await sourceSha256(content));
   if (!prebuiltContent) {
-    const dupSlug = await resolveContentHash(hash);
+    const dupSlug = await resolveContentSha256(sha256);
     if (dupSlug) {
-      const result = await attachIngestTrigger(dupSlug, {
-        url:
-          options?.sourceUrl ??
-          (options?.sourceType === "email" ? "email" : "text-paste"),
-        type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
-        triggeredBy: options?.triggeredBy,
-        actorOwner: owner,
-      });
-      if (result) return result;
+      const existingPage = await readWikiPageWithFrontmatter(dupSlug);
+      if (
+        existingPage &&
+        !sameHumanOwner(owner, existingPage.frontmatter.owner)
+      ) {
+        // Cross-owner hit: compile our own Source; do not attach or expose.
+      } else {
+        const result = await recordSourceResee(dupSlug, {
+          url:
+            (options?.sourcePath
+              ? workbenchSourcePath(options.sourcePath)
+              : null) ??
+            options?.sourcePath ??
+            options?.sourceUrl ??
+            (options?.sourceType === "email" ? "email" : "text-paste"),
+          type: options?.sourceType ?? (options?.sourceUrl ? "url" : "text"),
+          triggeredBy: options?.triggeredBy,
+          actorOwner: owner,
+        });
+        if (result) {
+          if (
+            (options?.sourcePath || options?.jobId) &&
+            !(await hasBookkeepingComplete(sha256))
+          ) {
+            const sourceType =
+              options?.sourceType ?? (options?.sourceUrl ? "url" : "text");
+            await runIngestBookkeeping({
+              owner,
+              actor,
+              sourceTitle: effectiveTitle,
+              sourceText: content,
+              sourcePath:
+                (options?.sourcePath
+                  ? workbenchSourcePath(options.sourcePath)
+                  : null) ??
+                options?.sourcePath ??
+                (options?.relativePath
+                  ? `raw/sources/${options.relativePath}`
+                  : `raw/sources/${dupSlug}`),
+              sourceUrl: options?.sourceUrl,
+              sourceType,
+              rawId: options?.sourcePath
+                ? (sourceRestFromPath(options.sourcePath) ?? undefined)
+                : undefined,
+              origin: options?.origin,
+            });
+            await markBookkeepingComplete(sha256);
+          }
+          return result;
+        }
+      }
     }
   }
 
@@ -1600,7 +2169,16 @@ export async function ingest(
     // text and the body is clean prose (no inline images, no `## Figures`
     // gallery, no re-hosting).
     const cleanContent = stripImageMarkdown(content);
-    wikiContent = await synthesizeBody(effectiveTitle, cleanContent, owner);
+    wikiContent = await runTwoStepSynthesis({
+      title: effectiveTitle,
+      content: cleanContent,
+      owner,
+      guidanceOwner,
+      cache: guidanceCache,
+      jobId: options?.jobId,
+      reuseAnalysis: options?.reuseAnalysis,
+      relativePath: options?.relativePath,
+    });
   }
 
   // Pull the leading `CONCEPT:` / `ALIASES:` header lines the synthesis prompt
@@ -1613,7 +2191,10 @@ export async function ingest(
     tags: conceptTags,
     body: conceptStrippedBody,
   } = parseConceptMarker(wikiContent);
-  const dictionary = await listNamesTerms(owner);
+  // The SAME principal the prompts carried, so the concept is canonicalized
+  // against the very dictionary the model was shown — and the shared,
+  // tenant-keyed handle stays one read.
+  const dictionary = await listNamesTerms(guidanceOwner, guidanceCache.namesTerms);
   const concept = extractedConcept
     ? canonicalizeNamesTerm(dictionary, extractedConcept)
     : extractedConcept;
@@ -1684,7 +2265,20 @@ export async function ingest(
   // private page — via the concept resolver, an alias, or a slug collision —
   // FORK to a fresh slug so the ingest produces the actor's OWN page and never
   // writes to (or leaks the slug of) the private one.
-  const resolvedExisting = await readWikiPageWithFrontmatter(slug);
+  //
+  // `{ fresh: true, strict: true }` because this is NOT a pure existence probe:
+  // it is the only gate that declines a write onto another owner's page. The
+  // write base below reads fresh+strict and DOES find the private page — it
+  // preserves that page's `owner`/`visibility` and writes the actor's body over
+  // it, with nothing downstream to re-decide. So a `null` here from a
+  // non-ENOENT provider blip, or from a stale `pageCache` entry left open by a
+  // concurrent bulk scan, AUTHORIZES a cross-owner overwrite. Fail the ingest
+  // closed instead. No `owner` hint, deliberately: it only reaches the ACTOR's
+  // own silo, which can never be the other-owner private page being forked from.
+  const resolvedExisting = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
   if (
     resolvedExisting &&
     resolvedExisting.frontmatter.visibility === "private" &&
@@ -1693,10 +2287,50 @@ export async function ingest(
     slug = await findFreeSlug(slug);
   }
 
+  // `slug` is FINAL here — the alias resolver, the concept/H1 re-derivation, a
+  // `pinSlug` and the realm fork above have all had their say — so this is the
+  // one point where the image `ingestImage` already stored can be keyed off the
+  // page that actually owns it (DW-738). `ingestImage` has to mint
+  // `assets/<slugify(title)>/…` BEFORE calling in, because the key is embedded
+  // in the body handed over; whenever the page then lands somewhere else, the
+  // bytes are left under ANOTHER page's directory, where
+  // `/api/assets/[...path]` gates them on that page's visibility and
+  // `syncSiloForPage` mirrors them into that owner's tenant. The realm fork is
+  // the case DW-738 reported; the condition is written against the final slug
+  // rather than against the fork so every other slug move is closed too.
+  //
+  // `removeSource` follows `assetCreated` because the key is content-addressed:
+  // `writeAssetIfAbsent` answering `false` means it already held byte-identical
+  // content that belongs to the other page. Deleting then is data loss; the
+  // copy is enough.
+  //
+  // Only `wikiContent` is rewritten. `content` is the verbatim arriving
+  // document — the raw snapshot saved below, addressed by `contentHash(content)`
+  // — and must not be edited.
+  if (internal?.assetFile && internal.assetSlug && internal.assetSlug !== slug) {
+    const oldRef = assetRefPath(internal.assetSlug, internal.assetFile);
+    // No try/catch: a re-key that cannot complete must fail the ingest rather
+    // than write a page whose image reference points at bytes it does not own.
+    const newRef = await rekeyImageAsset(internal.assetSlug, slug, internal.assetFile, {
+      removeSource: internal.assetCreated === true,
+      // The buffer `ingestImage` still holds, so the copy never reads the old
+      // key back — a concurrent ingest that already reclaimed it cannot fail
+      // this one. See `rekeyImageAsset`.
+      bytes: internal.assetBytes,
+    });
+    wikiContent = wikiContent.split(oldRef).join(newRef);
+  }
+
   // --- Write path ---
 
-  // 3. Save raw source
-  const rawPath = await saveRawSource(slug, content);
+  // 3. Save raw source. Intake already stored the canonical object at
+  // `options.sourcePath` — do not mint untracked duplicates.
+  const canonicalSourcePath = options?.sourcePath
+    ? (workbenchSourcePath(options.sourcePath) ?? options.sourcePath)
+    : undefined;
+  const rawPath = canonicalSourcePath
+    ? canonicalSourcePath
+    : await saveRawSource(slug, content);
 
   // 4. Build / refresh the YAML frontmatter block. New pages get
   // created = updated = today and source_count = 1. Re-ingesting the same
@@ -1724,6 +2358,7 @@ export async function ingest(
     supersedes: "",
     aliases: [],
     content_hash: hash,
+    content_sha256: sha256,
   };
 
   // Agent-scoped pages carry a `type` (e.g. "agent-knowledge") so they're
@@ -1739,20 +2374,30 @@ export async function ingest(
 
   // Build the structured sources[] provenance entry for this ingest, and keep a
   // per-source raw snapshot so a multi-source page can show each source's raw.
-  // The id is keyed on the source URL (so re-ingesting a URL refreshes that
-  // snapshot, matching how mergeSourceEntry dedups by url); paste/upload key on
-  // content instead, since they share the "text-paste" placeholder url.
+  // The id is a hash of the arriving BYTES (FR-2): a later ingest of the same
+  // URL with a new body mints a new key instead of rewriting the old one.
+  // mergeSourceEntry still dedups the page row by URL and points raw_id at the
+  // latest snapshot. Paste/upload/email share a placeholder url, so they were
+  // already content-hashed; URL ingest now uses the same rule.
   const sourceType = options?.sourceType
     ?? (options?.sourceUrl ? "url" : "text");
   const sourceUrl =
-    options?.sourceUrl ?? (sourceType === "email" ? "email" : "text-paste");
-  const rawId = contentHash(
-    sourceUrl !== "text-paste" && sourceUrl !== "upload" && sourceUrl !== "email"
-      ? sourceUrl
-      : content,
+    canonicalSourcePath ??
+    options?.sourceUrl ??
+    (sourceType === "email" ? "email" : "text-paste");
+  const rawId = canonicalSourcePath
+    ? (sourceRestFromPath(canonicalSourcePath) ?? contentHash(content))
+    : contentHash(content);
+  if (!canonicalSourcePath) {
+    await saveRawSourceFor(slug, rawId, content);
+  }
+  const sourceEntry = buildSourceEntry(
+    sourceUrl,
+    sourceType,
+    options?.triggeredBy,
+    rawId,
+    options?.origin,
   );
-  await saveRawSourceFor(slug, rawId, content);
-  const sourceEntry = buildSourceEntry(sourceUrl, sourceType, options?.triggeredBy, rawId);
   frontmatter.sources = serializeSources([sourceEntry]);
 
   // Tags = the page's own CONCEPT as a topic tag (deterministic) + caller tags +
@@ -1774,7 +2419,20 @@ export async function ingest(
     frontmatter.tags = newTags;
   }
 
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Serialize the authoritative read/merge/write by the RESOLVED page slug.
+  // A job id is unique per delivery, so it cannot fence two independent jobs
+  // that converge onto the same new concept. Keeping this lock around the
+  // fresh merge base and lifecycle commit prevents two first-ingests from both
+  // observing "missing" and then overwriting one another.
+  const commitLock = `ingest-commit:${slug}`;
+  let shouldAccumulateWithoutLlm = false;
+  const { updatedSlugs } = await withDurableLock(commitLock, async () => {
+  await assertNotCancelled(options?.jobId);
+  const existing = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+    owner,
+  });
   if (existing) {
     const existingCreated = existing.frontmatter.created;
     if (typeof existingCreated === "string" && existingCreated !== "") {
@@ -1827,7 +2485,15 @@ export async function ingest(
     );
     // Merge the new entry, superseding a stale "text-paste" placeholder.
     // (source_count is the ingest counter, set above — not the array length.)
-    frontmatter.sources = serializeSources(mergeSourceEntry(existingSources, sourceEntry));
+    const existingSourceCount = existingSources.length;
+    const sourceSnapshotIsNew = !existingSources.some(
+      (source) => source.raw_id === rawId,
+    );
+    const mergedSources = mergeSourceEntry(existingSources, sourceEntry);
+    shouldAccumulateWithoutLlm =
+      mergedSources.length > existingSourceCount
+      || (sourceType === "text" && sourceSnapshotIsNew);
+    frontmatter.sources = serializeSources(mergedSources);
 
     // --- Phase 1 fields: preserve on re-ingest ---
     // Preserve authors from existing page (don't reset).
@@ -1884,12 +2550,20 @@ export async function ingest(
   // new source contradicts what's there. Skipped without an LLM key (fall back
   // to the prior overwrite behaviour) and for a prebuilt image body (already
   // final). The page summary is computed from the raw source, so it is unaffected.
-  if (existing && hasLLMKey() && !prebuiltContent) {
+  const canReconcileWithLlm = await hasLLMKey({ workload: "ingest" });
+  if (existing && canReconcileWithLlm && !prebuiltContent) {
     try {
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
       // carries the YAML block; existing.body is the markdown) so page metadata
       // never bleeds into the merged prose.
-      const reconciled = await reconcilePage(existing.body, wikiContent, owner);
+      const reconciled = await reconcilePage(
+        existing.body,
+        wikiContent,
+        guidanceOwner,
+        guidanceCache,
+        // The same workload `canReconcileWithLlm` just asked about.
+        { workload: "ingest" },
+      );
       wikiContent = reconciled.body;
       // Only escalate — never clear a disputed flag preserved from the existing
       // page above.
@@ -1900,6 +2574,21 @@ export async function ingest(
       // overwrite behaviour (keep the freshly synthesized body, disputed
       // untouched).
       logger.warn("ingest", "reconcile-on-merge failed; using new body", err);
+    }
+  } else if (
+    existing
+    && !canReconcileWithLlm
+    && !prebuiltContent
+    && shouldAccumulateWithoutLlm
+  ) {
+    // The no-provider fallback must still be lossless. Preserve both compiled
+    // bodies when distinct Sources converge on one slug; raw snapshots remain
+    // authoritative, while this deterministic join keeps neither Source from
+    // disappearing from the Page merely because reconciliation is unavailable.
+    const priorBody = existing.body.trim();
+    const nextBody = wikiContent.trim();
+    if (priorBody !== "" && nextBody !== "" && priorBody !== nextBody) {
+      wikiContent = `${priorBody}\n\n---\n\n${nextBody}\n`;
     }
   }
 
@@ -1947,39 +2636,55 @@ export async function ingest(
 
   const contentWithFm = serializeFrontmatter(frontmatter, wikiContent);
 
-  // 5. Hand off to the unified write pipeline. We pass the raw `content` as
-  // `crossRefSource` so the LLM sees the full document when picking related
-  // pages, matching the previous behaviour.
-  const { updatedSlugs } = await writeWikiPageWithSideEffects({
-    slug,
-    title: pageTitle,
-    content: contentWithFm,
-    summary,
-    logOp: "ingest",
-    crossRefSource: content,
-    author: actor,
-    logDetails: ({ updatedSlugs }) =>
-      `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
+    return writeWikiPageWithSideEffects({
+      slug,
+      title: pageTitle,
+      content: contentWithFm,
+      summary,
+      logOp: "ingest",
+      crossRefSource: content,
+      author: actor,
+      ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
+      logDetails: ({ updatedSlugs }) =>
+        `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
+    });
   });
 
   // 6. Alias index is updated automatically by the lifecycle pipeline
   //    (writeWikiPageWithSideEffects → runPageLifecycleOp) — no caller-side
   //    call needed. The source index (URL/content-hash → slug) is caller-owned,
   //    so refresh it here for future dedup hits.
+  const sourcePath = canonicalSourcePath
+    || (options?.relativePath
+      ? `raw/sources/${options.relativePath}`
+      : `raw/sources/${slug}/${rawId}.md`);
+  if (canonicalSourcePath || options?.jobId) {
+    await runIngestBookkeeping({
+      owner,
+      actor,
+      sourceTitle: effectiveTitle,
+      sourceText: content,
+      sourcePath,
+      sourceUrl: options?.sourceUrl,
+      sourceType,
+      rawId,
+      origin: options?.origin,
+    });
+    await markBookkeepingComplete(sha256);
+  }
+
+  // Bookkeeping first: a throw here can retry without SHA-skipping this write.
   updateSourceIndexForPage(
     slug,
     typeof frontmatter.source_url === "string" ? frontmatter.source_url : undefined,
     hash,
+    sha256,
   );
 
-  // When this ingest left the page disputed (a source contradicts it), open a
-  // reconciliation discussion thread so the dispute is actionable — by a human,
-  // by "ask yoyo", or by the maintenance scan. Idempotent (skips if one's open)
-  // + fail-soft; `ensureReconciliationThread` keeps the thread's author non-agent
-  // (coercing an agent actor to "system") so the scan can pick it up.
-  if (frontmatter.disputed === true) {
-    await ensureReconciliationThread(slug, actor);
-  }
+  // An ingest that leaves the page disputed used to auto-open a talk
+  // reconciliation thread here. Removed with the other two call sites (DW-230):
+  // the talk HTTP surfaces are retired, so nothing could read the thread this
+  // wrote. `frontmatter.disputed` is still set, and it is what the page shows.
 
   const result: IngestResult = {
     rawPath,

@@ -17,7 +17,43 @@ vi.mock("../talk", () => ({
 }));
 vi.mock("../embeddings", () => ({
   searchByVector: vi.fn(async () => [] as Array<{ slug: string; score: number }>),
+  // Not used by anything under test — these two are here for `config.ts`, which
+  // imports them from this module and which the PARTIAL mock below keeps real.
+  // Without them the real `config.ts` cannot evaluate against this stub.
+  getEmbeddingResolution: vi.fn(() => null),
+  hasEmbeddingSupport: vi.fn(() => false),
 }));
+
+/**
+ * The vector-search SWITCH (DW-686) — `hybridRank`'s own gate.
+ *
+ * PARTIAL, like the other two suites. A full factory would appear to work —
+ * `browse.ts` itself reads only `getVectorSearchSettings` — but it is a trap:
+ * `browse.ts` imports `reciprocalRankFusion` from `./query-search`, which
+ * imports `./llm`, which imports a dozen named exports from `./config`. Today
+ * no browse test drives an `llm.ts` code path, so a factory survives; the first
+ * one that does would fail on an export the factory never declared, at a call
+ * site with nothing to do with this switch.
+ */
+const vectorSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    // ONLY `enabled` FLIPS — see the note in `search.test.ts`. Every predicate
+    // leg stays satisfied in both states, so "off" is a deployment that HAS a
+    // provider, a model and a key and switched vector search off anyway. A door
+    // reading `.hasKey` or `.provider` instead of `.enabled` fails here; with
+    // these legs co-varying it would not.
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: vectorSwitch.enabled,
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: true,
+    })),
+  };
+});
 
 import { searchCommons } from "../browse";
 import { listCommonsPages } from "../commons";
@@ -73,6 +109,8 @@ beforeEach(() => {
   mockedReadable.mockResolvedValue([]);
   mockedGetVault.mockResolvedValue(null);
   mockedVector.mockResolvedValue([]);
+  // Switched ON by default, so every pre-DW-686 assertion here is unchanged.
+  vectorSwitch.enabled = true;
 });
 
 describe("searchCommons — list mode (no query)", () => {
@@ -131,6 +169,38 @@ describe("searchCommons — query mode (hybrid)", () => {
     mockedVector.mockRejectedValue(new Error("no embedding provider"));
     const r = await searchCommons("neural networks", {});
     expect(r.results[0].slug).toBe("backpropagation");
+  });
+
+  it("ranks by BM25 alone, calling nothing, when the switch is off (DW-686)", async () => {
+    // ONE fixture, two orders, so "the vector half did nothing" is observable.
+    // The hits below genuinely reorder this query's BM25 ranking: they lift
+    // vector-databases from last to second.
+    const HITS = [
+      { slug: "transformers", score: 0.95 },
+      { slug: "vector-databases", score: 0.9 },
+    ];
+    const QUERY = "neural attention storage";
+
+    mockedVector.mockResolvedValue(HITS);
+    expect((await searchCommons(QUERY, {})).results.map((p) => p.slug)).toEqual([
+      "transformers",
+      "vector-databases",
+      "backpropagation",
+    ]);
+    expect(mockedVector).toHaveBeenCalled();
+
+    mockedVector.mockClear();
+    vectorSwitch.enabled = false;
+
+    const off = await searchCommons(QUERY, {});
+    // Not called-and-discarded: the primitive is never reached, so browse emits
+    // none of the drift breadcrumbs it writes.
+    expect(mockedVector).not.toHaveBeenCalled();
+    expect(off.results.map((p) => p.slug)).toEqual([
+      "transformers",
+      "backpropagation",
+      "vector-databases",
+    ]);
   });
 
   it("ignores the sort facet when a query is present (relevance order wins)", async () => {

@@ -6,17 +6,6 @@ import { useRouter } from "next/navigation";
 import { slugify } from "@/lib/slugify";
 import type { AgentProfile } from "@/lib/types";
 
-/**
- * Client-safe mirror of `agentShortName` from `@/lib/agents` (a pure fn, but
- * that module pulls in server-only deps, so it can't be imported here). The id
- * is `slugify(owner)--slugify(name)`; strip the unambiguous owner prefix to get
- * the name slug for the `/u/<owner>/a/<name>` URL.
- */
-function agentShortName(agent: AgentProfile): string {
-  if (!agent.owner) return agent.id;
-  const prefix = `${slugify(agent.owner)}--`;
-  return agent.id.startsWith(prefix) ? agent.id.slice(prefix.length) : agent.id;
-}
 import { Avatar, Mark } from "@/components/folio/primitives";
 import { AgentTokenPanel } from "@/components/AgentTokenPanel";
 
@@ -93,13 +82,7 @@ function LocalDateTime({ value }: { value: string }) {
 }
 
 /** A single agent management card. */
-function AgentCard({
-  handle,
-  agent,
-}: {
-  handle: string;
-  agent: AgentProfile;
-}) {
+function AgentCard({ agent }: { agent: AgentProfile }) {
   const router = useRouter();
   const [mode, setMode] = useState<null | "edit" | "token" | "activity">(null);
   const [name, setName] = useState(agent.name);
@@ -280,19 +263,17 @@ function AgentCard({
         <Avatar id={agent.id} agent size={30} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-            <Link
-              href={`/u/${handle}/a/${agentShortName(agent)}`}
+            <span
               style={{
                 margin: 0,
                 fontSize: 19,
                 fontWeight: 600,
                 letterSpacing: "-.02em",
                 color: "var(--ink)",
-                textDecoration: "none",
               }}
             >
               {agent.name}
-            </Link>
+            </span>
             <Mark id={agent.id} agent />
           </div>
           <p
@@ -591,7 +572,7 @@ export function AgentManager({ handle, agents }: AgentManagerProps) {
         </p>
       ) : (
         agents.map((agent) => (
-          <AgentCard key={agent.id} handle={handle} agent={agent} />
+          <AgentCard key={agent.id} agent={agent} />
         ))
       )}
       <CreateAgent handle={handle} />

@@ -1,0 +1,31 @@
+# Review-contract overrides (merge by id/append per bmad-build-auto/customize.toml).
+# 1. Finalize must not HALT on orchestrator-owned ledger harvest — and that
+#    exception is the ledger alone. A Never-clause / protected-file modification
+#    is a session violation to surface, not bookkeeping to ignore.
+# 2. The Blind Hunter layer treats an empty finding list as valid and does not
+#    pad to a quota. Only high-severity patched findings recommend another
+#    review iteration; medium/low are fixed in-pass and recorded, never loop fuel.
+
+[workflow]
+persistent_facts = [
+  "On finalize, uncommitted `_bmad-output/implementation-artifacts/deferred-work.md` is orchestrator-owned harvest. Leave it alone and HALT status done. That exception is the ledger alone — dirt on any other file (a spec Never-clause target, the intent contract, or a protected file) must HALT blocked with `finalization left repository dirty`, never pass as done.",
+]
+
+[[workflow.review_layers]]
+id = "blind-hunter"
+name = "Blind Hunter"
+instruction = """
+Launch a context-free subagent with this prompt:
+
+Conduct a review of CONTENT.
+Look for what's missing, not only what's wrong.
+Report what is real — never pad to look thorough. An empty list is a valid review when the content is sound; do not invent findings to reach a quota.
+Output a Markdown list of findings only — no severity, priority, or ranking.
+If the content is empty, stop and say so.
+
+CONTENT:
+{diff_output}
+
+Do not invoke any skill. Return only the review result.
+
+"""

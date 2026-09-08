@@ -20,6 +20,7 @@ import { ownerToTenant } from "./links";
 import { listCommonsPages } from "./commons";
 import { expandMineScope, resolveScope } from "./search";
 import type { Principal } from "./auth";
+import { extractAllInternalTargets } from "./links";
 import { parseSources } from "./sources";
 import { buildWeightedGraphEdges } from "./graph-relevance";
 
@@ -106,10 +107,7 @@ export async function buildWikiGraph(
 
     const directTargets: string[] = [];
     if (wp) {
-      const linkRe = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
-      let match: RegExpExecArray | null;
-      while ((match = linkRe.exec(wp.body)) !== null) {
-        const target = match[2];
+      for (const target of extractAllInternalTargets(wp.body)) {
         if (target !== page.slug && slugSet.has(target)) directTargets.push(target);
       }
     }

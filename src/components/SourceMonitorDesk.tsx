@@ -9,11 +9,26 @@ import type {
   SourceMonitorCadence,
   SourceMonitorRunResult,
 } from "@/lib/source-monitors";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -67,7 +82,12 @@ export function SourceMonitorDesk() {
       setTargetSlug("");
       setNotice("Source added. Its first check establishes a baseline; later meaningful changes enter Review.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not add this source.");
+      // NOTHING CAME BACK (DW-717): the monitor may have been created, and this
+      // list would not be showing it. The refetch runs BEFORE the sentence is
+      // set because `load` clears `error` on its way in.
+      const { message, unconfirmed } = writeFailure(reason, "add this source");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -83,7 +103,9 @@ export function SourceMonitorDesk() {
       });
       setMonitors((current) => current.map((monitor) => monitor.id === id ? data.monitor : monitor));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not update this source.");
+      const { message, unconfirmed } = writeFailure(reason, "update this source");
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 
@@ -104,8 +126,13 @@ export function SourceMonitorDesk() {
               : "No source change was found.",
       );
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not check this source.");
+      // A run can create a review proposal before anything went wrong, so this
+      // surface refetched unconditionally already. The ORDER is the fix: `load`
+      // clears `error` on its way in, so the sentence set before it never
+      // survived to be read.
+      const { message } = writeFailure(reason, "check this source");
       await load();
+      setError(message);
     } finally {
       setRunningId(null);
     }
@@ -117,7 +144,9 @@ export function SourceMonitorDesk() {
       await request(`/api/monitors/${id}`, { method: "DELETE" });
       setMonitors((current) => current.filter((monitor) => monitor.id !== id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not remove this source.");
+      const { message, unconfirmed } = writeFailure(reason, "remove this source");
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 
@@ -125,7 +154,7 @@ export function SourceMonitorDesk() {
   const errors = monitors.filter((monitor) => monitor.state === "error").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>source watch</p>
@@ -133,7 +162,7 @@ export function SourceMonitorDesk() {
             Let sources come back to you.
           </h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "11px 0 0", maxWidth: "64ch" }}>
-            Monitor durable URLs. WorkWiki filters minor noise and drafts a cited update only when the meaning changes.
+            Monitor durable URLs. work-wiki filters minor noise and drafts a cited update only when the meaning changes.
           </p>
         </div>
         <div className="row" style={{ gap: 22 }}>
@@ -227,7 +256,7 @@ export function SourceMonitorDesk() {
           </article>
         ))}
       </div>
-    </main>
+    </div>
   );
 }
 

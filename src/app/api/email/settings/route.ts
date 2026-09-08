@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   MAX_EMAIL_SENDERS,
   isEmailAddress,
@@ -15,7 +17,7 @@ import { getVault, listVaults, vaultOwnedBy } from "@/lib/vault";
 
 async function requireOwner() {
   const principal = await getPrincipal();
-  return principal && isOwnerHandle(principal.handle) ? principal : null;
+  return isOwnerPrincipal(principal) ? principal : null;
 }
 
 export async function GET() {
@@ -46,6 +48,19 @@ export async function PUT(request: Request) {
   const principal = await requireOwner();
   if (!principal) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // Deployment read-only (DW-300). AFTER `requireOwner()`, so the not-found
+  // cloak still wins: a non-owner must not learn from a 403 that this door
+  // exists at all. Before the parse, so a malformed body cannot pre-empt the
+  // refusal with a 400. `saveEmailIngestConfig` refuses in the kernel too now
+  // (DW-385, same sentence) — this gate is what keeps the ORDER, and it is
+  // still what stops the form reporting a save that never happened.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.emailSettings },
+      { status: 403 },
+    );
   }
 
   try {
@@ -129,7 +144,7 @@ export async function PUT(request: Request) {
       const vault = await getVault(destinationVaultId);
       if (!vault || !vaultOwnedBy(destinationVaultId, principal.handle)) {
         return NextResponse.json(
-          { error: "Choose a vault owned by this WorkWiki account" },
+          { error: "Choose a vault owned by this work-wiki account" },
           { status: 400 },
         );
       }
@@ -138,7 +153,7 @@ export async function PUT(request: Request) {
       const agent = await getAgent(destinationAgentId).catch(() => null);
       if (!agent || agent.owner?.toLowerCase() !== principal.handle.toLowerCase()) {
         return NextResponse.json(
-          { error: "Choose an agent owned by this WorkWiki account" },
+          { error: "Choose an agent owned by this work-wiki account" },
           { status: 400 },
         );
       }
@@ -168,6 +183,13 @@ export async function PUT(request: Request) {
       agents: agents.map(({ id, name }) => ({ id, name })),
     });
   } catch (error) {
+    // Backstop for a flag that flipped mid-request: the gate above already
+    // answered for a deployment that was read-only when the request arrived, so
+    // reaching here means the kernel writer refused. A refusal is neither a
+    // server fault nor the caller's bad input.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     logger.error("email-ingest", "settings update failed", error);
     return NextResponse.json(
       { error: getErrorMessage(error) },

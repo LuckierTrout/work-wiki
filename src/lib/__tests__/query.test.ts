@@ -3,34 +3,102 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { searchIndex, buildContext, query, saveAnswerToWiki, buildCorpusStats, bm25Score, extractCitedSlugs, reciprocalRankFusion, buildQuerySystemPrompt, TABLE_FORMAT_INSTRUCTION, HTML_FORMAT_INSTRUCTION, extractBestSnippet, selectPagesForQuery } from "../query";
-import { writeWikiPage, updateIndex, ensureDirectories, readWikiPage, readWikiPageWithFrontmatter, listWikiPages } from "../wiki";
+import { beginPageCache, writeWikiPage, updateIndex, ensureDirectories, readWikiPage, readWikiPageWithFrontmatter, listWikiPages } from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
 import { serializeSources, buildSourceEntry } from "../sources";
 import { registerAgent } from "../agents";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { rebuildPageIndex } from "../page-index";
 import type { AgentProfile } from "../types";
 import type { IndexEntry } from "../types";
 
 // ---------------------------------------------------------------------------
 // Mock callLLM and hasLLMKey so tests don't require real API keys
 // ---------------------------------------------------------------------------
-vi.mock("../llm", () => ({
-  hasLLMKey: vi.fn(() => false),
-  callLLM: vi.fn(async () => "mocked response"),
-}));
+// `callLLMWithFinish` DELEGATES to the same `callLLM` double rather than being
+// a second, independent one (DW-662). `query()` calls the sibling now, and
+// every assertion in this file — call counts, prompt indices, throwing
+// implementations — hangs off `callLLM`. A separate double would silently
+// detach all of them from the call under test. `"stop"` is the clean ending, so
+// the delegate reproduces the pre-DW-662 behaviour exactly; the rows that need
+// another ending override `callLLMWithFinish` itself.
+vi.mock("../llm", () => {
+  const callLLM = vi.fn(
+    async (
+      _system: string,
+      _user: string,
+      _options?: { maxOutputTokens?: number },
+    ) => "mocked response",
+  );
+  return {
+    hasLLMKey: vi.fn(() => false),
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
+  };
+});
 
 // Mock searchByVector from embeddings so tests don't need a real provider
 vi.mock("../embeddings", () => ({
   searchByVector: vi.fn(async () => []),
   upsertEmbedding: vi.fn(async () => {}),
   removeEmbedding: vi.fn(async () => {}),
+  // Not used by anything under test — these two are here for `config.ts`, which
+  // imports them from this module and which the PARTIAL mock below keeps real.
+  // Without them the real `config.ts` cannot evaluate against this stub.
+  getEmbeddingResolution: vi.fn(() => null),
+  hasEmbeddingSupport: vi.fn(() => false),
 }));
 
-import { hasLLMKey, callLLM } from "../llm";
+/**
+ * The vector-search SWITCH (DW-686), which `searchIndex` reads at its Phase 1b
+ * door.
+ *
+ * WITHOUT THIS MOCK the "hybrid search in searchIndex" block below is entirely
+ * vacuous: this suite points `DATA_DIR` at a fresh temp directory with no
+ * config, so the real switch reads `false`, `searchByVector` is never reached,
+ * and both the RRF-fusion assertions and the "vector failure is non-fatal"
+ * assertion pass on a code path that never ran. Rethrowing from `searchIndex`'s
+ * catch would go unnoticed.
+ *
+ * PARTIAL, not a factory: `../wiki` is REAL here and reads
+ * `getWikiDir`/`getRawDir`/`getDataDir` from this same module.
+ *
+ * ONLY `enabled` FLIPS — the predicate legs are held satisfied, so "off" is a
+ * deployment that has a provider, a model and a key and switched vector search
+ * off anyway (DW-68/DW-686).
+ */
+const vectorSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: vectorSwitch.enabled,
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: true,
+    })),
+  };
+});
+
+import { hasLLMKey, callLLM, callLLMWithFinish } from "../llm";
+import { LLM_LENGTH_CAP_COPY, LLM_STOPPED_EARLY_COPY } from "../llm-deadline";
+import { logger } from "../logger";
 import { searchByVector } from "../embeddings";
 
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
 const mockedCallLLM = vi.mocked(callLLM);
+const mockedCallLLMWithFinish = vi.mocked(callLLMWithFinish);
 const mockedSearchByVector = vi.mocked(searchByVector);
 
 // ---------------------------------------------------------------------------
@@ -52,10 +120,21 @@ beforeEach(async () => {
   _resetStorage();
 
   // Reset mocks
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
   mockedCallLLM.mockReset();
+  // Back to DELEGATING (DW-662). A row that installed its own ending must not
+  // leak that ending into the next row's `query()` — every other assertion in
+  // this file is written against `callLLM` and a clean `stop`.
+  mockedCallLLMWithFinish.mockReset();
+  mockedCallLLMWithFinish.mockImplementation(async (system, user, options) => ({
+    text: await callLLM(system, user, options),
+    finishReason: "stop",
+  }));
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
+  // Switched ON by default: every assertion in this file predates DW-686 and
+  // describes a deployment that does vector work.
+  vectorSwitch.enabled = true;
 });
 
 afterEach(async () => {
@@ -368,7 +447,7 @@ describe("searchIndex", () => {
   });
 
   it("with no LLM key, falls back to keyword matching", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const entries: IndexEntry[] = [
       { slug: "python", title: "Python", summary: "Python programming language" },
@@ -383,7 +462,7 @@ describe("searchIndex", () => {
   });
 
   it("uses LLM re-ranking when available and parses JSON response", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue('["deep-learning", "neural-networks"]');
 
     const entries: IndexEntry[] = [
@@ -412,7 +491,7 @@ describe("searchIndex", () => {
   });
 
   it("falls back to fusion order when LLM returns invalid JSON", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("I think you should look at neural networks");
 
     const entries: IndexEntry[] = [
@@ -430,7 +509,7 @@ describe("searchIndex", () => {
   });
 
   it("falls back to fusion order when LLM re-ranking throws", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockRejectedValue(new Error("API error"));
 
     const entries: IndexEntry[] = [
@@ -445,7 +524,7 @@ describe("searchIndex", () => {
   });
 
   it("filters out slugs not in fusion candidates from LLM response", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // LLM returns a slug that exists in entries but wasn't a fusion candidate
     mockedCallLLM.mockResolvedValue('["valid-slug", "not-a-candidate"]');
 
@@ -478,7 +557,7 @@ describe("searchIndex", () => {
   });
 
   it("LLM re-ranking narrows candidates from fusion results, not full index", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     const entries: IndexEntry[] = [
       { slug: "relevant-a", title: "Relevant A", summary: "Machine learning overview" },
@@ -510,7 +589,7 @@ describe("searchIndex", () => {
   });
 
   it("LLM re-ranking failure falls back to fusion order", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockRejectedValue(new Error("LLM service unavailable"));
 
     const entries: IndexEntry[] = [
@@ -530,7 +609,7 @@ describe("searchIndex", () => {
   });
 
   it("re-ranking prompt includes content snippets from page bodies", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue('["snippet-page"]');
 
     const entries: IndexEntry[] = [
@@ -555,7 +634,7 @@ describe("searchIndex", () => {
   });
 
   it("re-ranking prompt includes relevance criteria and chain-of-thought instructions", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       'The page directly addresses transformers.\n["criteria-page"]'
     );
@@ -729,7 +808,7 @@ describe("query", () => {
   });
 
   it("returns no-api-key message when no key configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     // Create a small wiki (<=5 pages)
     await writeWikiPage("page-one", "# Page One\n\nSome content.");
@@ -745,7 +824,7 @@ describe("query", () => {
   });
 
   it("loads all pages for small wikis (<= 5 pages)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer citing [Alpha](alpha.md)");
 
     await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
@@ -767,7 +846,7 @@ describe("query", () => {
   });
 
   it("uses searchIndex for large wikis (> 5 pages)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // First call is re-ranking in searchIndex, second is the actual query
     mockedCallLLM
@@ -798,7 +877,7 @@ describe("query", () => {
   });
 
   it("includes full index listing in system prompt for large wikis", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     mockedCallLLM
       .mockResolvedValueOnce('["page-1"]')
@@ -851,7 +930,7 @@ describe("query", () => {
     // The single generation point: query() bakes slides/HTML answers. With no
     // XAI_API_KEY here, generation returns null and the directive is dropped —
     // proving the bake ran for format=slides (no leftover fence reaches the client).
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // A slides answer is now a self-contained HTML deck, so its illustration
     // directive is an HTML <figure>, baked via the HTML path.
     mockedCallLLM.mockResolvedValue(
@@ -871,7 +950,7 @@ describe("query", () => {
   it("does not bake prose answers (illustrations only apply to slides/HTML)", async () => {
     // Prose isn't an illustration format, so query() skips the bake entirely — a
     // (contrived) directive in a prose answer passes through untouched.
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "Prose answer.\n\n```yoyo-illustration\nyoyo waving hello\n```\n",
     );
@@ -881,6 +960,171 @@ describe("query", () => {
     const result = await query("tell me about alpha", "prose");
 
     expect(result.answer).toContain("```yoyo-illustration");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DW-662. `/api/query` is the OTHER door onto the same question, and it was
+// committing a cut answer as a whole one.
+//
+// `callLLM` discarded `finishReason`, so `query()` could not tell an answer the
+// model finished from one `QUERY_MAX_OUTPUT_TOKENS` had cut, or one a content
+// filter had stopped. `/api/query/stream` learned that distinction from its
+// `finish` part in DW-547 and DW-666; this is the same distinction reaching the
+// non-streamed sibling through `callLLMWithFinish`.
+//
+// The sentences are IMPORTED, never restated — they are the same constants the
+// stream route serves, and a second copy here would be the test grading its own
+// wording rather than the route's.
+// ---------------------------------------------------------------------------
+describe("query — the answer the model did not finish (DW-662)", () => {
+  /** One page, one key, one call — the shortest path to the answer call. */
+  async function oneSmallPage() {
+    mockedHasLLMKey.mockResolvedValue(true);
+    await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
+    await updateIndex([{ slug: "alpha", title: "Alpha", summary: "Alpha page" }]);
+  }
+
+  /**
+   * The OPERATOR log lines `stoppedEarlyNotice` emits beside each sentence.
+   *
+   * Restated here rather than imported, because `query.ts` does not export
+   * them — and restating is safe in a way it would NOT be for the owner-facing
+   * sentences: these are log strings for an operator, not copy in an answer
+   * body, so there is no Settings pointer to drift and no second home for the
+   * wording. What they pin is the property the descriptor exists for. Copy and
+   * log are bound in one object precisely so they cannot be transposed, and a
+   * row that counts `logger.warn` without reading its MESSAGE would stay green
+   * through exactly that transposition.
+   */
+  const CAP_LOG =
+    "Output token cap reached on a non-streamed query; the answer was cut short and the owner told";
+  const stoppedEarlyLog = (reason: string) =>
+    `Model stopped before finishing a non-streamed query (${reason}); the answer was cut short and the owner told`;
+
+  /** The stream route's lines, which this door must never emit. */
+  const STREAM_CAP_LOG =
+    "Output token cap reached; the answer was cut short and the owner told";
+  const STREAM_STOPPED_EARLY_LOG =
+    "Model stopped before finishing; the answer was cut short and the owner told";
+
+  /** The `(scope, message)` pair of the single `logger.warn` a query emitted. */
+  function warnedOnce(): [string, string] {
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [scope, message] = vi.mocked(logger.warn).mock.calls[0];
+    return [scope, message];
+  }
+
+  /** Answer the query call with this text and this ending. */
+  function finishes(text: string, finishReason: string) {
+    mockedCallLLMWithFinish.mockResolvedValue({
+      text,
+      finishReason,
+    } as Awaited<ReturnType<typeof callLLMWithFinish>>);
+  }
+
+  beforeEach(() => {
+    // Real `logger` is silent under NODE_ENV=test, so the operator line is
+    // observable only through a spy. Restored per-test by `afterEach` below.
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(logger.warn).mockRestore();
+  });
+
+  it("appends the cap sentence after a blank line when the answer hit the cap", async () => {
+    await oneSmallPage();
+    finishes("As far as this w", "length");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe(`As far as this w\n\n${LLM_LENGTH_CAP_COPY}`);
+    // The CAP line, and specifically not the stopped-early one — a transposed
+    // descriptor would send an operator looking for the wrong ending.
+    expect(warnedOnce()).toEqual(["query", CAP_LOG]);
+    expect(warnedOnce()[1]).not.toBe(stoppedEarlyLog("length"));
+    // Nor the STREAM route's wording: an operator reading `query` warnings has
+    // to be able to tell which of the two doors answered.
+    expect(warnedOnce()[1]).not.toBe(STREAM_CAP_LOG);
+  });
+
+  it.each(["content-filter", "error", "tool-calls", "other"])(
+    "appends the stopped-early sentence for finishReason %s",
+    async (reason) => {
+      await oneSmallPage();
+      finishes("As far as this w", reason);
+
+      const result = await query("tell me about alpha");
+
+      // Not the cap sentence: that one promises the REST of the answer is
+      // reachable by narrowing, which a content filter does not make true.
+      expect(result.answer).toBe(`As far as this w\n\n${LLM_STOPPED_EARLY_COPY}`);
+      expect(result.answer).not.toContain(LLM_LENGTH_CAP_COPY);
+      // Its own line, carrying the REASON — the one diagnostic an operator has
+      // for which of the four endings this was, since the owner's sentence
+      // deliberately says nothing about it.
+      expect(warnedOnce()).toEqual(["query", stoppedEarlyLog(reason)]);
+      expect(warnedOnce()[1]).toContain(reason);
+      expect(warnedOnce()[1]).not.toBe(CAP_LOG);
+      expect(warnedOnce()[1]).not.toBe(STREAM_STOPPED_EARLY_LOG);
+    },
+  );
+
+  it("returns the answer verbatim, and logs nothing, when the model finished", async () => {
+    await oneSmallPage();
+    finishes("A whole answer about [Alpha](alpha.md)", "stop");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe("A whole answer about [Alpha](alpha.md)");
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("emits the notice alone when the cut left no answer to separate it from", async () => {
+    // Same blank-line rule as the stream route: the separator exists to hold
+    // the notice apart from an answer, so with none there is no leading blank.
+    //
+    // A DEFENSIVE branch, and this row pins it AT THE DOUBLE ONLY — it is not
+    // production coverage, and must not be read as any. `callLLMWithFinish`
+    // throws "LLM response contained no text" before it can ever return an
+    // empty `text`, so nothing on the real stack reaches `query()` with one.
+    // What keeps the ternary worth having is that it mirrors the stream
+    // route's rule exactly, where an empty body IS reachable (a `finish` part
+    // can arrive before any delta), so the two doors state the same rule about
+    // the same notice rather than one of them quietly assuming an invariant.
+    await oneSmallPage();
+    finishes("", "length");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe(LLM_LENGTH_CAP_COPY);
+  });
+
+  it("keeps `sources` describing the MODEL's answer, never the notice", async () => {
+    // The notice is appended AFTER `extractCitedSlugs`, so no sentence this
+    // repo wrote is ever scanned for citations.
+    await oneSmallPage();
+    finishes("Half an answer citing [Alpha](alpha.md)", "content-filter");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.sources).toEqual(["alpha"]);
+    expect(result.retrievedSources).toEqual(["alpha"]);
+  });
+
+  it("still answers the no-key fallback without reaching the model at all", async () => {
+    // The notice sits after the answer call, so the pre-LLM early returns are
+    // untouched — no ending to report when nothing was asked.
+    mockedHasLLMKey.mockResolvedValue(false);
+    await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
+    await updateIndex([{ slug: "alpha", title: "Alpha", summary: "Alpha page" }]);
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toContain("No API key configured");
+    expect(result.answer).not.toContain(LLM_STOPPED_EARLY_COPY);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 
@@ -910,6 +1154,32 @@ describe("saveAnswerToWiki", () => {
     expect(entry).toBeDefined();
     expect(entry!.title).toBe("Neural Networks Explained");
     expect(entry!.summary).toContain("Neural networks are computational models");
+  });
+
+  it("files a Chat save under wiki/queries/ with a Conversation link", async () => {
+    await ensureDirectories();
+    const { slug } = await saveAnswerToWiki(
+      "Cited answer",
+      "The wiki says alpha [1].",
+      undefined,
+      undefined,
+      "markdown",
+      "alice",
+      "alice",
+      {
+        conversationId: "conv-1",
+        conversationName: "Ask alpha",
+        underQueries: true,
+      },
+    );
+    expect(slug).toBe("queries/cited-answer");
+    const page = await readWikiPage(slug);
+    expect(page).not.toBeNull();
+    expect(page!.content).toContain(
+      "Conversation: [Ask alpha](/?mode=chat&conversation=conv-1)",
+    );
+    expect(page!.content).toContain("The wiki says alpha [1].");
+    expect(page!.content).not.toContain("<thinking>");
   });
 
   it("saves an HTML answer verbatim as a typed, owner-attributed artifact", async () => {
@@ -1177,7 +1447,7 @@ describe("saveAnswerToWiki", () => {
   });
 
   it("cross-references related pages after saving", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // findRelatedPages will call the LLM and expect a JSON array of slugs
     mockedCallLLM.mockResolvedValue('["react", "nextjs"]');
 
@@ -1278,7 +1548,7 @@ describe("saveAnswerToWiki", () => {
 // ---------------------------------------------------------------------------
 describe("query — SCHEMA.md conventions", () => {
   it("includes SCHEMA.md conventions in the system prompt when available", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer based on wiki pages.");
 
     const schemaContent = `# Wiki Schema
@@ -1315,7 +1585,7 @@ Every page must start with a level-1 heading.
   });
 
   it("works without SCHEMA.md (no conventions appended)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer based on wiki pages.");
 
     // tmpDir has no SCHEMA.md; cwd is unchanged so loadPageConventions
@@ -1724,7 +1994,7 @@ describe("query — scope parameter", () => {
     await updateIndex([{ slug: "test", title: "Test", summary: "Some content about testing." }]);
 
     // No LLM key => returns the no-key fallback
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     const result = await query("test question");
     expect(result.answer).toContain("No API key configured");
     expect(result.answer).toContain("test");
@@ -1763,7 +2033,7 @@ describe("query — scoped search with registered agent", () => {
     await registerAgent(profile);
 
     // With LLM key — verify the scoped pages are selected for context
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "The agent knows about testing. [[agent-identity]] [[agent-learnings]]",
     );
@@ -1827,9 +2097,111 @@ describe("query — scoped search with registered agent", () => {
     };
     await registerAgent(profile);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     const result = await query("anything", "prose", "agent:partial-agent");
     // Should work with whatever pages exist — the existing-page should show up
     expect(result.answer).toContain("existing-page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE page is not an ABSENT one — saveAnswerToWiki's merge base
+// (DW-495)
+// ---------------------------------------------------------------------------
+
+describe("saveAnswerToWiki — unreadable ≠ absent (DW-495)", () => {
+  it("rejects with the STORAGE error rather than re-creating a stored page", async () => {
+    await ensureDirectories();
+
+    // The page the merge-base read protects has to actually BE stored, or the
+    // row asserts nothing about the fork it pins.
+    await saveAnswerToWiki(
+      "Merge Base Blip",
+      "The first answer, which is the stored one.",
+    );
+    const slug = "merge-base-blip";
+    const before = (await readWikiPageWithFrontmatter(slug))!.content;
+
+    // With the page index seeded, the merge-base read is the FIRST read of
+    // `<slug>.md` this call makes — so a ONE-SHOT blip hits it and nothing
+    // else. That is deliberate: a spy that failed EVERY read of the file would
+    // also break the `createOnly` re-check inside the write, and the call would
+    // reject whether or not this read rethrows — a green row that pins nothing.
+    // Failing only the merge-base read leaves the old behaviour rejecting with
+    // the lifecycle's CONFLICT sentence instead.
+    await rebuildPageIndex();
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith(`${slug}.md`)) {
+          blipped = true;
+          // A non-ENOENT failure: the file is there, the provider is not.
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await saveAnswerToWiki("Merge Base Blip", "A second answer that must not land.");
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // And the stored bytes are untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter(slug))!.content).toBe(before);
+  });
+
+  it("takes its merge base from storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin: strip `fresh: true` from the
+    // source read and the blip row above still passes, because a `pageCache`
+    // hit is answered before `storage.readFile` is ever reached. `pageCache` is
+    // module-global and ref-counted around bulk scans — and `query.ts` runs one
+    // — so a superseded entry can be open when a save arrives, and
+    // `existing.content` is the `expectedContent` this write is checked against.
+    await ensureDirectories();
+    await saveAnswerToWiki("Fresh Merge Base", "The first answer.");
+    const slug = "fresh-merge-base";
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage(slug))!;
+      expect(cached.content).toContain("The first answer.");
+
+      // The stored page moves on underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about.
+      const stored = cached.content.replace(
+        "The first answer.",
+        "An edit the scan never saw.",
+      );
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old bytes.
+      expect((await readWikiPage(slug))!.content).toBe(cached.content);
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The merge base is the
+      // STORED file, so the write precondition matches and the save lands. Off
+      // the cached entry `expectedContent` describes bytes that are no longer
+      // stored, and the save is refused as a conflict against a write nobody
+      // made.
+      await saveAnswerToWiki("Fresh Merge Base", "The second answer.");
+    } finally {
+      cleanup();
+    }
+
+    // Read after the cache is closed, so this is the stored file.
+    const after = (await readWikiPageWithFrontmatter(slug))!.content;
+    expect(after).toContain("The second answer.");
   });
 });

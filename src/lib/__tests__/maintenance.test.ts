@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -9,10 +9,23 @@ import {
   getWikiDir,
   type Frontmatter,
 } from "../wiki";
-import { createThread, addComment } from "../talk";
-import { scanForMaintenance, rebuildDerivedIndexes } from "../maintenance";
+import { writeDiscussFixture } from "./discuss-fixtures";
+import {
+  scanForMaintenance,
+  rebuildDerivedIndexes,
+  sweepOrphanWikiDirs,
+  reconcileWikiScenarios,
+  backfillWorkspaceProfiles,
+  rekeyForkedAssets,
+  reapStrandedScratchFiles,
+} from "../maintenance";
 import { listCommonsPages } from "../commons";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { wikiArtifactPath, wikisRootPath } from "../wiki-paths";
+import { ORPHAN_SWEEP_GRACE_MS } from "../wikis";
+import { STRANDED_SCRATCH_GRACE_MS } from "../storage/filesystem";
+import { READ_ONLY_REFUSAL } from "../read-only";
+import { logger } from "../logger";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -21,7 +34,10 @@ const PAST = "2020-01-01";
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "maint-test-"));
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) saved[k] = process.env[k];
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
+    saved[k] = process.env[k];
+  }
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
@@ -30,7 +46,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) {
+  vi.restoreAllMocks();
+  for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR", "NEXT_PUBLIC_OWNER_HANDLE"]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -80,22 +97,11 @@ describe("scanForMaintenance", () => {
     });
   });
 
-  it("enqueues a reconcile when a disputed page has an open thread awaiting a human reply", async () => {
+  it("produces no task for a disputed page (reconcile-from-talk retired)", async () => {
     await seed("disputed", { disputed: true });
-    await createThread("disputed", "Issue", "bob", "This claim looks wrong.");
-    const tasks = await scanForMaintenance();
-    expect(tasks).toContainEqual({
-      kind: "maintain",
-      op: "reconcile",
-      slug: "disputed",
-      threadIndex: 0,
-    });
-  });
-
-  it("skips a disputed thread yoyo already answered (last comment is an agent)", async () => {
-    await seed("answered", { disputed: true });
-    await createThread("answered", "Issue", "bob", "Wrong claim.");
-    await addComment("answered", 0, "bob--yoyo", "I looked — keeping both views (disputed).");
+    await writeDiscussFixture("disputed", [
+      { title: "Issue", comments: [{ author: "bob", body: "This claim looks wrong." }] },
+    ]);
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 
@@ -217,7 +223,9 @@ describe("scanForMaintenance", () => {
       source_url: "https://example.com/s",
     });
     await seed("priv-disputed", { visibility: "private", disputed: true });
-    await createThread("priv-disputed", "Issue", "bob", "Wrong.");
+    await writeDiscussFixture("priv-disputed", [
+      { title: "Issue", comments: [{ author: "bob", body: "Wrong." }] },
+    ]);
     expect(await scanForMaintenance()).toHaveLength(0);
   });
 
@@ -381,5 +389,535 @@ describe("rebuildDerivedIndexes — commons index (#398)", () => {
     // And the rebuild actually populated it with the public page.
     const commons = await listCommonsPages();
     expect(commons.map((p) => p.slug)).toContain("agentic-systems");
+  });
+});
+
+describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", () => {
+  const OWNER = "alice";
+
+  /**
+   * Built from `wikisRootPath`, the same helper the sweep itself addresses
+   * through — never hand-joined. A helper that spelled the tenancy layout a
+   * second time would plant its "orphan" somewhere the sweep never looks the
+   * day that layout moves, and the no-op assertions below would then pass
+   * vacuously while the real behaviour had silently broken.
+   */
+  function wikisRoot(): string {
+    return path.join(tmpDir, ...wikisRootPath(OWNER).split("/"));
+  }
+
+  /** An unreferenced `wikis/<uuid>/`, backdated past the sweep's grace window. */
+  async function plantAgedOrphan(id: string): Promise<string> {
+    const dir = path.join(wikisRoot(), id);
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, "purpose.md");
+    await fs.writeFile(file, "# Orphan\n");
+    const when = new Date(Date.now() - ORPHAN_SWEEP_GRACE_MS * 2);
+    await fs.utimes(file, when, when);
+    await fs.utimes(dir, when, when);
+    return dir;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("sweeps the configured owner's tenant and returns the count", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    // The registry has to NAME a wiki, or the sweep's empty-registry rule
+    // (a lost wikis.json reads identically) leaves everything alone.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const orphan = await plantAgedOrphan("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+
+    expect(await sweepOrphanWikiDirs()).toBe(1);
+
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(path.join(wikisRoot(), wiki.id))).toBe(true);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const orphan = await plantAgedOrphan("11111111-2222-4333-8444-555555555555");
+
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start deleting.
+    expect(await sweepOrphanWikiDirs()).toBe(0);
+    expect(await exists(orphan)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the sweep fails", async () => {
+    // Fail-soft like `purgeStaleJobs`: this runs inside the maintenance scan,
+    // and a storage hiccup here must not 500 a scan that did everything else.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    vi.spyOn(getStorage(), "listFiles").mockRejectedValue(
+      new Error("listing the wikis directory failed"),
+    );
+
+    await expect(sweepOrphanWikiDirs()).resolves.toBe(0);
+  });
+
+  it("records the stale-tombstone residual in its SCOPE docblock (DW-488)", async () => {
+    // DW-488 is a DOCUMENTATION gap, not a behaviour one: the inline-versus-
+    // scheduled split is already pinned by "leaves the marker alone on the sweep
+    // that runs inside a delete" in `wikis.test.ts`, and DW-291 settled that the
+    // inline path must not pay the per-claimed-directory probe. What was missing
+    // is that the SCOPE note here accounted only for orphan DIRECTORIES on
+    // pre-gate tenants — which `deleteWiki` at least reclaims inline — and said
+    // nothing about their stale `.discarded` markers, which no path clears at
+    // all. The note IS the deliverable, so the note is what this observes.
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../maintenance.ts"),
+      "utf8",
+    );
+    // BOTH ANCHORS HAVE TO RESOLVE, or this row fails open: `indexOf` returns -1
+    // when either is renamed, `slice(start, -1)` then hands back very nearly the
+    // whole module, and every substring below would match text from somewhere
+    // else in it while the docblock said nothing at all.
+    const start = source.indexOf("SCOPE (DW-288, settled)");
+    const end = source.indexOf("export async function sweepOrphanWikiDirs");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const scope = source.slice(start, end);
+
+    // The orphan-directory residual the note already carried, unchanged…
+    expect(scope).toContain("The one honest residual today is tenants created");
+
+    // …and the tombstone residual beside it, asserted on the PARAGRAPH rather
+    // than on the whole block, so four substrings scattered across a long
+    // docblock cannot satisfy this row between them.
+    const opens = scope.indexOf("THE SECOND RESIDUAL");
+    const widen = scope.indexOf("Widen this only if");
+    expect(opens).toBeGreaterThan(0);
+    expect(widen).toBeGreaterThan(opens);
+    const residual = scope.slice(opens, widen);
+    expect(residual).toContain("DW-488");
+    expect(residual).toContain("clearStaleDiscardTombstones");
+    expect(residual).toMatch(/scheduled/i);
+    expect(residual).toMatch(/ACCEPTED, not fixed/i);
+    // …and the widen-trigger the note already names, which now covers both.
+    expect(scope.slice(widen)).toContain("readActiveWikiSchema");
+  });
+});
+
+describe("reconcileWikiScenarios — the scheduled scenario-drift repair (DW-676)", () => {
+  const OWNER = "alice";
+
+  /**
+   * Overwrite a Wiki's two artifacts so they name `label`, leaving the registry
+   * saying whatever it said — the divergence a re-template leaves behind when
+   * its `wikis.json` write lands and its artifact writes are rolled back.
+   *
+   * Addressed through `wikiArtifactPath`, the same helper the reconciler reads
+   * through, so a change to the tenancy layout can never leave the plant
+   * somewhere the repair never looks while these rows keep passing vacuously.
+   */
+  async function plantDrift(wikiId: string, label: string): Promise<void> {
+    const write = async (file: "purpose.md" | "schema.md", body: string) => {
+      await fs.writeFile(
+        path.join(tmpDir, ...wikiArtifactPath(OWNER, wikiId, file).split("/")),
+        body,
+        "utf8",
+      );
+    };
+    await write("purpose.md", `# Ops\n\nScenario Template: ${label} — a description.\n`);
+    await write("schema.md", `# Schema — ${label}\n\n## Page conventions\n\nBody.\n`);
+  }
+
+  it("reconciles the configured owner's tenant and returns the count", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki, getWikiRegistry } = await import("../wikis");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    await plantDrift(wiki.id, "Business");
+
+    expect(await reconcileWikiScenarios()).toBe(1);
+
+    const stored = (await getWikiRegistry(OWNER)).wikis.find((w) => w.id === wiki.id);
+    expect(stored?.scenario).toBe("business");
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const { createWiki, getWikiRegistry } = await import("../wikis");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    await plantDrift(wiki.id, "Business");
+
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start rewriting labels.
+    expect(await reconcileWikiScenarios()).toBe(0);
+    expect(
+      (await getWikiRegistry(OWNER)).wikis.find((w) => w.id === wiki.id)?.scenario,
+    ).toBe("reading");
+  });
+
+  it("returns 0 instead of throwing when the reconcile fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup here must not 500 a scan that did everything
+    // else.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    vi.spyOn(getStorage(), "readFile").mockRejectedValue(
+      new Error("reading the registry failed"),
+    );
+
+    await expect(reconcileWikiScenarios()).resolves.toBe(0);
+  });
+});
+
+describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137)", () => {
+  const OWNER = "alice";
+
+  /**
+   * The retired tenant-global profile, planted where the migration reads it.
+   *
+   * Hand-joined from `tenantForOwner` rather than imported from a helper,
+   * because there deliberately IS no exported helper for this address: DW-137
+   * left it spelled once, inside `workspace-profile-backfill.ts`, and
+   * `wiki-schema-edit.test.ts` fails the build if a second spelling appears in
+   * `src/`. A test fixture is the one place the duplicate is harmless.
+   */
+  async function plantLegacyProfile(): Promise<string> {
+    const { tenantForOwner } = await import("../wiki");
+    const file = path.join(
+      tmpDir,
+      "tenants",
+      tenantForOwner(OWNER),
+      "workspace-profile.json",
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        scenario: "custom",
+        purpose: "Hand-authored before the split.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        updatedAt: "2021-06-30T00:00:00.000Z",
+      }),
+    );
+    return file;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("migrates the configured owner's tenant and returns the count", async () => {
+    // THE ONLY PRODUCTION PATH INTO THE MIGRATION. `scan-route.test.ts` mocks
+    // `@/lib/maintenance` wholesale and the backfill suite calls the library
+    // function directly, so without this case an `if (1) return 0;` at the top
+    // of the wrapper leaves every other suite in the repo green while the
+    // migration never runs anywhere.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    const { wikiProfilePath } = await import("../wiki-paths");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    // A wiki from before per-Wiki profiles: no file of its own.
+    const own = path.join(tmpDir, ...wikiProfilePath(OWNER, wiki.id).split("/"));
+    await fs.rm(own);
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(1);
+
+    const { getWorkspaceProfile } = await import("../workspace-profile");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe(
+      "Hand-authored before the split.",
+    );
+    expect(await exists(legacy)).toBe(false);
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start writing profiles.
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const legacy = await plantLegacyProfile();
+
+    expect(await backfillWorkspaceProfiles()).toBe(0);
+    expect(await exists(legacy)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the migration fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup in a one-time migration must not 500 a scan
+    // that did everything else. The registry read is what breaks here — it
+    // happens under the lock, past every guard that answers 0 on its own.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await plantLegacyProfile();
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target.endsWith("wikis.json")) throw new Error("the registry is gone");
+      return readFile(target);
+    });
+
+    await expect(backfillWorkspaceProfiles()).resolves.toBe(0);
+  });
+});
+
+
+describe("rekeyForkedAssets — the scheduled forked-asset migration (DW-738)", () => {
+  const BOB_FILE = "bbbb2222-photo.png";
+
+  /**
+   * The state a realm fork left behind: `photo` and `photo-2` both embedding
+   * refs under `assets/photo/`, with the forked page's bytes keyed on the base
+   * page's slug.
+   */
+  async function seedMiskeyedFork(): Promise<void> {
+    await seed("photo");
+    await writeWikiPageWithSideEffects({
+      slug: "photo-2",
+      title: "photo-2",
+      content: serializeFrontmatter(
+        {
+          created: PAST,
+          updated: PAST,
+          owner: "bob",
+          visibility: "public",
+          authors: ["bob"],
+          contributors: [],
+          confidence: 0.7,
+          expiry: "2099-01-01",
+          tags: [],
+          disputed: false,
+        } as Frontmatter,
+        `# photo-2\n\n![photo](assets/photo/${BOB_FILE})\n`,
+      ),
+      summary: "the forked page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await getStorage().writeAsset(
+      `raw/assets/photo/${BOB_FILE}`,
+      new Uint8Array([1, 2, 3]).buffer,
+    );
+  }
+
+  it("runs the migration and returns the count", async () => {
+    // THE ONLY PRODUCTION PATH INTO THE MIGRATION. `scan-route.test.ts` mocks
+    // `@/lib/maintenance` wholesale and `asset-slug-rekey.test.ts` calls the
+    // library function directly, so without this case an `if (1) return 0;` at
+    // the top of the wrapper leaves every other suite green while the migration
+    // never runs anywhere.
+    await seedMiskeyedFork();
+
+    expect(await rekeyForkedAssets()).toBe(1);
+
+    expect(
+      await getStorage().fileExists(`raw/assets/photo-2/${BOB_FILE}`),
+    ).toBe(true);
+  });
+
+  it("needs no configured owner handle, unlike the tenant migrations beside it", async () => {
+    // Deliberate divergence from `backfillWorkspaceProfiles`: those migrate a
+    // NAMED tenant's artifacts and answer 0 without a handle, while this walks
+    // the page index. Gating it on `getOwnerHandle()` would leave an
+    // owner-less deployment serving mis-keyed assets forever.
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    await seedMiskeyedFork();
+
+    expect(await rekeyForkedAssets()).toBe(1);
+  });
+
+  it("returns 0 instead of throwing when the migration fails", async () => {
+    // Fail-soft like every other wrapper here: it runs inside the maintenance
+    // scan, and a failure in a one-time migration must not 500 a scan that did
+    // everything else.
+    //
+    // The library function is mocked rather than starved of storage, and that
+    // is the point: `rekeyForkedPageAssets` is fail-soft at every step it
+    // owns — unreadable page, failed copy, failed rewrite, failed delete are
+    // all absorbed inside it — so no storage fault reaches this catch. Reaching
+    // it through the dynamic import is what exercises the wrapper's OWN
+    // contract instead of re-testing the library's.
+    await seedMiskeyedFork();
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    vi.doMock("../asset-slug-rekey", () => ({
+      rekeyForkedPageAssets: async () => {
+        throw new Error("the migration blew up");
+      },
+    }));
+    try {
+      await expect(rekeyForkedAssets()).resolves.toBe(0);
+      expect(logged).toHaveBeenCalledWith(
+        "maintenance",
+        "forked-asset re-key failed:",
+        expect.any(Error),
+      );
+    } finally {
+      vi.doUnmock("../asset-slug-rekey");
+    }
+  });
+});
+
+
+describe("reapStrandedScratchFiles — the scheduled scratch GC (DW-292)", () => {
+  /**
+   * The env flag is saved HERE rather than in the file-level hooks because it
+   * is this suite's only user: a value exported in a developer's shell would
+   * otherwise turn the reaping rows below into refusals.
+   */
+  let savedReadOnly: string | undefined;
+  let savedProvider: string | undefined;
+
+  beforeEach(() => {
+    savedReadOnly = process.env.YOPEDIA_READONLY;
+    savedProvider = process.env.STORAGE_PROVIDER;
+    delete process.env.YOPEDIA_READONLY;
+    delete process.env.STORAGE_PROVIDER;
+  });
+
+  afterEach(() => {
+    if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = savedReadOnly;
+    if (savedProvider === undefined) delete process.env.STORAGE_PROVIDER;
+    else process.env.STORAGE_PROVIDER = savedProvider;
+  });
+
+  /** A `.tmp-<uuid>.tmp` under DATA_DIR, dated `ageMs` into the past. */
+  async function plantScratch(name: string, ageMs: number): Promise<string> {
+    const full = path.join(tmpDir, name);
+    await fs.writeFile(full, "half a payload");
+    const when = new Date(Date.now() - ageMs);
+    await fs.utimes(full, when, when);
+    return full;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("reclaims a stranded scratch file and reports the count", async () => {
+    const stranded = await plantScratch(
+      ".tmp-11111111-2222-4333-8444-555555555555.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+
+    expect(await reapStrandedScratchFiles()).toBe(1);
+    expect(await exists(stranded)).toBe(false);
+  });
+
+  it("calls the provider with NO cap argument, so production keeps the shipped bound", async () => {
+    // THE CALL-SITE HALF of the reaper's cap pin. `storage-fs.test.ts` pins
+    // that `candidateCap` DEFAULTS to `STRANDED_SCRATCH_CANDIDATE_CAP`, but a
+    // default only holds while nobody overrides it — and the parameter exists
+    // precisely so tests CAN. Nothing else in the suite would notice this
+    // wrapper starting to pass one: adding a cap of 5 here leaves every row
+    // green while production silently reclaims 5 stranded files per tick
+    // instead of 500, a backlog that grows forever and whose symptom —
+    // a small non-zero count on every tick — is indistinguishable from health.
+    //
+    // Asserted as "called with exactly zero arguments" rather than "not called
+    // with 5": the override is test-only, so ANY argument from this call site
+    // is the regression, whatever its value.
+    const provider = getStorage() as unknown as {
+      reapStrandedScratchFiles: (...args: unknown[]) => Promise<number>;
+    };
+    const pass = vi
+      .spyOn(provider, "reapStrandedScratchFiles")
+      .mockResolvedValue(7);
+
+    await expect(reapStrandedScratchFiles()).resolves.toBe(7);
+
+    expect(pass).toHaveBeenCalledWith();
+  });
+
+  it("leaves a scratch file a live write could still be holding", async () => {
+    // The grace window is the ONLY thing separating a crash leftover from an
+    // in-flight write's tmp file — both are `.tmp-<uuid>.tmp` in the
+    // destination's own directory — so a pass that took a seconds-old one
+    // would truncate a write that was about to publish.
+    const inFlight = await plantScratch(
+      ".tmp-66666666-7777-4888-8999-aaaaaaaaaaaa.tmp",
+      1_000,
+    );
+
+    expect(await reapStrandedScratchFiles()).toBe(0);
+    expect(await exists(inFlight)).toBe(true);
+  });
+
+  it("refuses on a read-only deployment instead of quietly reclaiming nothing", async () => {
+    // The gate sits BEFORE the try, so the fail-soft catch below cannot swallow
+    // it: a direct library caller — a CLI command, an ops script — meets the
+    // refusal rather than reading `0` as "nothing to reclaim". The scan route
+    // has already answered `maintenanceScan` long before this is reached.
+    process.env.YOPEDIA_READONLY = "1";
+    const stranded = await plantScratch(
+      ".tmp-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+
+    await expect(reapStrandedScratchFiles()).rejects.toThrow(
+      READ_ONLY_REFUSAL.scratchFileReap,
+    );
+    expect(await exists(stranded)).toBe(true);
+  });
+
+  it("returns 0 without touching storage on a deployment that is not on disk", async () => {
+    // The ONE branch only this suite can reach: the provider-level rows in
+    // `storage-fs.test.ts` are a filesystem provider by construction, and R2
+    // has no such method to call. Scratch files are an artifact of publishing
+    // through a filesystem — R2's create-only put is native — so there is
+    // nothing to reclaim and the wrapper must answer 0 rather than narrowing
+    // against a class the deployment never instantiated.
+    const stranded = await plantScratch(
+      ".tmp-99999999-8888-4777-8666-555555555555.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+    _resetStorage();
+    process.env.STORAGE_PROVIDER = "cloudflare-r2";
+    // The 0 alone proves nothing — the fail-soft catch below also answers 0,
+    // and on an R2 deployment `getStorage()` throws for want of an initialised
+    // binding. A CLEAN short-circuit is a 0 with nothing logged; falling
+    // through to the catch is a 0 with a scan-level error on every tick.
+    const errored = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    expect(await reapStrandedScratchFiles()).toBe(0);
+
+    expect(errored).not.toHaveBeenCalled();
+    // …and it short-circuited BEFORE resolving a provider: the file a
+    // filesystem pass would have taken is still there.
+    expect(await exists(stranded)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the walk fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup here must not 500 a scan that did everything
+    // else. The walk's OWN fault behaviour — per-entry skips, and the base-path
+    // rejection this converts — is pinned at the provider in `storage-fs.test.ts`,
+    // which is the only place a row can see inside a single pass.
+    const provider = getStorage() as unknown as {
+      reapStrandedScratchFiles: () => Promise<number>;
+    };
+    vi.spyOn(provider, "reapStrandedScratchFiles").mockRejectedValue(
+      new Error("walking the data directory failed"),
+    );
+
+    await expect(reapStrandedScratchFiles()).resolves.toBe(0);
   });
 });

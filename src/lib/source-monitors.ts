@@ -1,4 +1,6 @@
 import { generateText } from "ai";
+import { humanOwnerOf } from "./agent-handle";
+import { llmTimeoutOption } from "./config";
 import { contentHash } from "./embeddings";
 import { isEnoent } from "./errors";
 import { fetchUrlContent, validateUrlSafety } from "./fetch";
@@ -7,7 +9,7 @@ import { getConfiguredModel } from "./llm";
 import { withFileLock } from "./lock";
 import { createMemoryChangeProposal } from "./memory-proposals";
 import { buildNamesTermsGuidance } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { getStorage } from "./storage";
 import {
   buildClaimEvidence,
@@ -382,9 +384,16 @@ async function defaultDraftUpdate(input: {
 }): Promise<string> {
   const parsed = parseFrontmatter(input.currentContent);
   const model = await getConfiguredModel();
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709). The
+  // monitor itself stays in its owner's silo — `runSourceMonitor` locks, reads
+  // and writes on the RAW `owner` throughout — but the Purpose and dictionary
+  // that shape the redraft belong to the PERSON behind the handle, so a monitor
+  // owned by `alice--yoyo` redrafts against alice's standards instead of the
+  // agent's own empty tenant.
+  const guidanceOwner = humanOwnerOf(input.monitor.owner);
   const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-    buildWorkspaceGuidance(input.monitor.owner),
-    buildNamesTermsGuidance(input.monitor.owner),
+    buildWorkspaceGuidance(guidanceOwner),
+    buildNamesTermsGuidance(guidanceOwner),
   ]);
   const { text } = await generateText({
     model,
@@ -397,6 +406,8 @@ async function defaultDraftUpdate(input: {
       `Source URL: ${input.monitor.url}\nSource title: ${input.sourceTitle}\n\n` +
       `CURRENT PAGE BODY:\n${parsed.body.slice(0, 40_000)}\n\n` +
       `LATEST SOURCE CONTENT:\n${input.sourceContent.slice(0, 60_000)}`,
+    // No retry wrapper here, so this is the one and only deadline for the call.
+    ...llmTimeoutOption(),
   });
   const body = stripCodeFence(text);
   if (!body) throw new Error("The model returned an empty monitored update");
@@ -499,7 +510,7 @@ export async function runSourceMonitor(
         targetSlug: monitor.targetSlug,
         title: `Update ${monitor.name}`,
         summary: `A monitored source changed (${Math.round(score * 100)}% semantic token difference).`,
-        reason: `WorkWiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
+        reason: `work-wiki detected a meaningful change at ${monitor.url}. Review the proposed revision against the stored excerpt before accepting it.`,
         proposedContent,
         evidenceIds: [anchor.id],
         actor: `${owner}--source-monitor`,

@@ -8,8 +8,8 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 ## Policy
 
 - `llm-wiki.md` is the immutable founding prompt — never edit it.
-- Treat `.github/` and `.yoyo/yoyo.toml` as protected (declared in `.yoyo/yoyo.toml`); change only when explicitly asked.
-- The rebrand is display-only: runtime identifiers stay `yopedia` — `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, the MCP server name, localStorage keys, `YOPEDIA_*` env/secret names, and every resource name in both wrangler.jsonc files. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers.
+- Treat `.github/` and `.yoyo/yoyo.toml` as protected (declared in `.yoyo/yoyo.toml`); change only when explicitly asked — note that the brand scan now reads `.github/` through `maintainerSources()`, so a stray brand string landing in a workflow can only be cleared by editing a protected file.
+- The rebrand is display-only: a fixed set of runtime identifiers is frozen and must never be renamed — see **Frozen identifiers** below the closing `bmad:context` marker for the list and its enforcing test.
 
 ## Where things are
 
@@ -29,6 +29,182 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 
 <!-- /bmad:context -->
 
+## Test environments
+
+This section is deliberately outside the `bmad:context` markers, for the same
+reason **Frozen identifiers** below is: that block is replaced on refresh, and
+this convention has to survive it. It also has an enforcing half — the retired
+claim is scanned for in `src/lib/__tests__/workbench-chrome.test.ts`, and that
+scan reads this file too.
+
+- `pnpm test` is one `vitest run` over TWO projects declared inline in
+  `vitest.config.ts`. The file extension picks the project — there is no
+  per-file opt-in:
+  - `**/__tests__/**/*.test.tsx` ⇒ the `dom` project: `environment: "jsdom"`,
+    setup files `./vitest.setup.ts` + `./vitest.setup.dom.ts`. Mount components
+    here (React Testing Library).
+  - `**/__tests__/**/*.test.ts` ⇒ the `node` project: `environment: "node"`,
+    setup file `./vitest.setup.ts`. No DOM, no testing-library — pure functions,
+    routes, and source scans.
+- Run one project alone with `pnpm exec vitest run --project dom` (or
+  `--project node`), optionally with a path. Note the asymmetry: run alone, a
+  project whose include matches nothing exits 1, but the combined `pnpm test`
+  that CI runs exits 0 — which is what the config-load guard below exists for.
+- Symptom of getting it wrong: `document is not defined` (or `window is not
+  defined`) at import time means a mounted suite was written as `.test.ts`.
+  RENAME it to `.test.tsx`; do not add jsdom to the node project.
+- The suite must live under a `__tests__` directory. `vitest.config.ts` throws at
+  CONFIG LOAD when the dom include matches nothing, or when a `*.test.tsx` on
+  disk falls outside it — an uncollected project does not fail a combined run, so
+  a misplaced file would otherwise delete every mounted assertion while the
+  report still reads "all passed".
+- The shim controls are reached through one aliased door, `@/test/dom-helpers`:
+  `import { setElementRect } from "@/test/dom-helpers"` from any `*.test.tsx` in
+  the `dom` project, whatever its depth. DOM PROJECT ONLY — the module loads
+  `vitest.setup.dom.ts`, which touches `window` at import time, so a
+  `node`-project `*.test.ts` importing it dies with `window is not defined`.
+  That symptom means the OPPOSITE of what the bullet above says: do not rename
+  the file to `.test.tsx`; a node suite has no business driving a shim, so take
+  the import out instead. The module is a RE-EXPORT and implements nothing —
+  every shim still lives only in `vitest.setup.dom.ts`, and both halves share
+  one module instance, so the setup file's `afterEach` resets the same
+  registries a suite writes through the door.
+  Do not reach past it with a relative ladder: `@/` resolves
+  to `src/` and the setup files sit at the repo root, so the ladder's length
+  encodes each suite's own directory depth and silently resolves elsewhere the
+  moment a file moves.
+- Scanning a source tree? Use `walkFiles` from `src/lib/__tests__/source-scan.ts`
+  — do not hand-roll a `walk()`. It owns the one exclusion set
+  (`__tests__`, `node_modules`, `.git`, `.next`; extras per call via
+  `skipDirs`), matches the BASENAME, and returns absolute paths. The seven
+  suites' hand-rolled copies had drifted into covering different trees before
+  DW-117 merged them; `source-scan.test.ts` pins its rules, and its header names
+  `read-only-kernel-gate.test.ts`'s `walk()` as the snapshot-shaped walker this
+  module deliberately does not reach — it reads a temp directory's CONTENTS and
+  must exclude nothing. That is not a census: other hand-rolled walkers matching
+  the `walkFiles` contract are still on disk unmigrated, and the header names
+  the ones known at the time. The exclusions apply to CHILD directories only — the root
+  argument is never name-checked. Because every caller asserts "no offenders",
+  a narrowed walk passes: give each new scan a member pin naming one real file
+  per subtree plus a count floor, the `english-only.test.ts` idiom.
+- Shared test helpers are NOT named `*.test.ts(x)` — either project would
+  otherwise collect one as a suite with no assertions in it, and the
+  config-load guard rejects a `*.test.tsx` outside the dom include. There are
+  seven. Five sit beside the suites that use them and are imported as `./name`:
+  `src/lib/__tests__/source-scan.ts`, `src/lib/__tests__/discuss-fixtures.ts`
+  (the only writer of `discuss/<slug>.json` in the tests),
+  `src/lib/__tests__/email-ingest-wire.ts`,
+  `src/lib/__tests__/internal-link-fixture.ts` and
+  `src/lib/__tests__/sidecar-harness.ts` (the one `listen()` for the suites that
+  bind a REAL sidecar on an ephemeral loopback port — it builds the server from
+  per-suite defaults, tracks it, and closes everything in `closeAll()`; the
+  three copies it replaced had drifted apart in their failure paths, DW-606).
+  The other two live under
+  `src/test/` and are imported as `@/test/name`, because their users sit in more
+  than one directory and a `./` sibling import reaches only one:
+  `src/test/dom-helpers.ts` (the dom shim controls — which have the SECOND
+  reason the bullet above gives, that `@/` cannot express a path outside `src/`
+  and a relative ladder encodes the importer's own depth) and
+  `src/test/settings-harness.tsx` (the Settings fixture, `fetch` stub and mount
+  helpers the mounted Settings suites share). Nothing the app ships may
+  import from `@/test/`: both modules pull `vitest` and
+  `@testing-library/react`, which are devDependencies, and `dom-helpers.ts`
+  additionally mutates `window.matchMedia` and `HTMLElement.prototype` at import
+  time. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
+- Browser-level questions — real layout, real focus across platforms, real
+  assistive technology — are Playwright's, `pnpm test:e2e`
+  (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus
+  ORDER is executable in jsdom (`workbench-sheet.test.tsx` asserts
+  `document.activeElement`); what a screen reader announces is not. Shared
+  seeding lives in `e2e/fixtures/` — and it is the FILENAME that keeps those
+  modules from being collected: `playwright.config.ts` sets no `testMatch`, so
+  the default picks up `*.test.ts` as well as `*.spec.ts`, and a fixture named
+  `*.test.ts` would run as an empty suite wherever it sat.
+- The e2e run is ONE worker against ONE store (`DATA_DIR=e2e/.data`), wiped
+  once by the `webServer` command before the server boots — so every spec file
+  inherits whatever the files before it left behind. A file whose cases need an
+  empty tenant calls `resetOwnerTenant()` from `e2e/fixtures/wiki.ts` in
+  `beforeAll`; a file that mints wikis calls it in `afterAll`. Do not rest on
+  path order: it changes when a file is renamed, run alone, or sharded, and the
+  failure it produces names the wrong thing.
+- CSS CLAIMS come in two halves, and both are required (DW-185). The node
+  suites slice `src/app/globals.css` and pin declaration text and source order
+  (`workbench-split.test.ts`, `workbench-left-column.test.ts`) — that is what
+  runs on every `pnpm test` and what fails when a declaration is deleted. It
+  cannot show which rule won the cascade, what a `calc()` resolved to, or that
+  a target is hittable. `e2e/workbench-layout.spec.ts` settles those in a real
+  browser: separator geometry against live boxes, `document.elementFromPoint`
+  on the 24px grab strips, and the 900px clamp release measured through
+  `getComputedStyle` plus a real document scroll. Add the browser half there
+  rather than making a stylesheet scan claim more than text can.
+- WHAT A SCREEN READER UTTERS has no automated home here and is checked by hand
+  (DW-287). The live-region repeat mark (`src/lib/live-region.ts`) is the
+  standing case: the vitest suites prove the region's string changed, and the
+  MANUAL procedure — which AT, which surface, what to hear — is recorded in
+  that module's header comment. Run it against VoiceOver and NVDA whenever the
+  mark or its callers change. This is a knowingly manual gap, not an untested
+  one; say so in any suite that touches the mechanism.
+- jsdom computes no layout, so every box is all-zeros and no stylesheet applies.
+  `vitest.setup.dom.ts` holds every shim and nothing in `src/` does — still
+  literally true alongside `@/test/dom-helpers` above, which re-exports all
+  eight controls and defines none of them (pinned by
+  `test-infra-conventions.test.ts`). It
+  unconditionally overrides `Element.prototype.getBoundingClientRect`,
+  `HTMLElement.prototype.offsetWidth`, `offsetParent`, `getClientRects`,
+  `scrollIntoView`, `window.matchMedia`, `document.visibilityState`, and
+  `window`/`globalThis` `localStorage`/`sessionStorage` (Node 26's native
+  Storage getter shadows jsdom's) — every box read in the dom project goes
+  through a wrapper, which delegates to jsdom's own accessor unless a test has
+  declared otherwise.
+- That declaration is `setElementRect(selector, { width })`, which is how a
+  width-derived decision becomes reachable at all (declare before `render()`, and
+  per test — the `afterEach` empties the registry). A declared box is a stated
+  fact, not a measurement: it pins how the component REACTS to a width and can
+  never catch a CSS mistake.
+- When a comment explains why a rule is a pure function rather than a branch in
+  JSX, name the PROJECT the file's own suite runs in ("this file's suite is the
+  `node` project, which mounts nothing"). Do not justify a design by a repo-wide
+  absence of a DOM test environment, and do not describe the whole runner as a
+  single environment — both are false now, and the scan above rejects them.
+
+## Frozen identifiers
+
+This section is deliberately outside the `bmad:context` markers: that block is
+replaced on refresh, and this list must survive the refresh.
+
+- The rebrand is display-only: runtime identifiers stay `yopedia`. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers.
+- The frozen spellings, with the call site each was read from — one worked example per waiver, except the two CLOSED ENUMERATIONS (the wire headers below, the lowercase-hyphen family in the bullet after this one), which are spelled out member by member because the parity test asks about every member separately rather than about the family as a whole. Twelve of the thirteen waivers are here; the thirteenth, the lowercase-hyphen family, is enumerated in the bullet after this one:
+  - `YOPEDIA_API_TOKEN` — the all-caps env, secret and Worker-binding family (`YOPEDIA_*`), including the `YOPEDIA_E2E` names playwright.config.ts sets and the `YOPEDIA_WEBHOOK_SIGNING_SECRET` line .env.example documents. All-caps is never display copy, which is why this waiver can be a shape.
+  - `X-Yopedia-Queue-Attempt` — the retry-accounting header the producer and the consumer spell independently (workers/task-consumer/index.ts, src/app/api/tasks/run/route.ts). This is the one entry in this list a test checks on both sides.
+  - `X-Yopedia-Payload-Bytes` — the declared payload size src/lib/sandbox-service.ts sends and workers/sandbox-runner/src/index.ts checks.
+  - `X-Yopedia-Signature` — the integration outbox's HMAC header (src/lib/integration-outbox.ts).
+  - `X-Yopedia-*` — the family itself, as src/lib/brand.ts and workers/task-consumer/index.ts write it in their comments. The wire-header family is a CLOSED enumeration, not every header spelled with that prefix: a new one must be added to it or the brand scan reads it as display prose.
+  - `"yopedia"` — the string literal behind `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, and the MCP `serverInfo.name`.
+  - `yopedia` — the same identifier named as itself inside a doc comment or a sentence like this one. It is waived only in its backticked form, which is why this section can discuss it at all without failing the brand scan, and why writing the bare word as display prose is still a slip.
+  - `/u/yopedia` — that same tenant inlined into a URL path inside the Workers, which do not import src/lib and so cannot derive it.
+  - `yopedia--research-agent` — agent ids minted from `BASE_AGENT_OWNER`; the double hyphen is the separator, not part of a name.
+  - `yopedia_recent_pages` — the lowercase-underscore localStorage keys, persisted in owners' browsers.
+  - `yopedia email-ingest ok` — the Workers' plaintext health-check bodies, which external uptime checks match on.
+  - `yopedia.yolog.dev` — the upstream origin cited in comments.
+  - `yopedia.yuanhao-li.workers.dev` — this deployment's own origin, generated from the frozen Cloudflare project name and published as the MCP endpoint in skills/. Spelled in full rather than as a host shape, so a lookalike host a future doc invents is still a slip.
+  - `yopedia.christianlee-flightwall.workers.dev` — this fork's own deployment origin, the default `YOPEDIA_URL` target .github/workflows/seed-yoyo.yml seeds against when the repo variable is unset. Spelled in full for the same reason as the origin above, and a second entry rather than a widening of it: one host shape covering both would waive every lookalike either account could ever be given.
+  - `yologdev/yopedia` — the upstream repo link; leave it as it is.
+- The lowercase-hyphen family is a CLOSED enumeration (`YOPEDIA_HYPHEN_IDENTIFIERS`, same file), not "every resource name in both wrangler.jsonc files" — it was an open lowercase-hyphen wildcard until DW-352, which waived ordinary display prose as if it were a Cloudflare resource whenever the sentence happened to hyphenate after the brand word. It covers, and covers only:
+  - In both wrangler.jsonc files: `yopedia-tasks` and `yopedia-tasks-dlq` (the queue and its DLQ); `yopedia-task-consumer`, `yopedia-email-ingest` and `yopedia-sandbox-runner` (the three Worker scripts); `yopedia-raw` (R2 bucket) and `yopedia-embeddings-bge-m3` (Vectorize index).
+  - Outside them: `yopedia-r2`, `yopedia-vec` and `yopedia-pages` (the three `/tmp/*.log` basenames scripts/setup-cloudflare.sh derives from those create commands — `yopedia-r2` names no resource, the bucket it logs is `yopedia-raw`); `yopedia-sandbox.internal` (the sandbox host, src/lib/sandbox-service.ts); `yopedia-monitor` (the source-monitor User-Agent, src/lib/source-monitors.ts); and `yopedia-test-` (the tmpdir prefix vitest.setup.ts mints `DATA_DIR` under — the trailing hyphen is part of the name).
+  - A NEW resource in that family must be added to the enumeration or the brand scan fails it as display prose; a RETIRED one must be removed, which a minimality test enforces — a name no scanned file spells any more is a standing licence to write that word as copy. That test deliberately ignores THIS file when looking for evidence: the parity test forces the names above to be written here, so counting them would let the enumeration certify itself. The suite's own slip cases show which near-misses the word boundaries reject.
+- `IDENTIFIER_ALLOWLIST` in `src/lib/__tests__/brand-copy.test.ts` is the enforcing half of the three bullets above; the prose above is the explaining half. Prose alone does not stop a rename — any spelling frozen here must also be waived there, and anything not waived there fails the brand scan. The reverse is tested too, and at MEMBER granularity: a pattern added to the allowlist with no backticked example in this section fails the parity test — and so does a member appended to either closed enumeration above (a new wire header, or a new lowercase-hyphen resource name), which adds no allowlist pattern at all yet still widens what the scan waives. Neither the waiver list nor either enumeration can be widened without saying here what the widening is for.
+- The same freeze covers the operator-facing `WORKWIKI_*` family: the env/secret names (`WORKWIKI_URL`, `WORKWIKI_API_TOKEN`, `WORKWIKI_SYNC_*`, `WORKWIKI_SOURCE_*`), the `workwiki.app` origin, the `.workwiki-source-sync.json` state file, the `workwiki-backups` directory, the `workwiki-*.zip` archive prefix together with the prune regex that matches it, and the `workwiki-portable-archive` manifest `format` string (src/lib/portable-archive.ts), which is written into every exported archive and validated on import — renaming it breaks re-import of archives already on operators' disks.
+- The same family also covers these, each verified at its call site:
+  - `workwiki-actions.ics` — the `Content-Disposition` filename of the iCalendar action feed (src/app/api/integrations/calendar/route.ts). Subscribed calendar clients hold that name.
+  - the `workwiki-*.zip` export filename minted by the archive export route (src/app/api/archive/export/route.ts) — a second producer of the one archive-prefix contract, alongside the archive namer and the prune regex that matches it in tools/work-wiki-sync.mjs. Renaming either producer alone splits the prefix.
+  - `~/.workwiki/skills` — the user-scope Skill root the sidecar scans (`sidecar/skills.mjs`). Owners drop `SKILL.md` packs there by hand, so a rename makes their Skills silently invisible with no error to read.
+  - `workwikiDefaultTags`, the browser clipper's `chrome.storage.local` key, and `save-to-workwiki`, its context-menu id (integrations/browser-clipper/) — both persist inside already-installed extensions, so a rename silently drops saved state.
+  - the `www.workwiki.app` custom-domain route (wrangler.jsonc) — a separate route entry from the apex `workwiki.app` beside it, and just as live.
+- One more spelling is waived without being frozen: the webhook placeholder `https://hooks.example.com/workwiki` rendered by IntegrationDesk (src/components/IntegrationDesk.tsx). It is example copy, not a production identifier — it is listed here only so a reader diffing this prose against the allowlist does not read the extra waiver as drift.
+- `WORKWIKI_IDENTIFIER_ALLOWLIST` in `src/lib/__tests__/brand-copy.test.ts` is the enforcing half of the three operator-identifier bullets above; the prose above is the explaining half. Prose alone does not stop a rename — any spelling frozen here must also be waived there, and anything not waived there fails the brand scan.
+- A sweep that "fixes" any of these breaks existing operator setups and strands local backups.
+
 ## Learned User Preferences
 
 - Keep UI and LLM generation English-only; do not add Chinese or i18n.
@@ -36,17 +212,25 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 - Reshape the existing Next.js web app toward nashsu/llm_wiki UX parity; do not start a desktop or Tauri rewrite.
 - Match nashsu Workbench density and layout from the captured screenshots; do not invent a restyle of the shell. Type is locked: system sans (SF) for chrome and Chat; Georgia for Preview page body and headings.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
+- Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; do not re-arm a finished bundle just because the ledger was dirty. When review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget (2.5M weighted tokens, 60-minute timeout). ChatGPT-auth Codex cannot use `gpt-5-codex`.
+- Prefer bmad-loop sweep commit/finalize to proceed automatically so remaining deferred-work items can be culled. After a leftover-rule or policy change, stop the live sweep and start a fresh `--no-prompt --no-repeat` cycle — do not resume the old run.
+- Epic 8 is done: sweep triage may bundle `severity: low` entries. Skip only `review-budget-followup` stubs and entries the project explicitly excludes — not every low merely because it is low. When an entry is already fixed, mark `already_resolved`. Keep bundles to one goal, 2–3 DWs.
+- Sweep/dev leftovers: file a leftover ONLY when the owner can hit a wrong answer, lost data, or a broken door that this bundle did not name. Do not file a leftover for a nearby test pin, a sibling call site, a same-shape mock, a comment or title mismatch, or any other residue this bundle happened to notice. Default any leftover you do file to `severity: low`. File at most 1 new deferred-work row per bundle. Prefer omitting a row over minting residue; do not restate a Never clause or an already-skipped low.
+- Do not use Cursor IDE chat as a bmad-loop adapter; there is no shipped cursor profile.
+- When implementing a story range, the implementable spec in `_bmad-output/implementation-artifacts/spec-*.md` is the sole source of truth; do not edit `<intent-contract>` in those specs, and do not treat `epics.md` planning text as the implementation contract.
 
 ## Learned Workspace Facts
 
-- UX and functionality parity target is [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki): three-column Workbench (tree + chat + preview) plus icon sidebar. Chat is a rail icon (not a permanent center column); Preview docks when a tree pick or citation is active.
+- UX and functionality parity target is [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki): three-column Workbench (tree + chat + preview) plus icon sidebar. Chat is a rail icon (not a permanent center column); Preview docks when a tree pick or citation is active. The new Workbench is only `/`; `SiteChrome` hides the old nav/footer on that path alone — `/knowledge`, `/chat`, `/settings`, `/wiki/…` still show the old chrome. Clerk post-login is force-pinned to the Workbench: `<SignIn />` sets `forceRedirectUrl="/"` and `ClerkProvider` sets `signInForceRedirectUrl="/"` (backed by the `NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL=/` env/wrangler var), so opening `/sign-in` directly no longer lands on old-chrome routes like `/wiki` or `/knowledge`.
 - Ingest is two sequential LLM calls (analysis, then generation), not a single read-and-write step.
-- Sources auto-queue ingest on arrival (upload, folder import, email, Plaud/direct connect, API/MCP); the web contract is not OS folder-watch.
-- Meeting transcripts (especially Plaud) should extract todos with approve/reject, due dates, and links back to the source page — only for Plaud-origin sources or a Source marked “meeting”.
+- Sources auto-queue ingest on arrival (upload, folder import, URL/clip, bookmarklet, share, `/save`, email, Plaud/direct connect, API/MCP) into `raw/sources/` via Intake, not the vault `/api/ingest` queue. Raw snapshots are immutable: a changed body mints a content-hashed snapshot and leaves old bytes (`saveRawSource` is first-write-only). The web contract is not OS folder-watch.
+- Meeting transcripts (especially Plaud) extract todo Candidates after successful two-step ingest — only for Plaud-origin sources or a Source marked “meeting”. Kernel store is `tenants/{t}/todos.json`; a Candidate is not a Todo until approve. The Workbench Todos rail is the HITL surface (Candidates | Open | Done). Rejected items never appear in Open; source delete marks `sourceMissing` and does not drop items.
 - Final PRD: `_bmad-output/planning-artifacts/prds/prd-work-wiki-2026-08-12/`.
 - Preview is view-first; markdown edit is a confirm-gated escape hatch (no WYSIWYG).
-- Chat Agent, local API/MCP, and shell run on a local sidecar; the Workbench stays on the Next.js web app.
+- Chat Agent, local API/MCP, and shell run on a local sidecar at `127.0.0.1:19828` (the sidecar never imports `src/lib`). Provider/Chat transport lives in `sidecar/chat-provider.mjs` and `sidecar/chat-transport.mjs`; `server.mjs` is the HTTP shell. The Workbench stays on the Next.js web app and fails closed when the sidecar is down (cloud Chat 503 `sidecar_required`). SSE events are exactly `meta`, `agent`, `done`, `cancelled`, `error`. `/api/query` is not v1 Chat. Chat and Search share one retrieval pipeline (vector off by default). Workbench Chat/Search call `send(url, init)` as a parsed-body helper (do not call `.json()` on the result). The sidecar never invents a fake `[1]`. Read-only blocks New Chat, delete, rename, send, regenerate, and settings writes. Save-to-wiki goes under `wiki/queries/`; thinking is stored but never cited or saved.
 - Active UX run: `_bmad-output/planning-artifacts/ux-designs/ux-work-wiki-2026-08-12/` — `DESIGN.md` + `EXPERIENCE.md` are `status: final`. Nashsu screenshots in `imports/` are layout/density reference. Type: SF chrome, Georgia Preview. Color: nashsu light gray, black primary.
 - Active architecture run: `_bmad-output/planning-artifacts/architecture/architecture-work-wiki-2026-08-12/` — `ARCHITECTURE-SPINE.md` is `status: final`. Wiki kernel (OpenNext + R2) is the system of record; local sidecar owns Chat/extract/shell/` :19828`.
 - Final spec: `_bmad-output/specs/spec-work-wiki/` (`SPEC.md`, `glossary.md`, `success-metrics.md`); companions are the final PRD, UX, and architecture spine.
-- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Next planning gate is sprint planning.
+- Epic breakdown complete in `_bmad-output/planning-artifacts/epics.md` (8 epics, 68 stories; `stepsCompleted` through step-04). P0: Private Workbench, Sources compile, Ask the wiki, Meeting Todos; P1: See the wiki's shape, Deep Research, Any document in, Agents at the door. Office/email extract stays in Epic 7, not Epic 2. Epics 1–8 are `done` in `sprint-status.yaml` except Story 7.6 (`deferred`: Plaud publishes no consumer OAuth list/pull HTTP; do not rewrite 7.6 to email or unofficial `api.plaud.ai` — a later official-MCP pull is a new story). Story `done` is implementation complete, not retrospective acceptance. Epic 4's retrospective is optional by waiver in the Epic 5 spec. Epic 5's retro (`epic-5-retro-2026-08-23.md`) is `verdict: rejected` until remediations get a fresh exact-head review. Epic 6's retro (`epic-6-retro-2026-08-24.md`) is `verdict: accepted` at product SHA `a7dcaa78`. Epic 7's retro stays `optional`. Epic 8's retro (`epic-8-retro-2026-08-25.md`) is `verdict: accepted` at product SHA `89cfa649`; `epic-8-retro-architecture-follow-on` stays open for the ChatCanvas pending-turn/session and Settings API/MCP extracts and is not an acceptance blocker. Implementable specs are `spec-{slug}.md` in `_bmad-output/implementation-artifacts/` (`spec-dw-…` for deferred-work); compiled epic context is `epic-<N>-context.md`; planning story text stays in `epics.md`.
+- `.bmad-loop/policy.toml` is gitignored and machine-local; adapter and sweep settings apply on the next local `bmad-loop` start, not via git push. Isolation is one sweep per checkout (`max_parallel = 1`); do not start a second `bmad-loop` on the same project path — concurrent runs have reset the tree mid-test. Hand work on other DWs uses a sibling git worktree; do not edit `deferred-work.md` while a sweep is running. Merge worktree branches onto the shared branch only when the sweep is stopped/idle and the working tree is clean — a dev session snapshots the baseline at start, so an in-flight commit pollutes its review diff. Ledger rows for off-loop merged work stay `open` until the next sweep triage marks them `already_resolved`; the ledger is orchestrator-owned, so do not hand-close them. `bmad-loop stop --graceful` finishes the in-flight bundle then pauses, resumable via `bmad-loop resume <run>`; a bundle deferred at the stop keeps its rows `open` and preserves its work under `refs/attempt-preserve-dirty/…`. The TUI can keep showing a stale stopped run's task list while a newer run is live — trust `bmad-loop list`, the engine PID, and the run's journal/heartbeat, not the panel. Review finalize must not HALT on orchestrator-owned dirty `deferred-work.md` (the orchestrator squashes that ledger into the story commit), and that clean-copy exception is the ledger alone — a session that modifies a Never-clause/protected file must HALT as dirty, not pass as done. A CRITICAL escalation (an intent gap dev will not resolve alone) is closed by narrowing the bundle: the human decision amends the frozen spec's `<intent-contract>` to the narrowed scope and leaves `status: blocked` for the orchestrator, writes the marker at `<run>/resolve/<story>/resolution.json`, and omits `restore_patch` when the attempted patch entangles in-scope and out-of-scope halves — the narrowed story then re-drives from scratch via `bmad-loop resolve <run> --no-interactive --resume`. Sweep decision prompts are answered by the operator as `chore(decisions): pre-answer DW-<n>` commits; `bmad-loop decisions` then reports no unanswered decisions and triage proceeds without pausing.
+- Conventions adopted from the review recommendations (test discipline and review contract): every feature packet must drive its composition root end-to-end at least once — a packet that only exercises mocks and source scans is not done. No new AST/source-string guard unless it names the production regression it would catch. One recorded-real-response contract fixture per provider is allowed and encouraged — the current "no live tests + exact-shape parsing" combination guarantees a first-contact provider failure. Review layers never pad to a quota: zero findings is a valid review, and a follow-up iteration is recommended only when a patched finding was `high` severity — medium/low findings are fixed in-pass and recorded, never loop fuel. Loop/review behavior is changed in the tracked skill sources `.agents/skills/…` (the single source; `.claude/skills` is a symlink to it) and overridden per-skill in `_bmad/custom/bmad-build-auto.toml` — the shipped skill `customize.toml` is DO-NOT-EDIT and gets overwritten on skill update.

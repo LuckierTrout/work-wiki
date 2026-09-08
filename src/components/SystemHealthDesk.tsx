@@ -3,14 +3,30 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
+import { backupTruncationLabel } from "@/lib/backup-display";
 import type { BackupSummary } from "@/lib/backups";
 import type { RetrievalEvalCase, RetrievalEvalRun } from "@/lib/retrieval-evals";
 import type { SystemHealthSnapshot } from "@/lib/system-health";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -87,7 +103,15 @@ export function SystemHealthDesk() {
         setNotice("Backup and isolated restore verification are queued. The receipt will appear here when processing finishes.");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create the backup.");
+      // NOTHING CAME BACK (DW-717). A fired deadline, a dropped connection or a
+      // gateway that gave up all mean one thing: the request left and no
+      // verdict came back, so the backup may have been taken in full. Refetch
+      // BEFORE the sentence is set — `load` clears `error` on its way in, so
+      // setting it first would have the very reconciliation it asks for wipe
+      // it — and never tell the owner the write failed.
+      const { message, unconfirmed } = writeFailure(reason, "create the backup");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -105,7 +129,10 @@ export function SystemHealthDesk() {
         : "Restore verification failed. Review the receipt below.");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not verify the backup.");
+      // See `createBackup` for why the refetch runs before the sentence.
+      const { message, unconfirmed } = writeFailure(reason, "verify the backup");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -136,7 +163,12 @@ export function SystemHealthDesk() {
       setRequiredPhrases("");
       setNotice("Retrieval check saved. Run the suite when you are ready to spend a model call per case.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save the evaluation case.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "save the evaluation case",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -156,7 +188,14 @@ export function SystemHealthDesk() {
       setNotice("Retrieval evaluation complete. Results are stored as an auditable run.");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not run the evaluation suite.");
+      // A run STORES an auditable record, so an unknown outcome is a run that
+      // may already be in the list.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "run the evaluation suite",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -169,7 +208,12 @@ export function SystemHealthDesk() {
       await request<{ deleted: boolean }>(`/api/system/evaluations/${id}`, { method: "DELETE" });
       setCases((current) => current.filter((item) => item.id !== id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not remove the evaluation case.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "remove the evaluation case",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -179,7 +223,7 @@ export function SystemHealthDesk() {
   const attention = health?.status === "attention";
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>operator&apos;s desk</p>
@@ -211,21 +255,24 @@ export function SystemHealthDesk() {
             <div><p className="fmark">recovery</p><h2 className="display" style={heading}>Verified backups</h2></div>
             <button className="btn primary" type="button" onClick={() => void createBackup()} disabled={busy !== null}>{busy === "backup" ? "Backing up…" : "Create + verify"}</button>
           </div>
-          <p style={bodyCopy}>Snapshots copy your owner silo byte-for-byte, then restore it into a disposable isolated path and compare checksums. This never overwrites live data.</p>
+          <p style={bodyCopy}>Snapshots copy your owner silo byte-for-byte, then restore it into a disposable isolated path and compare checksums. This never overwrites live data. A silo past the safety limits is copied as far as the limits allow and the snapshot is marked partial.</p>
           <div style={{ marginTop: 18 }}>
-            {backups.length === 0 ? <Empty>No backups yet.</Empty> : backups.slice(0, 6).map((backup) => (
+            {backups.length === 0 ? <Empty>No backups yet.</Empty> : backups.slice(0, 6).map((backup) => {
+              const partialLabel = backupTruncationLabel(backup);
+              return (
               <article key={backup.id} className="spread" style={rowStyle}>
                 <div style={{ minWidth: 0 }}>
                   <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                     <span className="receipt" style={{ ...micro, color: backup.verificationStatus === "passed" ? "var(--accent)" : backup.verificationStatus === "failed" ? "var(--rust)" : "var(--muted)" }}>{backup.verificationStatus ?? "unverified"}</span>
                     <strong style={{ fontSize: 13.5 }}>{compactDate(backup.createdAt)}</strong>
                   </div>
-                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}</p>
+                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}{partialLabel ? ` · ${partialLabel}` : ""}</p>
                   {backup.verificationError && <p style={{ color: "var(--rust)", fontSize: 12, margin: "6px 0 0" }}>{backup.verificationError}</p>}
                 </div>
                 <button className="btn ghost" type="button" onClick={() => void verifyBackup(backup.id)} disabled={busy !== null}>{busy === backup.id ? "Checking…" : "Verify"}</button>
               </article>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -248,7 +295,7 @@ export function SystemHealthDesk() {
       <section className="grid lg:grid-cols-[1fr_1fr]" style={{ gap: 24, marginTop: 24 }}>
         <form onSubmit={saveCase} style={panel}>
           <p className="fmark">new quality check</p>
-          <h2 className="display" style={heading}>Teach WorkWiki what good looks like.</h2>
+          <h2 className="display" style={heading}>Teach work-wiki what good looks like.</h2>
           <div style={{ display: "grid", gap: 12, marginTop: 18 }}>
             <Field label="Label"><input required value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Project status answer" style={inputStyle} /></Field>
             <Field label="Question"><textarea required value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decisions changed this week?" rows={3} style={{ ...inputStyle, resize: "vertical" }} /></Field>
@@ -298,9 +345,9 @@ export function SystemHealthDesk() {
       <aside style={{ ...panel, marginTop: 30, display: "grid", gap: 8 }}>
         <p className="fmark">deployment boundary</p>
         <p style={{ ...bodyCopy, margin: 0 }}>{health?.queue.note ?? "Queue telemetry is checked in Cloudflare."}</p>
-        <p style={{ ...bodyCopy, margin: 0 }}>Dead-letter queue depth is provider telemetry, while WorkWiki keeps owner-visible operation and retry receipts. <Link href="/integrations" className="underline">Inspect integrations</Link> or <Link href="/review" className="underline">open the Review Desk</Link>.</p>
+        <p style={{ ...bodyCopy, margin: 0 }}>Dead-letter queue depth is provider telemetry, while work-wiki keeps owner-visible operation and retry receipts. <Link href="/integrations" className="underline">Inspect integrations</Link> or <Link href="/review" className="underline">open the Review Desk</Link>.</p>
       </aside>
-    </main>
+    </div>
   );
 }
 

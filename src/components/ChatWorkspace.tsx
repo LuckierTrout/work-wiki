@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { useEffect, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
@@ -10,6 +11,11 @@ import type {
   ChatMessage,
   ChatRetrievalMode,
 } from "@/lib/chat";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 interface ScopeOption {
   value: string;
@@ -17,12 +23,23 @@ interface ScopeOption {
 }
 
 async function json<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
 export function ChatWorkspace() {
+  const { hrefForSlug, slugTenants } = useSlugTenants();
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [active, setActive] = useState<ChatConversation | null>(null);
   const [scope, setScope] = useState("");
@@ -32,11 +49,13 @@ export function ChatWorkspace() {
     { value: "", label: "All knowledge" },
     { value: "mine", label: "My pages" },
   ]);
-  const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  // The saved banner links via the server-returned canonical `url`: a
+  // just-created slug cannot be in the session-cached slug→tenant map, so
+  // `hrefForSlug` would bounce it through the 308 fallback. `hrefForSlug` is
+  // only the fallback if the response carried no url.
+  const [savedMessage, setSavedMessage] = useState<{ slug: string; url?: string } | null>(null);
   const [hermes, setHermes] = useState<{ configured: boolean; available: boolean; safe: boolean; reason?: string } | null>(null);
 
   useEffect(() => {
@@ -81,53 +100,41 @@ export function ChatWorkspace() {
     }
   }
 
-  async function createConversation(): Promise<ChatConversation> {
-    const data = await json<{ conversation: ChatConversation }>(
-      await fetch("/api/chat/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope, retrievalMode, contextBudget }),
-      }),
-    );
-    setConversations((current) => [data.conversation, ...current]);
-    setActive(data.conversation);
-    return data.conversation;
-  }
-
-  async function send() {
-    const message = draft.trim();
-    if (!message || sending) return;
-    setSending(true);
-    setError(null);
-    setDraft("");
+  /**
+   * The thread list, refetched — this surface's re-list (DW-717).
+   *
+   * `removeConversation` has no single record to reopen: on an unknown outcome
+   * the thread may be gone, and the sidebar is the only thing that can say. The
+   * initial load lives in an effect that also owns `loading` and the scope
+   * options, so this asks the one route the sidebar is rendered from.
+   *
+   * IT ALSO DROPS AN `active` THE SERVER NO LONGER NAMES. Refetching the
+   * sidebar alone would leave the transcript pane rendering a thread the DELETE
+   * may have removed — and every control on it (scope, evidence mode, context
+   * size, the next question) aims its PATCH at that id, so the owner would go
+   * on writing to a conversation that is gone. Every other unconfirmed branch
+   * in this file reconciles the OPEN record; this is that, for the one write
+   * whose record may not exist any more.
+   *
+   * Its own failure is swallowed deliberately: the sentence the caller is about
+   * to set already sends the owner to the screen, and a second message about
+   * the refetch would displace it with something they cannot act on. `active`
+   * is then left exactly as it was rather than cleared on a guess — a list that
+   * never answered says nothing about whether the thread survived.
+   */
+  async function relistConversations() {
     try {
-      const conversation = active ?? (await createConversation());
-      const optimistic: ChatMessage = {
-        id: `pending-${Date.now()}`,
-        role: "user",
-        content: message,
-        sources: [],
-        createdAt: new Date().toISOString(),
-      };
-      setActive((current) => current ? { ...current, messages: [...current.messages, optimistic] } : current);
-      const data = await json<{ conversation: ChatConversation; message: ChatMessage }>(
-        await fetch(`/api/chat/conversations/${conversation.id}/messages`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message }),
-        }),
+      const data = await json<{ conversations: ChatConversation[] }>(
+        await fetch("/api/chat/conversations"),
       );
-      setActive(data.conversation);
-      setConversations((current) => [
-        { ...data.conversation, messages: [] },
-        ...current.filter((item) => item.id !== data.conversation.id),
-      ]);
-    } catch (reason) {
-      setDraft(message);
-      setError(reason instanceof Error ? reason.message : "The message could not be sent.");
-      if (active) void openConversation(active.id);
-    } finally {
-      setSending(false);
+      setConversations(data.conversations);
+      setActive((current) =>
+        current && data.conversations.some((item) => item.id === current.id)
+          ? current
+          : null,
+      );
+    } catch {
+      // Nothing to add — see above.
     }
   }
 
@@ -149,7 +156,13 @@ export function ChatWorkspace() {
           : item,
       ));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Scope could not be changed.");
+      // NOTHING CAME BACK (DW-717): the PATCH may have been applied, so the
+      // select on screen and the stored scope can disagree. Reopening the
+      // conversation is this surface's refetch and it clears `error` on its way
+      // in, so the sentence is set AFTER it rather than wiped by it.
+      const { message, unconfirmed } = writeFailure(reason, "change the scope");
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -172,7 +185,15 @@ export function ChatWorkspace() {
       ));
     } catch (reason) {
       setRetrievalMode(active.retrievalMode ?? "wiki");
-      setError(reason instanceof Error ? reason.message : "Evidence mode could not be changed.");
+      // The local revert above is a GUESS on an unknown outcome, so the refetch
+      // replaces it with what the server actually holds. See `changeScope` for
+      // why the sentence follows the refetch.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "change the evidence mode",
+      );
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -195,7 +216,12 @@ export function ChatWorkspace() {
       ));
     } catch (reason) {
       setContextBudget(active.contextBudget ?? "standard");
-      setError(reason instanceof Error ? reason.message : "Context size could not be changed.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "change the context size",
+      );
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -206,7 +232,14 @@ export function ChatWorkspace() {
       setConversations((current) => current.filter((item) => item.id !== active.id));
       setActive(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Conversation could not be deleted.");
+      // The DELETE may have landed, leaving a thread in the sidebar that is
+      // gone from the store. The re-list is what says which.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "delete the conversation",
+      );
+      if (unconfirmed) await relistConversations();
+      setError(message);
     }
   }
 
@@ -214,7 +247,7 @@ export function ChatWorkspace() {
     if (!active) return;
     setSavedMessage(null);
     try {
-      const result = await json<{ slug: string }>(await fetch("/api/query/save", {
+      const result = await json<{ slug: string; url?: string }>(await fetch("/api/query/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -224,9 +257,16 @@ export function ChatWorkspace() {
           format: "prose",
         }),
       }));
-      setSavedMessage(result.slug);
+      // json() maps an unparseable-but-OK body to {} — without a slug there is
+      // nothing to link, so keep the banner hidden (the pre-object behavior)
+      // rather than rendering "Saved as undefined".
+      setSavedMessage(result.slug ? { slug: result.slug, url: result.url } : null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Answer could not be saved.");
+      // No refetch, and nothing here to refetch: the page this writes lives in
+      // the wiki, which this surface does not render. What the owner gets is
+      // the honest sentence — the answer may well be saved — instead of a flat
+      // claim that it was not.
+      setError(writeFailure(reason, "save the answer").message);
     }
   }
 
@@ -234,7 +274,7 @@ export function ChatWorkspace() {
     scopeOptions.find((option) => option.value === scope)?.label ?? "Custom scope";
 
   return (
-    <main className="shell fade" style={{ paddingTop: 46, paddingBottom: 88 }}>
+    <div className="shell fade" style={{ paddingTop: 46, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>grounded conversation</p>
       <div className="spread" style={{ gap: 20, alignItems: "end", marginBottom: 30 }}>
         <div>
@@ -248,14 +288,14 @@ export function ChatWorkspace() {
             )}
           </div>
         </div>
-        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setRetrievalMode("wiki"); setContextBudget("standard"); setDraft(""); }}>
+        <button className="btn primary" type="button" onClick={() => { setActive(null); setScope(""); setRetrievalMode("wiki"); setContextBudget("standard"); }}>
           New conversation
         </button>
       </div>
 
       {error && <div style={{ marginBottom: 16 }}><Alert variant="error">{error}</Alert></div>}
       {savedMessage && (
-        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={`/wiki/${savedMessage}`}>{savedMessage}</Link>.</Alert></div>
+        <div style={{ marginBottom: 16 }}><Alert variant="success">Saved as <Link href={savedMessage.url ?? hrefForSlug(savedMessage.slug)}>{savedMessage.slug}</Link>.</Alert></div>
       )}
 
       <div className="grid lg:grid-cols-[260px_minmax(0,1fr)]" style={{ gap: 18, alignItems: "stretch" }}>
@@ -297,20 +337,20 @@ export function ChatWorkspace() {
             <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Search
-                <select value={scope} onChange={(event) => void changeScope(event.target.value)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={scope} onChange={(event) => void changeScope(event.target.value)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   {scopeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Evidence
-                <select value={retrievalMode} onChange={(event) => void changeRetrievalMode(event.target.value as ChatRetrievalMode)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={retrievalMode} onChange={(event) => void changeRetrievalMode(event.target.value as ChatRetrievalMode)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   <option value="wiki">Wiki pages</option>
                   <option value="sources">Original sources only</option>
                 </select>
               </label>
               <label className="row" style={{ gap: 8, fontSize: 12.5, color: "var(--muted)" }}>
                 Context
-                <select value={contextBudget} onChange={(event) => void changeContextBudget(event.target.value as ChatContextBudget)} disabled={sending} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
+                <select value={contextBudget} onChange={(event) => void changeContextBudget(event.target.value as ChatContextBudget)} style={{ border: "1px solid var(--rule-strong)", borderRadius: 8, background: "var(--paper-2)", color: "var(--ink)", padding: "7px 9px" }}>
                   <option value="compact">Compact · 4 pages</option>
                   <option value="standard">Standard · 8 pages</option>
                   <option value="expanded">Expanded · 12 pages</option>
@@ -335,36 +375,31 @@ export function ChatWorkspace() {
                 {active.messages.map((message) => (
                   <article key={message.id} style={{ marginLeft: message.role === "user" ? "auto" : 0, maxWidth: message.role === "user" ? "78%" : "100%" }}>
                     <p className="receipt" style={{ fontSize: 9.5, color: "var(--faint)", margin: "0 0 6px" }}>
-                      {message.role === "user" ? "You" : message.backend === "hermes" ? "WorkWiki · Hermes" : "WorkWiki"}
+                      {message.role === "user" ? "You" : message.backend === "hermes" ? "work-wiki · Hermes" : "work-wiki"}
                     </p>
                     <div style={{ background: message.role === "user" ? "var(--paper-3)" : "transparent", border: message.role === "user" ? "1px solid var(--rule)" : 0, borderRadius: 14, padding: message.role === "user" ? "11px 14px" : 0 }}>
-                      {message.role === "assistant" ? <MarkdownRenderer content={message.content} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
+                      {message.role === "assistant" ? <MarkdownRenderer content={message.content} slugTenants={slugTenants} /> : <p style={{ margin: 0, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{message.content}</p>}
                     </div>
                     {message.role === "assistant" && (
                       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                        {message.sources.map((source) => <Link key={source} href={`/wiki/${source}`} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
+                        {message.sources.map((source) => <Link key={source} href={hrefForSlug(source)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>{source}</Link>)}
                         <button type="button" className="btn ghost" onClick={() => void saveAnswer(message)} style={{ fontSize: 11, padding: "5px 8px" }}>Save to wiki</button>
                       </div>
                     )}
                   </article>
                 ))}
-                {sending && (
-                  <p className="receipt" style={{ color: "var(--muted)" }}>
-                    {retrievalMode === "sources" ? "Reading original snapshots and composing…" : "Searching pages and composing…"}
-                  </p>
-                )}
               </div>
             )}
           </div>
 
           <div style={{ borderTop: "1px solid var(--rule)", padding: 14, background: "var(--paper-2)" }}>
-            <form onSubmit={(event) => { event.preventDefault(); void send(); }} className="row" style={{ gap: 10, alignItems: "end" }}>
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} rows={2} placeholder="Ask a follow-up…" disabled={sending} style={{ flex: 1, resize: "vertical", minHeight: 54, border: "1px solid var(--rule-strong)", borderRadius: 12, background: "var(--paper)", color: "var(--ink)", padding: "11px 13px", fontFamily: "var(--font-read)", fontSize: 15 }} />
-              <button className="btn primary" type="submit" disabled={sending || !draft.trim()}>{sending ? "Working…" : "Send"}</button>
-            </form>
+            <p style={{ margin: "0 0 10px", color: "var(--muted)", fontSize: 14, lineHeight: 1.5 }}>
+              Ask the wiki from Workbench Chat. This page no longer generates answers.
+            </p>
+            <Link href="/?mode=chat" className="btn primary">Open Workbench Chat</Link>
           </div>
         </section>
       </div>
-    </main>
+    </div>
   );
 }

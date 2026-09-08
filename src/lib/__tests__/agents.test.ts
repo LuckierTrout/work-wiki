@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -27,6 +27,7 @@ import {
 } from "../agents";
 import type { UpdateAgentPage } from "../agents";
 import { readWikiPage, readWikiPageWithFrontmatter } from "../wiki";
+import { isClientInputError } from "../errors";
 import type { AgentProfile } from "../types";
 import { createVault } from "../vault";
 import { _resetStorage, getStorage } from "../storage";
@@ -722,6 +723,83 @@ describe("seedAgent", () => {
         sections: [],
       }),
     ).rejects.toThrow(/non-empty 'description'/);
+  });
+
+  /**
+   * DW-749. The section-bucketing `switch` had no `default` arm and ran at the
+   * END of each write iteration, so a `type` outside the declared enum wrote
+   * the page and then bucketed its slug into none of the profile's three lists.
+   * Only the HTTP MCP door can deliver such a body — the stdio door's `z.enum`
+   * and `POST /api/agents/seed`'s per-index check both refuse it, and that
+   * door's argument gate does not judge `enum` members by design (DW-563).
+   *
+   * The message half alone would pass against a `default` arm left where the
+   * `switch` stood; the "no page written" half is what pins the hoist.
+   */
+  it("refuses a section type outside the enum before writing any page", async () => {
+    let caught: unknown;
+    try {
+      await seedAgent({
+        id: "bogus-agent",
+        name: "Bogus",
+        description: "A seed with an out-of-enum section type",
+        sections: [
+          {
+            // The HTTP MCP door admits this; nothing before `seedAgent` judges it.
+            type: "bogus" as unknown as "identity",
+            slug: "bogus-sole",
+            title: "Bogus Sole",
+            content: "Body.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect((caught as Error | undefined)?.message).toBe(
+      "Section at index 0 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+    // The TYPE, not just the sentence: a bare `Error` carrying the same words
+    // satisfies a message-only assertion, but only a `ClientInputError` is the
+    // half a door can CLASSIFY. `POST /api/agents/seed`'s catch answers 400 on
+    // this predicate, so a retyped throw would silently become a 500 there.
+    expect(isClientInputError(caught)).toBe(true);
+
+    expect(await readWikiPage("bogus-sole")).toBeNull();
+    expect(await getAgent("bogus-agent")).toBeNull();
+  });
+
+  it("refuses a bogus type at index 1 without writing the VALID section at index 0", async () => {
+    // The whole point of hoisting the bucketing ahead of the write loop: a
+    // refusal at index 1 must not leave index 0's page behind.
+    await expect(
+      seedAgent({
+        id: "bogus-agent",
+        name: "Bogus",
+        description: "A seed whose second section is out of enum",
+        sections: [
+          {
+            type: "identity",
+            slug: "bogus-first",
+            title: "Bogus First",
+            content: "Valid section.",
+          },
+          {
+            type: "bogus" as unknown as "identity",
+            slug: "bogus-second",
+            title: "Bogus Second",
+            content: "Invalid section.",
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "Section at index 1 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+
+    expect(await readWikiPage("bogus-first")).toBeNull();
+    expect(await readWikiPage("bogus-second")).toBeNull();
+    expect(await getAgent("bogus-agent")).toBeNull();
   });
 
   it("works with no sections (registers agent only)", async () => {
@@ -1421,3 +1499,172 @@ describe("addAgentLearningPage", () => {
     ).resolves.toBeUndefined();
   });
 })
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE agent page is not an ABSENT one (DW-495)
+// ---------------------------------------------------------------------------
+
+/**
+ * Both agent-page writers read the existing page to preserve `created`, merge
+ * contributors, and supply the `expectedContent` merge base — and both used to
+ * end that read in `.catch(() => null)`. `null` there selects `createOnly`, so
+ * a non-ENOENT storage failure was read as "no page here, create one" over a
+ * page that IS stored (and an unparseable frontmatter block was read the same
+ * way).
+ *
+ * `{ fresh: true, strict: true }` alone would have changed nothing while the
+ * tail stood: the rethrow landed straight back in the same `null`. These two
+ * rows are what pins the tail's removal — they fail the moment it comes back.
+ */
+describe("unreadable ≠ absent — the agent-page merge-base reads (DW-495)", () => {
+  /**
+   * A ONE-SHOT non-ENOENT failure on `<slug>.md`: the file is there, the
+   * provider is not, for exactly one read.
+   *
+   * One-shot deliberately. The merge-base read is the FIRST read of the file
+   * each writer makes, and a spy that failed EVERY read would also break the
+   * `createOnly` re-check inside the write below — so the call would reject
+   * whether or not this read rethrows, and the row would pin nothing. Failing
+   * only the merge-base read leaves the old behaviour rejecting with the
+   * lifecycle's CONFLICT sentence instead of the storage failure.
+   */
+  function blipOnce(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const state = { blipped: false };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!state.blipped && filePath.endsWith(`${slug}.md`)) {
+          state.blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    return { spy, state };
+  }
+
+  it("seedAgent rejects with the STORAGE error instead of seeding over a stored page", async () => {
+    const stored = "---\ntitle: Identity\ncreated: 2020-01-01\n---\n# Identity\n\nOld content.";
+    await writeTestWikiPage("blip-identity", stored);
+
+    const { spy: readSpy, state } = blipOnce("blip-identity");
+    let caught: unknown;
+    try {
+      await seedAgent({
+        id: "blipagent",
+        name: "Blip Agent",
+        description: "An agent whose identity page is momentarily unreadable",
+        sections: [
+          {
+            type: "identity",
+            slug: "blip-identity",
+            title: "Blip Identity",
+            content: "Fresh identity text.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // The `createOnly` branch was never taken: the stored bytes are untouched.
+    expect(await fs.readFile(path.join(tmpDir, "wiki", "blip-identity.md"), "utf-8")).toBe(stored);
+  });
+
+  /**
+   * DW-749's Block If, made observable. Hoisting the section-bucketing pass
+   * ahead of the write loop moved the only writes to `identityPages` /
+   * `learningPages` / `socialPages` earlier, so the arrays are now fully
+   * populated at the moment a MID-LOOP write failure throws — where before they
+   * held only the sections already written. That difference must not be
+   * observable, and it is not: `registerAgent(profile)` after the loop is the
+   * arrays' only consumer, and the throw escapes before it. This row pins the
+   * unchanged outcome — a partial page on disk, NO profile — so a future edit
+   * that moved `registerAgent` earlier, or caught the write failure, would fail
+   * here rather than silently persisting a profile listing an unwritten page.
+   */
+  it("seedAgent persists NO profile when a LATER section's merge-base read fails mid-loop", async () => {
+    // Both sections are VALID: this is the write-failure path, not the enum one.
+    const { spy: readSpy, state } = blipOnce("blip-multi-second");
+    let caught: unknown;
+    try {
+      await seedAgent({
+        id: "blipmulti",
+        name: "Blip Multi",
+        description: "A two-section seed whose second page is momentarily unreadable",
+        sections: [
+          {
+            type: "identity",
+            slug: "blip-multi-first",
+            title: "Blip Multi First",
+            content: "First section body.",
+          },
+          {
+            type: "learnings",
+            slug: "blip-multi-second",
+            title: "Blip Multi Second",
+            content: "Second section body.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // The first section DID land — the loop got that far, exactly as before the
+    // hoist. Partial pages are the pre-existing behaviour this change preserves.
+    expect(
+      await fs.readFile(path.join(tmpDir, "wiki", "blip-multi-first.md"), "utf-8"),
+    ).toContain("First section body.");
+
+    // But nothing is registered: the throw escapes before `registerAgent`, so
+    // no profile claims `blip-multi-second` as one of its pages.
+    expect(await getAgent("blipmulti")).toBeNull();
+  });
+
+  it("updateAgent's addPages arm rejects with the STORAGE error instead of recreating a stored page", async () => {
+    await registerAgent(
+      makeProfile({ id: "yoyo", name: "Yoyo", identityPages: ["blip-add"] }),
+    );
+    const stored = "---\ntitle: Add\ncreated: 2020-01-01\n---\n# Add\n\nOld content.";
+    await writeTestWikiPage("blip-add", stored);
+
+    const { spy: readSpy, state } = blipOnce("blip-add");
+    let caught: unknown;
+    try {
+      await updateAgent("yoyo", {
+        addPages: [
+          {
+            slug: "blip-add",
+            title: "Add Updated",
+            type: "identity",
+            content: "Updated content.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    expect(await fs.readFile(path.join(tmpDir, "wiki", "blip-add.md"), "utf-8")).toBe(stored);
+  });
+});

@@ -1,6 +1,6 @@
 import path from "path";
 import type { WikiPage, IndexEntry } from "./types";
-import { withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { logger } from "./logger";
 import { saveRevision } from "./revisions";
 import { isEnoent } from "./errors";
@@ -14,6 +14,7 @@ import { getTenantWikiDir, getTenantRawDir } from "./paths";
 import { DEFAULT_TENANT, ownerToTenant } from "./links";
 import { parseSources, dedupeSourcesForDisplay } from "./sources";
 import { getPageIndex } from "./page-index";
+import { electWikiLeafNames, wikiPageNames } from "./wiki-file-names";
 
 // ---------------------------------------------------------------------------
 // Configurable base directories — delegated to the config layer
@@ -113,7 +114,11 @@ export function tenantForOwner(owner: string | undefined | null): string {
  * tenant. Cheap (tens of pages); computed once per server render.
  */
 export async function buildSlugTenantMap(): Promise<Record<string, string>> {
-  const map: Record<string, string> = {};
+  // Null prototype: keys are content-derived slugs and so are the lookups, so a
+  // plain literal answers `map["constructor"]` with an inherited function
+  // instead of `undefined`, defeating the `?? tenantForOwner(undefined)`
+  // fallback below (DW-232). `JSON.stringify`, spread and `in` are unaffected.
+  const map: Record<string, string> = Object.create(null);
   for (const p of await listWikiPages()) map[p.slug] = tenantForOwner(p.owner);
   return map;
 }
@@ -178,6 +183,8 @@ const SAFE_SLUG_RE = new RegExp(
  *
  * @throws {Error} with a descriptive message when the slug is invalid.
  */
+const QUERIES_SLUG_PREFIX = "queries/";
+
 export function validateSlug(slug: string): void {
   if (typeof slug !== "string" || slug.trim().length === 0) {
     throw new Error("Invalid slug: must be a non-empty string");
@@ -185,13 +192,23 @@ export function validateSlug(slug: string): void {
   if (slug.includes("\0")) {
     throw new Error("Invalid slug: must not contain null bytes");
   }
-  if (slug.includes("/") || slug.includes("\\")) {
+  if (slug.includes("\\")) {
     throw new Error("Invalid slug: must not contain path separators");
   }
   if (slug.includes("..")) {
     throw new Error("Invalid slug: must not contain path traversal (..)")
   }
-  if (!SAFE_SLUG_RE.test(slug)) {
+  const leaf = slug.startsWith(QUERIES_SLUG_PREFIX)
+    ? slug.slice(QUERIES_SLUG_PREFIX.length)
+    : slug;
+  if (slug.startsWith(QUERIES_SLUG_PREFIX)) {
+    if (!leaf || leaf.includes("/")) {
+      throw new Error("Invalid slug: must not contain path separators");
+    }
+  } else if (slug.includes("/")) {
+    throw new Error("Invalid slug: must not contain path separators");
+  }
+  if (!SAFE_SLUG_RE.test(leaf)) {
     throw new Error(
       `Invalid slug: "${slug}" does not match the safe pattern (lowercase alphanumeric and hyphens, cannot start or end with hyphen)`,
     );
@@ -284,6 +301,13 @@ export function _getPageCacheSize(): number {
  * failure so a caller can tell "the page is genuinely gone" from "the store
  * hiccuped" — e.g. the ingest-status route must not drop a live job's strip
  * entry on a transient blip. A malformed slug is treated as "no such page".
+ *
+ * IT ANSWERS ABOUT THE OBJECT, NOT THE NAME (DW-741). Each arm resolves through
+ * {@link findStoredPageKey}, so on a case-SENSITIVE store a Page held on
+ * `wiki/cased.MD` is `true` here for the same reason {@link readWikiPage}
+ * serves it. The disagreement that fix removes is a live one: the ingest-status
+ * route calls a readable Page `gone` and 404s a completed ingest out of the
+ * Recent-ingests strip.
  */
 export async function wikiPageExists(slug: string): Promise<boolean> {
   try {
@@ -291,7 +315,6 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
   } catch {
     return false;
   }
-  const storage = getStorage();
 
   // Silo-primary: try tenant path first (O(1) page-index lookup only —
   // we must NOT call tenantForSlug here because its slow path triggers
@@ -300,30 +323,219 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
   if (pageIdx) {
     const entry = pageIdx[slug];
     const tenant = tenantForOwner(entry?.owner);
-    const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
-    try {
-      await storage.readFile(siloPath);
-      return true;
-    } catch (e) {
-      if (!isEnoent(e)) {
-        logger.warn("wiki", `silo existence check failed for "${slug}", falling back to flat:`, e);
-      }
-      // Fall through to flat
-    }
+    // The resolution is strict, so a non-ENOENT storage error is re-thrown
+    // rather than masked as "gone"; a total miss falls through to flat.
+    if ((await findStoredPageKey(slug, tenant)) !== null) return true;
   }
 
   // Flat fallback
-  try {
-    await storage.readFile(wikiRelPath(`${slug}.md`));
-    return true;
-  } catch (err) {
-    if (isEnoent(err)) return false;
-    throw err; // real storage error — let the caller decide, don't mask as "gone"
-  }
+  return (await findStoredPageKey(slug, null)) !== null;
 }
 
-/** Read a wiki page by slug. Returns `null` when the file doesn't exist or the slug is invalid. */
-export async function readWikiPage(slug: string): Promise<WikiPage | null> {
+/**
+ * Options for a page read.
+ */
+export interface ReadWikiPageOptions {
+  /**
+   * Bypass {@link pageCache} entirely for this read (DW-195).
+   *
+   * A bypassing read NEITHER CONSULTS NOR MUTATES the cache: it goes to
+   * storage, and it leaves whatever entry is there exactly as it was — so a
+   * bulk scan holding the cache open across this request keeps the entries it
+   * is iterating, and this caller still gets the stored bytes.
+   *
+   * WHAT IT BYPASSES IS `pageCache`, AND ONLY THAT. The read still resolves
+   * which silo path to try through {@link getPageIndex}, which has a cache and
+   * a consistency window of its own on the R2 backend — so `fresh` guarantees
+   * "not served from the per-operation page cache", not "the freshest bytes any
+   * layer could possibly return". That is the right guarantee for the
+   * precondition: a version derived here describes the bytes THIS read saw, and
+   * the artifact writer re-checks its own under a lock. A page-index lag can
+   * still make a write read the flat fallback, which is pre-existing and
+   * unchanged by this option.
+   *
+   * FOR PRECONDITION-BEARING READS. `pageCache` is module-global and
+   * ref-counted around bulk scans (`lint.ts`, `search.ts`, `query.ts`,
+   * `dataview.ts`), so one of those can be holding a superseded entry open when
+   * an unrelated request arrives. A read that SEEDS a precondition (the
+   * Preview, the edit screen) would then hand the editor a version of bytes
+   * that are no longer stored; a read that CHECKS one (the page `PUT`'s merge
+   * base) would compare against a file that is not the one it is about to
+   * overwrite. Both produce a 412 against a write nobody made, or a match
+   * against bytes that are gone.
+   *
+   * Default `false`: caching stays exactly as it was for every existing caller.
+   */
+  fresh?: boolean;
+  /**
+   * Surface non-ENOENT storage failures instead of converting them to a
+   * missing Page. Mechanical write preconditions use this so a transient
+   * provider error can never authorize a destructive fix.
+   *
+   * TWO THINGS THIS OPTION IS EASY TO GET WRONG:
+   *
+   * 1. Its reach is wider than the Page file. It forwards into
+   *    `getPageIndex({ strict })`, which rethrows a non-ENOENT failure — and a
+   *    `JSON.parse` failure — on `derived-indexes/pages.json` where the default
+   *    logs "read failed; falling back to scan" and returns `null`. So a strict
+   *    read fails closed when only the INDEX is unreadable, even though the
+   *    Page file itself is fine. That is deliberate for a write path: a silent
+   *    fallback there can resolve the wrong silo and make the merge base a
+   *    different Page. Non-strict callers keep the scan fallback
+   *    (`lifecycle.test.ts` pins that contract).
+   *
+   * 2. It does NOT cover slug validation. An invalid slug still returns `null`
+   *    from the early return at the top of {@link readWikiPage}, strict or not,
+   *    because that is the caller's bad input rather than a storage failure.
+   */
+  strict?: boolean;
+  /**
+   * Owner whose tenant silo should be checked only after global Page identity
+   * (the Page index, then the flat compatibility copy) has found no Page.
+   * Ingest uses this to recover its own crash-left silo without allowing that
+   * hint to displace another owner's committed same-slug Page.
+   */
+  owner?: string;
+}
+
+/**
+ * WHICH STORED OBJECT CARRIES THIS SLUG, when the canonical `<slug>.md` does
+ * not (DW-490)?
+ *
+ * On a case-SENSITIVE store `cased.md`, `cased.MD`, `cased.Md` and `cased.mD`
+ * are four objects carrying the ONE slug `cased` — the Files tab already elects
+ * one of them per slug and, since DW-489, serves only that one. But the page key
+ * here was the canonical name unconditionally, so a save whose bytes came from a
+ * lone `wiki/cased.MD` would have created a SECOND object and orphaned the
+ * first; today it cannot even get that far, because this module only ever reads
+ * `${slug}.md` and the save door 404s on a page the Files tab shows as editable.
+ *
+ * So: probe the three NON-canonical spellings, in parallel, and elect among
+ * whatever answered — the SAME {@link electWikiLeafNames} the listing and the
+ * read gate use, so all three name the same object. `null` when none of them is
+ * there, which is the ordinary "no such page" answer.
+ *
+ * ONLY EVER ON THE ENOENT BRANCH. Every caller runs this after the canonical
+ * spelling already answered ENOENT, which is what makes it free on a
+ * case-INSENSITIVE store: there `readFile("cased.md")` resolves the object
+ * whatever it is called, so the canonical read HITS and this never runs. The
+ * behaviour difference between the two store kinds therefore lives entirely in
+ * branches the case-insensitive store cannot reach.
+ *
+ * BOUNDED AND O(1) — three reads, never a listing. {@link wikiPageNames} is
+ * exactly the candidate set because `wikiLeafSlug` lowercases the whole name and
+ * tests a `.md` suffix, taking the slug as written.
+ *
+ * `strict` carries {@link ReadWikiPageOptions.strict}'s meaning verbatim: a
+ * non-ENOENT failure is rethrown rather than flattened into "absent", because a
+ * transient blip reported as a missing Page is what authorizes a destructive
+ * fix. Non-strict logs and treats the spelling as absent, exactly as the
+ * canonical read does.
+ */
+async function readStoredPageVariant(
+  slug: string,
+  tenant: string | null,
+  strict: boolean,
+): Promise<{ key: string; content: string } | null> {
+  const storage = getStorage();
+  const keyFor = (name: string): string =>
+    tenant !== null ? tenantWikiRelPath(tenant, name) : wikiRelPath(name);
+
+  // `slice(1)` drops the canonical spelling: the caller already read it and got
+  // ENOENT, so re-reading it here would be a wasted round trip on every miss.
+  const candidates = wikiPageNames(slug).slice(1);
+  const found = await Promise.all(
+    candidates.map(async (name) => {
+      try {
+        return { name, content: await storage.readFile(keyFor(name)) };
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        if (strict) throw error;
+        logger.warn("wiki", `variant read failed for "${keyFor(name)}":`, error);
+        return null;
+      }
+    }),
+  );
+
+  const hits = found.filter((hit): hit is { name: string; content: string } => hit !== null);
+  if (hits.length === 0) return null;
+  const elected = electWikiLeafNames(hits.map((hit) => hit.name)).get(slug);
+  const winner = hits.find((hit) => hit.name === elected);
+  if (!winner) return null;
+  return { key: keyFor(winner.name), content: winner.content };
+}
+
+/**
+ * WHICH STORAGE KEY UNDER THIS ROOT CARRIES THIS SLUG (DW-741)?
+ *
+ * The ONE resolution the delete door (`lifecycle.ts`), the existence door
+ * ({@link wikiPageExists}) and, since DW-740, the create door
+ * ({@link createWikiPage} and lifecycle's `createOnly` gate) share, so none of
+ * them restates the candidate set or the election: canonical `<slug>.md` first,
+ * and only on its ENOENT the same {@link readStoredPageVariant} probe the read
+ * and write doors already use. `null` when no spelling of the slug is present
+ * under `tenant` (or under the flat root when `tenant` is `null`).
+ *
+ * ENOENT-GATED, so a HIT costs exactly what it cost before this existed: one
+ * `readFile` on the same key, no variant probed. That is true of every caller on
+ * either kind of store — and on a case-INSENSITIVE store, where the canonical
+ * spelling resolves whatever object holds the slug, a hit is the only way a
+ * stored page is ever found here. A MISS is what got more expensive — four reads
+ * per root instead of one — and that is the price of the answer being about the
+ * object rather than the name. The delete and existence doors reach a miss only
+ * on a slug that really has no Page under that root; the create door is the one
+ * caller whose NORMAL path is a miss, so it pays that four-read price on every
+ * successful create, on both store kinds (see {@link createWikiPage}).
+ *
+ * `readFile` RATHER THAN `fileExists`, deliberately: only `readFile`
+ * distinguishes a fault from an absence. The filesystem provider's `fileExists`
+ * swallows every error, so a blip there would read as "no such page" — and both
+ * of these doors turn that answer into a destructive or user-visible verdict (a
+ * vacuously "successful" delete; a completed ingest 404'd out of the strip).
+ *
+ * ALWAYS STRICT, which is the same reason: a non-ENOENT failure is rethrown
+ * rather than flattened into "no key here", on the canonical read exactly as
+ * {@link readStoredPageVariant} applies it to each variant.
+ *
+ * DOES NOT VALIDATE `slug` — it builds a storage key from it directly. Callers
+ * validate first ({@link wikiPageExists}, `deleteWikiPage` and
+ * {@link createWikiPage} all do), which is the same contract
+ * {@link readStoredPageVariant} carries.
+ */
+export async function findStoredPageKey(
+  slug: string,
+  tenant: string | null,
+): Promise<string | null> {
+  const canonicalKey =
+    tenant !== null ? tenantWikiRelPath(tenant, `${slug}.md`) : wikiRelPath(`${slug}.md`);
+  try {
+    await getStorage().readFile(canonicalKey);
+    return canonicalKey;
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  return (await readStoredPageVariant(slug, tenant, true))?.key ?? null;
+}
+
+/**
+ * Read a wiki page by slug. Returns `null` when the file doesn't exist or the
+ * slug is invalid.
+ *
+ * Pass `{ fresh: true }` when the bytes (or their version) are about to back a
+ * write precondition — see {@link ReadWikiPageOptions.fresh}.
+ *
+ * CAN THROW, but only for a caller that asks it to. Add `{ strict: true }` and
+ * a non-ENOENT storage failure — on the Page file, on the silo read, or on the
+ * Page index — is rethrown instead of being flattened into `null`. Write paths
+ * want that: `null` is indistinguishable from "no such Page", so without it a
+ * transient blip is reported as a deletion (a 404 on the save door) and can
+ * authorize a destructive fix. An absent Page and an invalid slug still answer
+ * `null` under strict — see {@link ReadWikiPageOptions.strict}.
+ */
+export async function readWikiPage(
+  slug: string,
+  options?: ReadWikiPageOptions,
+): Promise<WikiPage | null> {
   try {
     validateSlug(slug);
   } catch (err) {
@@ -331,35 +543,64 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
     return null;
   }
 
-  // Check cache first (when active)
-  if (pageCache !== null && pageCache.has(slug)) {
+  const fresh = options?.fresh === true;
+  const strict = options?.strict === true;
+
+  // Check cache first (when active, and when this read may use it)
+  if (!fresh && pageCache !== null && pageCache.has(slug)) {
     return pageCache.get(slug) ?? null;
   }
 
   const storage = getStorage();
   const flatPath = `${getWikiDir()}/${slug}.md`;
-
-  // Silo-primary: try tenant path first. We use ONLY the O(1) page-index
-  // lookup — NOT tenantForSlug() — because its slow path triggers
-  // listWikiPages → scanWikiPagesUncached → readWikiPageWithFrontmatter →
-  // readWikiPage → infinite recursion.
   let content: string | null = null;
-  let actualPath: string = flatPath; // track where content was actually read from
-  const pageIdx = await getPageIndex();
-  if (pageIdx) {
-    const entry = pageIdx[slug];
-    const tenant = tenantForOwner(entry?.owner);
+  let actualPath: string = flatPath;
+  let authoritativeReadFailed = false;
+  // Did the bytes come from the SHARED FLAT root? Tracked explicitly rather
+  // than inferred from `actualPath === flatPath`, because since DW-490 a flat
+  // hit is not always the canonical name: a recovered `<slug>.MD` sets
+  // `actualPath` to a key that compares unequal to `flatPath` and would have
+  // silently skipped the frontmatter-inferred silo re-route below — the one
+  // rule that keeps a stale public copy from winning over silo bytes after an
+  // index outage. A variant is an ORDINARY flat hit and gets the same
+  // treatment; that is what makes the recovery lose to everything an ordinary
+  // read would have preferred.
+  let fromFlatRoot = false;
+
+  // Silo-primary: try tenant path first. We use ONLY the caller's resolved
+  // owner and the O(1) page-index lookup — NOT tenantForSlug() — because its
+  // slow path triggers listWikiPages -> scanWikiPagesUncached ->
+  // readWikiPageWithFrontmatter -> readWikiPage -> infinite recursion.
+  const attemptedTenants = new Set<string>();
+  const readSilo = async (tenant: string): Promise<boolean> => {
+    if (attemptedTenants.has(tenant)) return false;
+    attemptedTenants.add(tenant);
     const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
     try {
       content = await storage.readFile(siloPath);
-      // Content came from the silo — resolve the absolute path
       actualPath = path.join(getDataDir(), siloPath);
-    } catch (e) {
-      if (!isEnoent(e)) {
-        logger.warn("wiki", `silo read failed for "${slug}", falling back to flat:`, e);
-      }
-      // Fall through to flat fallback
+      return true;
+    } catch (error) {
+      if (isEnoent(error)) return false;
+      // Once an owner/index routes a Page to its authoritative silo, a storage
+      // failure must not downgrade the read to possibly stale public flat
+      // bytes. Strict callers need the error; ordinary callers fail closed.
+      if (strict) throw error;
+      logger.warn("wiki", `silo read failed for "${slug}"; refusing flat fallback:`, error);
+      authoritativeReadFailed = true;
+      return true;
     }
+  };
+
+  // Silo-primary: try the globally indexed tenant first. We use ONLY the O(1)
+  // page-index lookup — NOT tenantForSlug() — because its slow path triggers
+  // listWikiPages → scanWikiPagesUncached → readWikiPageWithFrontmatter →
+  // readWikiPage → infinite recursion.
+  const pageIdx = await getPageIndex({ strict });
+  const indexedEntry = pageIdx?.[slug];
+  if (indexedEntry) {
+    await readSilo(tenantForOwner(indexedEntry.owner));
+    if (authoritativeReadFailed) return null;
   }
 
   // Flat fallback
@@ -367,14 +608,79 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
     try {
       content = await storage.readFile(wikiRelPath(`${slug}.md`));
       actualPath = flatPath;
+      fromFlatRoot = true;
     } catch (err) {
       if (!isEnoent(err)) {
+        if (strict) throw err;
         logger.warn("wiki", `readWikiPage failed for "${slug}":`, err);
+        return null;
       }
-      if (pageCache !== null) {
-        pageCache.set(slug, null);
+
+      // Only a true global miss may consult the caller's owner hint. This
+      // recovers a crash-left first write whose silo landed before its flat
+      // compatibility copy/index, while an indexed or flat Page always wins.
+      if (!indexedEntry && options?.owner !== undefined) {
+        await readSilo(tenantForOwner(options.owner));
+        if (authoritativeReadFailed) return null;
       }
-      return null;
+      // A TOTAL MISS ON THE CANONICAL SPELLING IS NOT YET A MISSING PAGE
+      // (DW-490). On a case-SENSITIVE store the object carrying this slug may
+      // be spelled `<slug>.MD`, and the Files tab both lists it and (since
+      // DW-489) serves it — so refusing it here is what 404s the save door on a
+      // row the tab shows as editable. Probe the same roots that were already
+      // tried, in the same order: each attempted silo first, then the flat
+      // root, so a recovered variant loses to nothing an ordinary read would
+      // have preferred. A hit is an ORDINARY hit whose `path` names the object
+      // actually read.
+      for (const attempted of attemptedTenants) {
+        const recovered = await readStoredPageVariant(slug, attempted, strict);
+        if (recovered !== null) {
+          content = recovered.content;
+          actualPath = path.join(getDataDir(), recovered.key);
+          break;
+        }
+      }
+      if (content === null) {
+        const recovered = await readStoredPageVariant(slug, null, strict);
+        if (recovered !== null) {
+          content = recovered.content;
+          actualPath = path.join(getDataDir(), recovered.key);
+          fromFlatRoot = true;
+        }
+      }
+
+      if (content === null) {
+        // A fresh read leaves the cache as it found it — see
+        // `ReadWikiPageOptions.fresh`. Poisoning a scan's open cache with a
+        // negative entry is exactly the staleness this option exists to avoid,
+        // pointed the other way.
+        if (!fresh && pageCache !== null) {
+          pageCache.set(slug, null);
+        }
+        return null;
+      }
+    }
+
+    // An unseeded or incomplete metadata index cannot identify the silo up front. The flat
+    // compatibility copy still carries the immutable owner, so use it only as
+    // a routing hint and prefer the matching silo bytes when they exist. This
+    // keeps a stale flat copy from restoring old public content after an index
+    // outage while preserving the migration fallback for truly flat-only
+    // Pages.
+    if (fromFlatRoot) {
+      let inferredTenant: string | null = null;
+      try {
+        const { data } = parseFrontmatter(content);
+        const owner = typeof data.owner === "string" ? data.owner : undefined;
+        inferredTenant = tenantForOwner(owner);
+      } catch {
+        // Malformed frontmatter remains the responsibility of the extended read
+        // below; do not convert that established error into a missing Page here.
+      }
+      if (inferredTenant !== null) {
+        await readSilo(inferredTenant);
+        if (authoritativeReadFailed) return null;
+      }
     }
   }
 
@@ -383,7 +689,7 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
   const title = titleMatch ? titleMatch[1].trim() : slug;
   const result: WikiPage = { slug, title, content, path: actualPath };
 
-  if (pageCache !== null) {
+  if (!fresh && pageCache !== null) {
     pageCache.set(slug, result);
   }
 
@@ -401,11 +707,15 @@ export async function readWikiPage(slug: string): Promise<WikiPage | null> {
  *
  * Returns `null` when the page doesn't exist or the slug is invalid.
  * Throws when the file exists but its frontmatter block is malformed.
+ *
+ * `options` is forwarded verbatim to {@link readWikiPage} — pass
+ * `{ fresh: true }` when the bytes are about to back a write precondition.
  */
 export async function readWikiPageWithFrontmatter(
   slug: string,
+  options?: ReadWikiPageOptions,
 ): Promise<(WikiPage & { frontmatter: Frontmatter; body: string }) | null> {
-  const page = await readWikiPage(slug);
+  const page = await readWikiPage(slug, options);
   if (!page) return null;
   const { data, body } = parseFrontmatter(page.content);
   // Prefer the H1 inside the body so frontmatter lines can never contribute
@@ -429,7 +739,9 @@ export async function writeWikiPage(
   tenant?: string,
 ): Promise<void> {
   validateSlug(slug);
-  const storagePath = tenant
+  // `let`, not `const`: on the ENOENT branch below the target is RE-ELECTED
+  // onto the object that actually carries this slug (DW-490).
+  let storagePath = tenant
     ? tenantWikiRelPath(tenant, `${slug}.md`)
     : wikiRelPath(`${slug}.md`);
   const storage = getStorage();
@@ -444,6 +756,30 @@ export async function writeWikiPage(
     // File doesn't exist yet — first write, no revision needed.
     if (!isEnoent(err)) {
       logger.warn("wiki", `unexpected error reading existing page "${slug}" before revision:`, err);
+    } else {
+      // ...OR the object carrying this slug is spelled some other casing of
+      // `.md`, which only a case-SENSITIVE store can be holding (DW-490). Then
+      // this is NOT a first write: retarget the bytes onto the object the
+      // reader was shown and snapshot ITS content as the revision, rather than
+      // creating a second object for one slug and orphaning the first. Only
+      // ever reached once the canonical spelling proved absent, so a
+      // case-INSENSITIVE store makes exactly the calls it made before and lands
+      // on exactly the key it landed on before. `saveRevision` stays keyed by
+      // slug; only the key the bytes land on changes.
+      //
+      // STRICT, so an INDETERMINATE probe fails the write. Swallowing a
+      // non-ENOENT fault here would fall through to the canonical
+      // `<slug>.md` and create exactly the second object DW-490 exists to
+      // prevent — orphaning the real bytes and skipping their revision, with
+      // nothing but a log line to say so. That is strictly worse than the
+      // dropped edit `writeWikiPageIfContentMatches` refuses for the same
+      // reason, and it is `readWikiPage`'s strict rationale exactly: absence
+      // inferred from a blip is what authorizes a destructive fix.
+      const recovered = await readStoredPageVariant(slug, tenant ?? null, true);
+      if (recovered !== null) {
+        storagePath = recovered.key;
+        await saveRevision(slug, recovered.content, author, reason, tenant);
+      }
     }
   }
 
@@ -453,6 +789,122 @@ export async function writeWikiPage(
   if (pageCache !== null) {
     pageCache.delete(slug);
   }
+}
+
+/**
+ * Atomically create a wiki page without overwriting an existing page.
+ *
+ * Returns `false` when the target already exists — and since DW-740 "the
+ * target" means the stored OBJECT that carries the slug, not the name. A case
+ * variant COUNTS as the page already existing here: that is the human ruling
+ * this door was left open for while DW-489/490/741 moved the read, save, delete
+ * and existence doors onto {@link findStoredPageKey}. Without it, a create over
+ * a variant-held Page on a case-SENSITIVE store lands a SECOND object for one
+ * slug and orphans the one the Files tab lists and the reader was shown.
+ *
+ * The refusal resolves through the SAME {@link findStoredPageKey} those other
+ * doors use, so this call site restates neither the candidate set, the election,
+ * nor the ENOENT gate. That gate is what keeps a REFUSAL cheap: a canonical hit
+ * closes it on the first read, so refusing a create over a stored `<slug>.md`
+ * costs the ONE read it always cost, on either kind of store.
+ *
+ * A SUCCESSFUL create is what got more expensive, and — unlike the doors that
+ * came before — a miss IS this door's normal path, so the three variant reads
+ * run on every real create, on a case-INSENSITIVE store included, where they can
+ * only miss. Four reads per root instead of one. A lifecycle `createOnly` write
+ * pays about TWELVE for one created page: the gate probes the flat root, the
+ * silo `createWikiPage` probes the silo root, and the flat `createWikiPage`
+ * probes the flat root AGAIN — a duplicate of the gate's. `createOnly` writes do
+ * arrive from bulk pipelines (ingest, agent seeding, the review queue), so this
+ * is bounded and O(1) per page but it is not free and it is not rare.
+ *
+ * STRICT is inherited, not restated: {@link findStoredPageKey} always rethrows a
+ * non-ENOENT failure, so an indeterminate probe FAILS the create rather than
+ * being flattened into "the slug is free" — the same reason `writeWikiPage`'s
+ * recovery is strict, since an absence inferred from a blip is what authorizes
+ * the second object.
+ *
+ * `writeFileIfAbsent` on the canonical key REMAINS the create-only guarantee.
+ * The probe only ADDS a refusal ahead of it; it never replaces the atomic check,
+ * so a CANONICAL object appearing between the two still loses to the provider
+ * rather than to this read. A VARIANT appearing in that same window is not
+ * covered by either — no provider offers create-if-no-spelling-exists — but the
+ * only writes in this module that address a non-canonical name are
+ * {@link writeWikiPage}'s and {@link writeWikiPageIfContentMatches}' retargets
+ * onto an object the probe would already have found; neither brings a NEW
+ * spelling into existence, so that window still needs a store-external writer.
+ *
+ * Unlike `writeWikiPage`, this intentionally does not create a revision because
+ * a successful call is the first write for the path.
+ */
+export async function createWikiPage(
+  slug: string,
+  content: string,
+  tenant?: string,
+): Promise<boolean> {
+  validateSlug(slug);
+  const storagePath = tenant
+    ? tenantWikiRelPath(tenant, `${slug}.md`)
+    : wikiRelPath(`${slug}.md`);
+  // DW-740: a case variant IS the page here — the human ruling. ENOENT-gated,
+  // so a canonical hit costs the one read it always cost.
+  if ((await findStoredPageKey(slug, tenant ?? null)) !== null) return false;
+  // Still the atomic create-only guarantee for the canonical key.
+  const created = await getStorage().writeFileIfAbsent(storagePath, content);
+  if (created && pageCache !== null) pageCache.delete(slug);
+  return created;
+}
+
+/**
+ * Replace a Page only when the provider still holds the exact bytes the
+ * caller transformed. The content comparison binds the caller's source bytes
+ * to the provider etag; the conditional write closes the read/write race.
+ */
+export async function writeWikiPageIfContentMatches(
+  slug: string,
+  content: string,
+  expectedContent: string,
+  author?: string,
+  reason?: string,
+  tenant?: string,
+): Promise<boolean> {
+  validateSlug(slug);
+  // `let` for the same reason {@link writeWikiPage}'s is: the ENOENT branch
+  // re-elects the target onto the object carrying this slug (DW-490).
+  let storagePath = tenant
+    ? tenantWikiRelPath(tenant, `${slug}.md`)
+    : wikiRelPath(`${slug}.md`);
+  const storage = getStorage();
+  let current: { content: string; etag: string };
+  try {
+    current = await storage.readFileWithEtag(storagePath);
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    // The canonical spelling is absent, which on a case-SENSITIVE store does
+    // not mean the page is: retarget the etag read, the comparison AND the CAS
+    // onto the elected object, so this compares against the same bytes the
+    // caller was shown and rewrites the same object. `strict` is true because
+    // this is a write precondition — a transient blip flattened into `false`
+    // here reads as "someone else won the race" and silently drops the edit.
+    const recovered = await readStoredPageVariant(slug, tenant ?? null, true);
+    if (recovered === null) return false;
+    storagePath = recovered.key;
+    try {
+      current = await storage.readFileWithEtag(storagePath);
+    } catch (retry) {
+      if (isEnoent(retry)) return false;
+      throw retry;
+    }
+  }
+  if (current.content !== expectedContent) return false;
+
+  // Preserve the source snapshot before publication, matching writeWikiPage's
+  // history contract. A losing CAS may leave a harmless duplicate snapshot,
+  // but it can never overwrite the competing Page.
+  await saveRevision(slug, expectedContent, author, reason, tenant);
+  const written = await storage.writeFileIfMatch(storagePath, content, current.etag);
+  if (written && pageCache !== null) pageCache.delete(slug);
+  return written;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,13 +990,14 @@ export function enrichEntry(
 }
 
 /** Parse the ordered base entries (title/slug/summary) from `wiki/index.md`. */
-async function readIndexBaseEntries(): Promise<IndexEntry[]> {
+async function readIndexBaseEntries(options?: { strict?: boolean }): Promise<IndexEntry[]> {
   const storagePath = wikiRelPath("index.md");
   let raw: string;
   try {
     raw = await getStorage().readFile(storagePath);
   } catch (err: unknown) {
     if (!isEnoent(err)) {
+      if (options?.strict) throw err;
       // A transient read failure on index.md makes the WHOLE wiki look empty to
       // every list surface — surface it at error level (ENOENT = genuinely no
       // index yet, which is the normal empty-state and stays quiet).
@@ -564,24 +1017,28 @@ async function readIndexBaseEntries(): Promise<IndexEntry[]> {
 /**
  * The O(pages) scan: read `index.md` then EACH page's frontmatter to enrich.
  * The fallback for {@link listWikiPages} and the source for the `_idx:pages`
- * rebuild. A page that fails to parse falls back to its plain index entry so one
- * malformed page never breaks the whole list.
+ * rebuild. A page whose authoritative metadata cannot be read is represented
+ * as private + unowned so a transient failure can reduce availability but can
+ * never turn unknown visibility into public access.
  */
-export async function scanWikiPagesUncached(): Promise<IndexEntry[]> {
-  const baseEntries = await readIndexBaseEntries();
+export async function scanWikiPagesUncached(options?: { strict?: boolean }): Promise<IndexEntry[]> {
+  const baseEntries = await readIndexBaseEntries(options);
   return Promise.all(
     baseEntries.map(async (entry): Promise<IndexEntry> => {
       try {
-        const page = await readWikiPageWithFrontmatter(entry.slug);
-        if (!page) return entry;
+        const page = await readWikiPageWithFrontmatter(
+          entry.slug,
+          { fresh: true, strict: true },
+        );
+        if (!page) return { ...entry, visibility: "private" };
         return enrichEntry(entry, page.frontmatter);
       } catch (err) {
         logger.warn(
           "wiki",
-          `listWikiPages: failed to read frontmatter for "${entry.slug}" — falling back to plain entry`,
+          `listWikiPages: failed to read frontmatter for "${entry.slug}" — hiding it`,
           err,
         );
-        return entry;
+        return { ...entry, visibility: "private" };
       }
     }),
   );
@@ -597,19 +1054,44 @@ export async function scanWikiPagesUncached(): Promise<IndexEntry[]> {
  *
  * Expected `index.md` line format: `- [Title](slug.md) — summary`
  */
-export async function listWikiPages(): Promise<IndexEntry[]> {
-  const { getPageIndex } = await import("./page-index");
+export async function listWikiPages(options?: { strict?: boolean }): Promise<IndexEntry[]> {
+  const { getPageIndex, getPageIndexDirtySlugs } = await import("./page-index");
   const meta = await getPageIndex();
-  if (meta === null) return scanWikiPagesUncached();
+  if (meta === null) return scanWikiPagesUncached(options);
 
-  const baseEntries = await readIndexBaseEntries();
-  return baseEntries.map((b) => {
+  let dirty: Set<string>;
+  try {
+    dirty = await getPageIndexDirtySlugs();
+  } catch (error) {
+    if (options?.strict) throw error;
+    logger.warn("page-index", "dirty-set read failed; falling back to scan", error);
+    return scanWikiPagesUncached(options);
+  }
+
+  const baseEntries = await readIndexBaseEntries(options);
+  return Promise.all(baseEntries.map(async (b) => {
+    if (dirty.has(b.slug)) {
+      try {
+        const page = await readWikiPageWithFrontmatter(
+          b.slug,
+          { fresh: true, strict: true },
+        );
+        // Missing/unreadable authoritative bytes are not permission to expose
+        // a stale public row. Private + unowned is denied to every non-admin.
+        return page
+          ? enrichEntry(b, page.frontmatter)
+          : { ...b, visibility: "private" as const };
+      } catch (error) {
+        logger.warn("page-index", `dirty Page read failed for "${b.slug}"; hiding it`, error);
+        return { ...b, visibility: "private" as const };
+      }
+    }
     const m = meta[b.slug];
     // index.md stays authoritative for title/summary; the metadata index
     // supplies the enriched fields. A slug missing from the index (just added,
     // pre-rebuild) falls back to its plain base entry.
     return m ? { ...m, title: b.title, slug: b.slug, summary: b.summary } : b;
-  });
+  }));
 }
 
 /**
@@ -640,7 +1122,7 @@ export async function listReadableWikiPages(
  * ```
  */
 export async function updateIndex(entries: IndexEntry[]): Promise<void> {
-  await withFileLock("index.md", async () => {
+  await withDurableLock("index.md", async () => {
     await updateIndexUnsafe(entries);
   });
 }
@@ -652,7 +1134,7 @@ export async function updateIndex(entries: IndexEntry[]): Promise<void> {
  * This exists so that callers who already hold the lock (e.g.
  * `runPageLifecycleOp` in `lifecycle.ts`) can perform a read → mutate → write
  *
- * **Do not call from outside a `withFileLock("index.md", …)` block** — use
+ * **Do not call from outside a `withDurableLock("index.md", …)` block** — use
  * {@link updateIndex} instead.
  */
 export async function updateIndexUnsafe(entries: IndexEntry[]): Promise<void> {

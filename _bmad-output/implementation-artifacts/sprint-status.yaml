@@ -3,23 +3,32 @@
 # Epic Status:
 #   - backlog: Epic not yet started
 #   - in-progress: Epic actively being worked on
-#   - done: All stories in epic completed
+#   - done: All stories in epic completed, or remaining stories are
+#     `deferred` with a recorded reason. Epic 7 is done with Story 7.6
+#     deferred (Plaud publishes no consumer OAuth list/pull HTTP).
 
 # Story Status:
 #   - backlog: Story only exists in epic file
 #   - ready-for-dev: Story file created, ready for development
 #   - in-progress: Developer actively working on implementation
 #   - review: Implementation complete, ready for review
-#   - done: Story completed
+#   - done: Implementation complete. This is not retrospective acceptance.
+#     Epic 5 stories 5.1–5.10 stay done while epic-5-retro-2026-08-23.md
+#     remains verdict: rejected.
+#   - deferred: Will not be implemented now. Requires a recorded reason.
+#     Does not keep the epic in backlog when every other story is done.
 
 # Retrospective Status:
-#   - optional: Can be completed but not required
-#   - done: Retrospective has been completed
+#   - optional: Can be completed but not required. Epic 4 has no retro
+#     document; epic-4-retrospective stays optional by explicit waiver
+#     recorded in spec-5-1-through-5-10-see-the-wikis-shape.md.
+#   - done: The retrospective ran. This is not an accepted verdict.
 
 # Action Item Status:
 #   - open: Committed during a retrospective, not yet addressed
 #   - in-progress: Actively being worked on
-#   - done: Completed
+#   - done: Remediation implemented. Does not change a rejected
+#     retrospective verdict.
 
 # WORKFLOW NOTES:
 # ===============
@@ -29,100 +38,504 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-13-2026 14:53
+last_updated: 08-26-2026 15:45
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
 story_location: /workspace/_bmad-output/implementation-artifacts
 development_status:
-  epic-1: backlog
-  1-1-sign-in-privately-and-retire-commons: backlog
-  1-2-create-a-wiki-from-a-scenario-template: backlog
-  1-3-nashsu-icon-rail-and-workbench-chrome: backlog
-  1-4-knowledge-tree-and-file-tree: backlog
-  1-5-view-first-preview-with-gfm-and-wikilinks: backlog
-  1-6-drag-resize-and-durable-layout: backlog
-  1-7-dataversion-workbench-refresh: backlog
-  1-8-edit-schema: backlog
-  1-9-settings-for-models-and-embeddings: backlog
-  epic-1-retrospective: optional
+  epic-1: done
+  1-1-sign-in-privately-and-retire-commons: done
+  1-2-create-a-wiki-from-a-scenario-template: done
+  1-3-nashsu-icon-rail-and-workbench-chrome: done
+  1-4-knowledge-tree-and-file-tree: done
+  1-5-view-first-preview-with-gfm-and-wikilinks: done
+  1-6-drag-resize-and-durable-layout: done
+  1-7-dataversion-workbench-refresh: done
+  1-8-edit-schema: done
+  1-9-settings-for-models-and-embeddings: done
+  epic-1-retrospective: done
 
-  epic-2: backlog
-  2-1-upload-drag-drop-and-url-intake: backlog
-  2-2-recursive-folder-import: backlog
-  2-3-capture-url-or-clip: backlog
-  2-4-plaud-transcript-and-summary-upload: backlog
-  2-5-serial-durable-queue-and-activity: backlog
-  2-6-two-step-analysis-then-generation: backlog
-  2-7-sha256-skip-cache: backlog
-  2-8-index-log-overview-source-summary: backlog
-  2-9-embed-after-ingest-only-when-vector-is-on: backlog
-  2-10-confirm-gated-cascade-source-delete: backlog
-  2-11-progressive-sources-view: backlog
-  2-12-zip-export-and-import: backlog
-  epic-2-retrospective: optional
+  epic-2: done
+  2-1-upload-drag-drop-and-url-intake: done
+  2-2-recursive-folder-import: done
+  2-3-capture-url-or-clip: done
+  2-4-plaud-transcript-and-summary-upload: done
+  2-5-serial-durable-queue-and-activity: done
+  2-6-two-step-analysis-then-generation: done
+  2-7-sha256-skip-cache: done
+  2-8-index-log-overview-source-summary: done
+  2-9-embed-after-ingest-only-when-vector-is-on: done
+  2-10-confirm-gated-cascade-source-delete: done
+  2-11-progressive-sources-view: done
+  2-12-zip-export-and-import: done
+  epic-2-retrospective: done
 
-  epic-3: backlog
-  3-1-sidecar-health-and-chat-http-sse: backlog
-  3-2-conversations-sidebar-and-persistence: backlog
-  3-3-tokenized-retrieval-budget-and-numbered-assembly: backlog
-  3-4-optional-vector-merge: backlog
-  3-5-graph-expansion-for-retrieval: backlog
-  3-6-cited-chat-answers: backlog
-  3-7-sources-only-chat: backlog
-  3-8-thinking-blocks: backlog
-  3-9-regenerate-last-turn: backlog
-  3-10-save-to-wiki: backlog
-  3-11-search-mode: backlog
-  epic-3-retrospective: optional
+  epic-3: done
+  3-1-sidecar-health-and-chat-http-sse: done
+  3-2-conversations-sidebar-and-persistence: done
+  3-3-tokenized-retrieval-budget-and-numbered-assembly: done
+  3-4-optional-vector-merge: done
+  3-5-graph-expansion-for-retrieval: done
+  3-6-cited-chat-answers: done
+  3-7-sources-only-chat: done
+  3-8-thinking-blocks: done
+  3-9-regenerate-last-turn: done
+  3-10-save-to-wiki: done
+  3-11-search-mode: done
+  epic-3-retrospective: done
 
-  epic-4: backlog
-  4-1-extract-todo-candidates-from-meeting-ingest: backlog
-  4-2-approve-or-reject-candidates: backlog
-  4-3-due-dates-open-done-and-owner-delete: backlog
-  4-4-links-back-to-the-meeting: backlog
+  epic-4: done
+  4-1-extract-todo-candidates-from-meeting-ingest: done
+  4-2-approve-or-reject-candidates: done
+  4-3-due-dates-open-done-and-owner-delete: done
+  4-4-links-back-to-the-meeting: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
-  5-1-4-signal-relevance-in-the-kernel: backlog
-  5-2-graph-canvas-with-sigma: backlog
-  5-3-louvain-communities-and-type-community-toggle: backlog
-  5-4-graph-hover-zoom-and-position-cache: backlog
-  5-5-surprising-connections: backlog
-  5-6-knowledge-gaps: backlog
-  5-7-insight-highlight-and-deep-research-entry: backlog
-  5-8-lint-report: backlog
-  5-9-mechanical-auto-fix: backlog
-  5-10-review-queue: backlog
-  epic-5-retrospective: optional
+  epic-5: done
+  5-1-4-signal-relevance-in-the-kernel: done
+  5-2-graph-canvas-with-sigma: done
+  5-3-louvain-communities-and-type-community-toggle: done
+  5-4-graph-hover-zoom-and-position-cache: done
+  5-5-surprising-connections: done
+  5-6-knowledge-gaps: done
+  5-7-insight-highlight-and-deep-research-entry: done
+  5-8-lint-report: done
+  5-9-mechanical-auto-fix: done
+  5-10-review-queue: done
+  epic-5-retrospective: done
 
-  epic-6: backlog
-  6-1-configure-deep-research-providers: backlog
-  6-2-confirm-topic-and-queries-before-start: backlog
-  6-3-research-panel-streams-progress: backlog
-  6-4-own-queue-max-3-concurrent: backlog
-  6-5-research-page-thinking-auto-ingest: backlog
-  epic-6-retrospective: optional
+  epic-6: done
+  6-1-configure-deep-research-providers: done
+  6-2-confirm-topic-and-queries-before-start: done
+  6-3-research-panel-streams-progress: done
+  6-4-own-queue-max-3-concurrent: done
+  6-5-research-page-thinking-auto-ingest: done
+  epic-6-retrospective: done
 
-  epic-7: backlog
-  7-1-sidecar-claims-kernel-extract-jobs: backlog
-  7-2-pdf-extract-cache-and-mineru: backlog
-  7-3-docx-pptx-and-spreadsheet-extract: backlog
-  7-4-epub-mobi-extract: backlog
-  7-5-inbound-email-intake: backlog
-  7-6-plaud-oauth-list-and-pull: backlog
-  7-7-image-lightbox-and-av-player: backlog
-  7-8-mermaid-and-katex-in-preview: backlog
+  # epic-7 is `done` with 7.6 `deferred` (2026-08-25 owner decision). Seven
+  # stories shipped; 7.6 stays unimplemented — Plaud publishes no account-level
+  # list/pull HTTP, and the documented OAuth is Embedded (partner/OEM), not a
+  # consumer library (spec Change Log). Do not rewrite 7.6 to email or unofficial
+  # api.plaud.ai. A later official-MCP pull is a new story, not this key.
+  epic-7: done
+  7-1-sidecar-claims-kernel-extract-jobs: done
+  7-2-pdf-extract-cache-and-mineru: done
+  7-3-docx-pptx-and-spreadsheet-extract: done
+  7-4-epub-mobi-extract: done
+  7-5-inbound-email-intake: done
+  7-6-plaud-oauth-list-and-pull: deferred
+  7-7-image-lightbox-and-av-player: done
+  7-8-mermaid-and-katex-in-preview: done
   epic-7-retrospective: optional
 
-  epic-8: backlog
-  8-1-enable-loopback-api-and-token: backlog
-  8-2-full-api-v1-surface: backlog
-  8-3-mcp-and-copyable-config: backlog
-  8-4-work-wiki-agent-skill: backlog
-  8-5-tool-using-agent: backlog
-  8-6-skill-scan-enable-skill: backlog
-  8-7-skill-forms: backlog
-  8-8-agent-workspace-outputs: backlog
-  8-9-safer-shell-approve-deny: backlog
-  epic-8-retrospective: optional
+  epic-8: done
+  8-1-enable-loopback-api-and-token: done
+  8-2-full-api-v1-surface: done
+  8-3-mcp-and-copyable-config: done
+  8-4-work-wiki-agent-skill: done
+  8-5-tool-using-agent: done
+  8-6-skill-scan-enable-skill: done
+  8-7-skill-forms: done
+  8-8-agent-workspace-outputs: done
+  8-9-safer-shell-approve-deny: done
+  epic-8-retrospective: done
+action_items:
+  - id: "epic-1-retro-data-version-contract"
+    epic: 1
+    action: "Resolve the Story 1.7 dataVersion contract: implement and prove provider-atomic
+      monotonic Worker increments, or obtain explicit approval to revise the exact-once
+      monotonic criterion."
+    owner: "Architecture / data plane"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-raw-root-isolation"
+    epic: 1
+    action: "Apply the approved DW-40 raw-root isolation decision before Epic 2 Source
+      intake and prove an empty tenant raw silo cannot list or read shared legacy
+      bytes."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-authenticated-e2e"
+    epic: 1
+    action: "Add an authenticated browser E2E fixture covering the private Workbench
+      owner journey and signed-in retired-route 404s."
+    owner: "QA / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-1-retro-rollup-reconciliation"
+    epic: 1
+    action: "After acceptance blockers close, reconcile the Epic 1 roll-up with its
+      done story states using BMAD state tooling."
+    owner: "BMAD workflow"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md"
+  - id: "epic-2-retro-release-gates"
+    epic: 2
+    action: "Restore build, typecheck, full Vitest, lint, and authenticated Playwright
+      by fixing the Workbench client-server Source-delete boundary and all resulting
+      regressions."
+    owner: "Workbench / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-intake-dedup"
+    epic: 2
+    action: "Make Intake dedup owner-safe, byte-exact, collision-safe, and truthful
+      about stored, skipped, refused, and not-queued outcomes."
+    owner: "Intake / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-ingest-state-machine"
+    epic: 2
+    action: "Implement durable owner-serial ingest and atomic retry, cancel, progress,
+      and terminal job transitions across Worker isolates."
+    owner: "Queue / runtime"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-source-identity"
+    epic: 2
+    action: "Unify durable Source identity and provenance across Plaud origin, folder
+      paths, Pages, summaries, indexes, Todos, retries, deletes, and archives."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-cancel-cascade"
+    epic: 2
+    action: "Make cancel and Source cascade owner-scoped, atomically fenced, exact-keyed,
+      and resumable without orphaned bytes or pages."
+    owner: "Wiki kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-bookkeeping"
+    epic: 2
+    action: "Make Analysis failure retryable and bookkeeping idempotently repairable,
+      Schema-driven, and explicit about Overview summary inclusion."
+    owner: "Ingest / lifecycle"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-sources-activity"
+    epic: 2
+    action: "Provide server-progressive Sources listing, active-queue progress, and
+      executed route and interaction tests for Activity, delete, and vector backfill."
+    owner: "Workbench / API"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-2-retro-orchestration"
+    epic: 2
+    action: "After correctness, extract shared dispatch contracts and move Intake
+      and delete orchestration out of the Workbench shell. Linked from epic-5-retro-delivery-review-gate
+      (Action 10); remains open."
+    owner: "Architecture / maintainers"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+    linked_from: "epic-5-retro-delivery-review-gate"
+  - id: "epic-2-retro-contract-rulings"
+    epic: 2
+    action: "Resolve and reconcile strict-versus-fail-soft vector embedding, dataVersion,
+      and identical-bytes Source identity contracts."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-2026-08-22.md"
+  - id: "epic-3-retro-sidecar-security"
+    epic: 3
+    action: "Close the sidecar credential-exfiltration boundary with trusted origins,
+      locally resolved provider endpoints, validated inputs, deadlines, and response
+      bounds."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-release-gates"
+    epic: 3
+    action: "Restore TypeScript, production build, full Vitest, lint, and add an authenticated
+      Epic 3 browser gate."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-owner-wiki-authority"
+    epic: 3
+    action: "Enforce the configured owner across Conversation, message, Save, Retrieve,
+      and Search routes and bind current or UUID routing to the selected Wiki."
+    owner: "Kernel / auth"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-conversation-atomicity"
+    epic: 3
+    action: "Make Conversation and complete-turn mutations isolate-safe, atomic, capacity-safe,
+      and sequence-validated."
+    owner: "Kernel / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-citation-integrity"
+    epic: 3
+    action: "Enforce mapped citation markers and persist, render, and save only validated
+      citations actually used by the answer."
+    owner: "Chat / retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-retrieval-budget"
+    epic: 3
+    action: "Unify Chat and Search retrieval and apply exact structured history and
+      numbered-body budget ceilings with saturated allocation tests."
+    owner: "Retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-full-body-ruling"
+    epic: 3
+    action: "Resolve and reconcile full-body retrieval versus hard context-budget
+      behavior for oversized relevant documents."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-retrieval-scale-identity"
+    epic: 3
+    action: "Bound and index corpus reads while preserving every immutable Source
+      identity and independent snapshot availability."
+    owner: "Retrieval / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-regenerate-ui-safety"
+    epic: 3
+    action: "Make Regenerate, drafts, active turns, Conversation loads, Search results,
+      and settings patches failure-safe and race-fenced."
+    owner: "Workbench / Chat"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-streaming-readiness-ruling"
+    epic: 3
+    action: "Define and implement the authoritative sidecar streaming and Chat-readiness
+      contract, including done-required persistence."
+    owner: "Product / sidecar"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-save-lifecycle"
+    epic: 3
+    action: "Make Save-to-Wiki owner-safe, message-identity-based, provenance-complete,
+      idempotent, job-bound, and truthful about dispatch failure."
+    owner: "Wiki kernel / Ingest"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-3-retro-executed-contracts-orchestration"
+    epic: 3
+    action: "Add executed successful-SSE, owner-negative, Preview-click, Thinking,
+      and Save-to-retrieval tests, then split concentrated Chat, retrieval, and sidecar
+      orchestration."
+    owner: "QA / maintainers"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-2026-08-23.md"
+  - id: "epic-5-retro-release-boundary"
+    epic: 5
+    action: "Move Lint client contracts into a client-safe module, restore the enforced
+      data-version writer invariant, and require green production build, full Vitest,
+      lint, TypeScript, and clean authenticated Playwright at exact head."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-graph-correctness"
+    epic: 5
+    action: "Give uncached reduced-motion Graph nodes distinct stable positions, implement
+      a real Sigma Fit, make Louvain and community IDs deterministic, separate legend-warning
+      and sparse thresholds, and stabilize insight fingerprints."
+    owner: "Graph / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-relevance-prefill"
+    epic: 5
+    action: "Use one canonical internal-link parser for Graph and Chat, read the current
+      Wiki Purpose and profile, and replace the silent twelve-prefill cutoff with
+      an explicit bounded or paginated contract."
+    owner: "Retrieval / Graph"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-durable-store-atomicity"
+    epic: 5
+    action: "Add conditional first-create semantics, fail-closed or quarantine corruption
+      handling, bounded retention and backpressure, and the authoritative data-version
+      invalidation path for Review and dismissals."
+    owner: "Kernel / storage"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-lint-write-contract"
+    epic: 5
+    action: "Revalidate live Lint issues and canonical targets, restrict dangling
+      fixes to authorized wikilinks, preserve fragments and code examples, add content
+      preconditions, and route stale-index repair through an atomic lifecycle and
+      history contract."
+    owner: "Wiki kernel / Lint"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-lint-product-reconcile"
+    epic: 5
+    action: "Remove or map semantic gap rows to Graph Insights, exclude self-links,
+      resolve aliases for inbound reachability, and show disputed status for the same
+      page from both Knowledge and Files."
+    owner: "Product / Workbench"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-review-delivery"
+    epic: 5
+    action: "Cover queued and inline or off-Worker ingest, author fallback, post-compile
+      skipped retries, and transient Review queue failures with idempotent durable
+      retry or outbox semantics."
+    owner: "Ingest / Queues"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-review-scope-create"
+    epic: 5
+    action: "Enforce the authoritative wikiId view and action contract, write owner
+      metadata, preserve source provenance, prevent slug collisions, and recover safely
+      from process loss and failed Review page writes."
+    owner: "Wiki kernel / Review"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-executed-workbench-contracts"
+    epic: 5
+    action: "Add rendered and browser coverage for non-empty Sigma interactions, narrow
+      mode, Lint semantic and auto-fix routes, Review counts and Create Page rollback,
+      Research handoff and status, malformed inputs, and stale-response fencing."
+    owner: "Workbench / QA"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+  - id: "epic-5-retro-delivery-review-gate"
+    epic: 5
+    action: "Decompose Graph, Lint, and Review into reviewable story or feature commits
+      and do not mark the bundle done while followup review is recommended or exact-head
+      build, full-suite, and browser gates are absent. Linked open item: epic-2-retro-orchestration.
+      Story done means implementation complete, not accepted; followup_review_recommended
+      stays true until a fresh review."
+    owner: "Delivery / architecture"
+    status: in-progress
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-2026-08-23.md"
+    links: "epic-2-retro-orchestration"
+  - id: "epic-6-retro-linearizable-admission"
+    epic: 6
+    action: "Implement durable per-owner max-three admission and atomic per-attempt
+      execution claims; fail closed on lease storage faults and prove duplicate delivery
+      and cross-isolate races cannot execute twice or exceed three."
+    owner: "Queue / runtime maintainers"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-durable-completion"
+    epic: 6
+    action: "Make Page, exact-evidence Sources, Ingest jobs, Activity, and terminal
+      project state one idempotently reconcilable durable operation with truthful
+      retry and partial-failure states."
+    owner: "Wiki kernel / Ingest"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-cancel-delete-state-machine"
+    epic: 6
+    action: "Atomically fence cancel, delete, restart recovery, and Page commit; release
+      and drain leases on deletion; restrict PATCH and run actions to valid owner
+      lifecycle commands."
+    owner: "Research API / kernel"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-wiki-scope"
+    epic: 6
+    action: "Resolve the authoritative Workbench Wiki UUID contract and enforce it
+      through project listing, Page and Source routing, Ingest and Activity jobs,
+      and Wiki-switch stale-response fences, or obtain explicit approval to revise
+      the locked contract and UI copy."
+    owner: "Product / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-observable-progress"
+    epic: 6
+    action: "Provide real persisted synthesis-thinking progress or reconcile the promise
+      to post-completion thinking; make polling recoverable and prove concurrent rows,
+      reduced motion, cancellation, and Wiki-switch behavior in rendered browser tests."
+    owner: "Workbench / LLM runtime"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-provider-evidence-contracts"
+    epic: 6
+    action: "Remove unaudited provider override and stale retry pinning, validate
+      provider configuration and citation URLs, harden thinking stripping, and obtain
+      a ruling on the 100000-character extraction cap versus the full-content criterion."
+    owner: "Research / product"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-race-fault-delivery-gates"
+    epic: 6
+    action: "Add successful create-to-Queue-to-consumer execution, cross-isolate admission,
+      duplicate delivery, synthesis cancel, claimed restart, held-lease delete, post-Page
+      fault, and live provider-backed Cloudflare lifecycle gates."
+    owner: "QA / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-6-retro-delivery-review-gate"
+    epic: 6
+    action: "Split research orchestration along state-machine boundaries and retain
+      followup_review_recommended until a fresh independent same-SHA review plus typecheck,
+      lint, full Vitest, production, Cloudflare, and authenticated browser gates pass."
+    owner: "Delivery / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-8-retro-shell-capabilities"
+    epic: 8
+    action: "Make shell pending state and approvals server-owned with single-use capability
+      IDs; remove caller-supplied approved executables, revalidate before spawn, and
+      reject fabricated, replayed, expired, cross-turn, and disallowed-Origin requests."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-filesystem-containment"
+    epic: 8
+    action: "Contain workspace and shell filesystem access before side effects with
+      no-follow descriptor checks, atomic publish, canonical cwd and executable paths,
+      option-path parsing, and agent-workspace as the implicit cwd."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-tool-turn-persistence"
+    epic: 8
+    action: "Implement turn-wide typed citations for wiki, Source, graph, and web
+      evidence; permit legitimate workspace-only output provenance; and prove tool
+      rows and output chips survive a real conversation-store reload."
+    owner: "Chat / retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-v1-contract"
+    epic: 8
+    action: "Reconcile the declared v1 contract: portable MCP config, live Settings
+      health and Skill scans, deep-mode ruling, registered filesystem project IDs,
+      raw/sources scope, shared body limit, durable rescan batching, and last-good
+      settings recovery."
+    owner: "API / sidecar"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-boundary-gates"
+    epic: 8
+    action: "Add exact-head boundary gates for owner/service auth, Settings-to-sidecar
+      polling, tool-enabled HTTP Chat, server-issued resume, MCP callbacks, review
+      scoping, rescan durability, symlink attacks, non-repo-cwd MCP launch, and the
+      order-sensitive full-suite failure."
+    owner: "QA / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-architecture-decomposition"
+    epic: 8
+    action: "Resolve Node ESM versus Rust sidecar architecture and decompose ChatCanvas,
+      sidecar server, and API/MCP Settings responsibilities while centralizing authenticated
+      loopback access."
+    owner: "Delivery / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-acceptance-gates"
+    epic: 8
+    action: "Accept Epic 8 only after a fresh review of an immutable post-fix SHA,
+      then on that same SHA: typecheck, lint, full Vitest, production build, the exploit
+      regressions (forged resume, symlink write, implicit cwd), a rendered Settings/Chat
+      walkthrough, and an MCP launch from a non-repository client cwd."
+    owner: "QA / delivery"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-architecture-follow-on"
+    epic: 8
+    action: "Follow-on, not an acceptance blocker: extract provider and Chat transport
+      from sidecar/server.mjs, pending-turn/session transport from ChatCanvas.tsx,
+      and the API/MCP category from the generic Settings pair."
+    owner: "Delivery / architecture"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-8-sidecar-runtime.md"

@@ -6,11 +6,26 @@ import type {
   AgentRunWorkspace,
   AgentSandboxApproval,
 } from "@/lib/agent-workspaces";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -54,7 +69,15 @@ export function AgentWorkspaceDesk() {
       });
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not submit input.");
+      // NOTHING CAME BACK (DW-717): the input may have reached the run, and
+      // this desk would go on offering the same form. The refetch runs FIRST
+      // and the sentence LAST: `load` does not clear `error` on its way in, but
+      // its CATCH writes to that same slot, and the connection that lost the
+      // write is usually still down when the refetch goes out — so the other
+      // order replaces the honest sentence with `Failed to fetch`.
+      const { message, unconfirmed } = writeFailure(reason, "submit the input");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -68,7 +91,12 @@ export function AgentWorkspaceDesk() {
       await json(`/api/agent-workspaces?id=${encodeURIComponent(workspace.id)}`, { method: "DELETE" });
       setWorkspaces((current) => current.filter((item) => item.id !== workspace.id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not delete the workspace.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "delete the run workspace",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -86,7 +114,15 @@ export function AgentWorkspaceDesk() {
       });
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not process the command approval.");
+      // The approval may have been recorded and the command already running in
+      // the sandbox, so the owner must be sent to the screen rather than back
+      // to the same Approve button.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "process the command approval",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }

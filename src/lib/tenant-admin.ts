@@ -7,6 +7,7 @@ import { deleteWikiPage } from "./lifecycle";
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 
 export interface DeleteTenantResult {
   tenant: string;
@@ -24,8 +25,20 @@ export interface DeleteTenantResult {
  *
  * Best-effort: a per-page failure is collected in `errors` and the rest proceed,
  * so one bad page can't strand the deletion.
+ *
+ * READ-ONLY REFUSES THE WHOLE OPERATION, HERE, NOT PER PAGE (DW-188). The gate
+ * inside `deleteWikiPage` is not enough for this caller and would be actively
+ * harmful without the one below: the loop SWALLOWS each per-page refusal into
+ * `errors` and carries on, and the silo `deleteDirectory` at the tail is not a
+ * kernel writer at all. A kernel-only refusal would therefore leave every flat
+ * page standing while destroying `tenants/<t>/` — the pages' silo mirrors, the
+ * tenant's private query history, everything — and answer 207. That is a
+ * half-destroyed tenant produced BY the refusal, so the refusal has to come
+ * before the listing and before any storage call.
  */
 export async function deleteTenant(handle: string, actor?: string): Promise<DeleteTenantResult> {
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+
   const tenant = tenantForOwner(handle);
   // Defense in depth before an irreversible prefix `rm -rf`: ownerToTenant
   // already strips path-unsafe chars, but the storage layer has no traversal

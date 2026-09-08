@@ -2,13 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LocalSyncClient } from "@/lib/local-sync-clients";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 interface VaultOption { id: string; name: string }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -71,7 +86,19 @@ export function LocalSyncPanel({ vaults }: { vaults: VaultOption[] }) {
       setClients((current) => current.filter((item) => item.id !== client.id));
       setNotice("Client record removed. Stop its local process separately if it is still running.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not remove the sync client.");
+      // NOTHING CAME BACK (DW-717): the record may already be gone, and this
+      // list would still be offering Remove on a row that no longer exists.
+      // The refetch runs FIRST and the sentence LAST: `load` does not clear
+      // `notice` on its way in, but its CATCH writes to that same slot, and the
+      // connection that lost the write is usually still down when the refetch
+      // goes out — so the other order replaces the honest sentence with
+      // `Failed to fetch`.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "remove the sync client",
+      );
+      if (unconfirmed) await load();
+      setNotice(message);
     } finally {
       setBusy(null);
     }
@@ -118,7 +145,7 @@ export function LocalSyncPanel({ vaults }: { vaults: VaultOption[] }) {
         <div className="local-sync-register">
           <div className="local-sync-register-head"><span className="receipt">Connected clients</span><strong>{clients.length}</strong></div>
           {clients.length === 0 ? (
-            <div className="studio-empty"><p className="studio-empty-title">No companion has checked in yet</p><p>Run the generated command from the WorkWiki repository. Its first successful operation will appear here.</p></div>
+            <div className="studio-empty"><p className="studio-empty-title">No companion has checked in yet</p><p>Run the generated command from the work-wiki repository. Its first successful operation will appear here.</p></div>
           ) : clients.map((client) => (
             <article key={client.id} className={`local-sync-client is-${client.state}`}>
               <div><span className="local-sync-state" aria-hidden="true" /><div><h4>{client.label}</h4><p>{client.mode === "sources" ? "Source folder" : "Archive backup"} · {client.operation}</p></div></div>

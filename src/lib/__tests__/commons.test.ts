@@ -69,38 +69,37 @@ describe("isVaultEligible", () => {
   });
 });
 
-describe("syncCommonsForPage", () => {
-  it("adds a public page keyed by its owner tenant", async () => {
+describe("syncCommonsForPage — retired (AD-21)", () => {
+  it("performs NO storage I/O for a public page", async () => {
     await syncCommonsForPage("p", {
       owner: "alice",
       visibility: "public",
       title: "P",
       summary: "s",
     });
-    const idx = await getCommonsIndex();
-    expect(idx).toHaveLength(1);
-    expect(idx[0]).toMatchObject({ tenant: "alice", slug: "p", title: "P" });
-  });
-
-  it("ownerless pages land in the default (yopedia) tenant", async () => {
-    await syncCommonsForPage("o", { title: "O", summary: "" });
-    const idx = await getCommonsIndex();
-    expect(idx[0]).toMatchObject({ tenant: "yopedia", slug: "o" });
-  });
-
-  it("private pages are excluded (and removed if previously public)", async () => {
-    await syncCommonsForPage("x", { owner: "alice", visibility: "public", title: "X", summary: "" });
-    expect(await getCommonsIndex()).toHaveLength(1);
-    await syncCommonsForPage("x", { owner: "alice", visibility: "private", title: "X", summary: "" });
     expect(await getCommonsIndex()).toHaveLength(0);
   });
 
-  it("upsert updates in place (no duplicate)", async () => {
-    await syncCommonsForPage("p", { owner: "alice", title: "P", summary: "a" });
-    await syncCommonsForPage("p", { owner: "alice", title: "P2", summary: "b" });
-    const idx = await getCommonsIndex();
-    expect(idx).toHaveLength(1);
-    expect(idx[0].title).toBe("P2");
+  it("performs NO storage I/O for an ownerless page", async () => {
+    await syncCommonsForPage("o", { title: "O", summary: "" });
+    expect(await getCommonsIndex()).toHaveLength(0);
+  });
+
+  it("never removes an existing entry either — it reads and writes nothing", async () => {
+    await upsertCommonsEntry({ tenant: "alice", slug: "x", title: "X", summary: "" });
+    await syncCommonsForPage("x", {
+      owner: "alice",
+      visibility: "private",
+      title: "X",
+      summary: "",
+    });
+    expect(await getCommonsIndex()).toHaveLength(1);
+  });
+
+  it("resolves and never throws", async () => {
+    await expect(
+      syncCommonsForPage("p", { title: "P", summary: "" }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -157,35 +156,46 @@ describe("rebuildCommonsIndex", () => {
     expect(idx[0].tenant).toBe("alice");
   });
 
-  it("listCommonsPages reads the index (owner = tenant) when populated", async () => {
-    await syncCommonsForPage("p", { owner: "alice", title: "P", summary: "s", tags: ["x"] });
-    await syncCommonsForPage("q", { owner: "bob", title: "Q", summary: "t" });
-    const pages = await listCommonsPages();
-    expect(pages.map((p) => p.slug).sort()).toEqual(["p", "q"]);
-    const p = pages.find((e) => e.slug === "p")!;
-    expect(p.owner).toBe("alice");
-    expect(p.title).toBe("P");
-    expect(p.tags).toEqual(["x"]);
-  });
-
-  it("listCommonsPages preserves the original-case owner handle (tenant stays lowercased)", async () => {
-    await syncCommonsForPage("p", { owner: "Alice", title: "P", summary: "s" });
-    const idx = await getCommonsIndex();
-    // The storage key (tenant) is normalized to lowercase...
-    expect(idx[0].tenant).toBe("alice");
-    expect(idx[0].owner).toBe("Alice");
-    // ...but the displayed owner keeps the original case.
-    const pages = await listCommonsPages();
-    expect(pages.find((e) => e.slug === "p")!.owner).toBe("Alice");
-  });
-
-  it("listCommonsPages falls back to the flat public set when the index is empty", async () => {
+  it("listCommonsPages derives the public, non-agent set from the flat index", async () => {
     await createPage("pub", "owner: alice\nvisibility: public", "Public");
     await createPage("priv", "owner: alice\nvisibility: private", "Private");
     await createPage("ag", "owner: alice--yoyo\ntype: agent-knowledge", "Agent");
-    // No rebuild / sync → commons index is empty → derive from the flat index.
     expect(await getCommonsIndex()).toEqual([]);
     const pages = await listCommonsPages();
     expect(pages.map((p) => p.slug).sort()).toEqual(["pub"]);
+  });
+
+  // REGRESSION GUARD: listCommonsPages used to PREFER the stored commons index
+  // and only scan when it was empty. With syncCommonsForPage retired to a no-op
+  // (AD-21) while deletes still prune the index, a populated production index
+  // would freeze and then monotonically shrink — /wiki/graph, /wiki/log,
+  // unscoped MCP wiki_graph, browse.ts and search.ts would all serve a stale
+  // page set forever. It must ALWAYS derive live.
+  it("ignores a populated (stale) commons index and still sees a new page", async () => {
+    // A stale index: one entry that no longer corresponds to any live page.
+    await upsertCommonsEntry({
+      tenant: "alice",
+      owner: "alice",
+      slug: "ghost",
+      title: "Ghost",
+      summary: "written before the commons was retired",
+    });
+    expect(await getCommonsIndex()).toHaveLength(1);
+
+    // A page written AFTER the index froze must still be listed...
+    await createPage("fresh", "owner: alice\nvisibility: public", "Fresh");
+    const pages = await listCommonsPages();
+    expect(pages.map((p) => p.slug)).toContain("fresh");
+    // ...and the frozen entry must not resurrect a page that isn't there.
+    expect(pages.map((p) => p.slug)).not.toContain("ghost");
+  });
+
+  it("keeps a page visible after the stored index entry is pruned", async () => {
+    await createPage("kept", "owner: alice\nvisibility: public", "Kept");
+    await upsertCommonsEntry({ tenant: "alice", slug: "kept", title: "Kept", summary: "" });
+    await removeCommonsEntryBySlug("kept");
+    expect(await getCommonsIndex()).toEqual([]);
+    // The live page is unaffected by the index pruning.
+    expect((await listCommonsPages()).map((p) => p.slug)).toContain("kept");
   });
 });

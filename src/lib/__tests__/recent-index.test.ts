@@ -166,7 +166,7 @@ describe("recent-index", () => {
   });
 
   it("getTrail resolves every event to the page's CURRENT title", async () => {
-    const { updateIndex } = await import("../wiki");
+    const { updateIndex, writeWikiPage } = await import("../wiki");
     await seedEmpty();
     // Two ingest events for one page, > the 120s dedup window apart so BOTH
     // survive, captured with two differently-cased snapshot titles.
@@ -176,7 +176,13 @@ describe("recent-index", () => {
     await pushRecentEvent(
       ev({ ts: 500_000, slug: "agentic-systems", title: "agentic systems", action: "ingested" }),
     );
-    // The page's CURRENT title (from the wiki index) is the canonical one.
+    // The page's CURRENT title (from the wiki index) is the canonical one. A
+    // readable Page must exist too: missing/indeterminate Page metadata is now
+    // deliberately private rather than anonymously trusted from index.md.
+    await writeWikiPage(
+      "agentic-systems",
+      "---\nowner: alice\nvisibility: public\n---\n\n# Agentic Systems\n\nCurrent body.\n",
+    );
     await updateIndex([
       { title: "Agentic Systems", slug: "agentic-systems", summary: "x" },
     ]);

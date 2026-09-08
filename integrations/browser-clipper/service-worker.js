@@ -1,7 +1,7 @@
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: "save-to-workwiki",
-    title: "Save page to WorkWiki",
+    title: "Save page to work-wiki",
     contexts: ["page", "link", "selection"],
   });
 });

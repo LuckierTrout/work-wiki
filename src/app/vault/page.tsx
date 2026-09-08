@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { SignInButton } from "@clerk/nextjs";
+import { PrivateWorkspaceNotice } from "@/components/PrivateWorkspaceNotice";
 import { getPrincipal } from "@/lib/auth";
 import { listVaults } from "@/lib/vault";
 import { VaultManager } from "@/components/VaultManager";
@@ -8,51 +8,14 @@ import { VaultManager } from "@/components/VaultManager";
  * `/vault` — the signed-in user's vault management surface: a list of their
  * named vaults (each a curated reference lens over the commons) with create /
  * rename / delete / explore. Agents live on the top-level `/agents`. Signed-out
- * visitors see a sign-in prompt plus a waitlist link — no data is fetched or leaked.
+ * visitors see only a sign-in prompt — no data is fetched or leaked.
  */
 export default async function VaultPage() {
   const principal = await getPrincipal();
 
   if (!principal) {
     return (
-      <div className="fade">
-        <section
-          className="shell"
-          style={{ paddingTop: 120, paddingBottom: 120, textAlign: "center" }}
-        >
-          <p className="fmark" style={{ justifyContent: "center" }}>
-            your vaults
-          </p>
-          <h1
-            className="display"
-            style={{ fontSize: "clamp(34px,4.6vw,58px)", margin: "16px 0 12px" }}
-          >
-            Vaults
-          </h1>
-          <p
-            style={{
-              color: "var(--ink-2)",
-              fontSize: 18,
-              maxWidth: "44ch",
-              margin: "0 auto 28px",
-              lineHeight: 1.55,
-            }}
-          >
-            Sign in to create and manage your vaults — curated reference lenses
-            over the commons.
-          </p>
-          <SignInButton mode="modal">
-            <button className="btn primary">Sign in to view your vaults</button>
-          </SignInButton>
-          <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>
-            No account yet?{" "}
-            <Link href="/waitlist" className="underline">
-              Join the waitlist
-            </Link>
-            .
-          </p>
-        </section>
-      </div>
+      <PrivateWorkspaceNotice heading="Vaults" action="Sign in to view your vaults" />
     );
   }
 
@@ -98,7 +61,7 @@ export default async function VaultPage() {
             maxWidth: "56ch",
           }}
         >
-          Each vault is a curated set of live references into the commons. Open
+          Each vault is a curated set of live references into your wiki. Open
           one to search folders, filter file types, and read documents in place.
         </p>
       </section>

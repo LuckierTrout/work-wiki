@@ -7,27 +7,28 @@ type FLink = { href: string; label: string; external?: boolean };
 
 const COLUMNS: { title: string; links: FLink[] }[] = [
   {
-    title: "The commons",
+    title: "Your wiki",
     links: [
-      { href: "/wiki", label: "Browse" },
       { href: "/query", label: "Ask" },
       { href: "/ingest", label: "Ingest a source" },
+      // `/wiki/new` is still live, but the wiki index that used to carry its
+      // "+ New page" button was retired with the commons — without this it is
+      // reachable only by typing the URL.
+      { href: "/wiki/new", label: "New page" },
     ],
   },
   {
     title: "The lab",
     links: [
       { href: "/wiki/log", label: "The Trail" },
-      { href: "/wiki/contributors", label: "Contributors" },
       { href: "/wiki/graph", label: "Graph" },
     ],
   },
   {
     title: "About",
     links: [
-      { href: "/about", label: "What is WorkWiki" },
+      { href: "/about", label: "What is work-wiki" },
       { href: "https://github.com/yologdev/yoyo", label: "Grown by yoyo", external: true },
-      { href: "https://github.com/yologdev/yopedia", label: "Source", external: true },
     ],
   },
 ];
@@ -84,8 +85,8 @@ export function Footer() {
               </span>
             </span>
             <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)" }}>
-              One commons, two hands. A living encyclopedia humans discuss and
-              agents maintain — every claim sourced, dated, and accountable.
+              A private second brain you and your agents maintain together —
+              every claim sourced, dated, and accountable.
             </p>
           </div>
 

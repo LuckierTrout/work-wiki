@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 
 interface SlidePreviewProps {
   content: string; // raw Marp markdown from LLM
@@ -21,7 +22,26 @@ function parseSlides(content: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/**
+ * There is deliberately NO `slugTenants` prop.
+ *
+ * In-content `[x](slug.md)` links inside the slides need a slug→tenant map, and
+ * taking one from the parent looked like the cheap fix — but one parent is
+ * `ArticleView`, an async SERVER component holding the map from the UNGATED
+ * `buildSlugTenantMap()`. This component is `"use client"`, so any prop it
+ * accepts is serialized into the RSC payload: a map prop would have shipped
+ * every private page's slug→owner pairing to whoever opened a legacy Marp deck.
+ * (`MarkdownRenderer` has no `"use client"` directive, which is why
+ * `ArticleView` may keep handing ITS renderer the same map — that one never
+ * crosses the boundary.)
+ *
+ * So the map is fetched HERE, from the readability-gated `/api/wiki/routes`,
+ * where a viewer can only ever be handed their own readable pages. The hook's
+ * session cache means this costs no extra request when a sibling already
+ * loaded it.
+ */
 export function SlidePreview({ content }: SlidePreviewProps) {
+  const { slugTenants } = useSlugTenants();
   const slides = parseSlides(content);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAll, setShowAll] = useState(false);
@@ -58,7 +78,7 @@ export function SlidePreview({ content }: SlidePreviewProps) {
             <span className="absolute top-3 right-3 text-xs font-medium text-foreground/40 bg-foreground/5 rounded-full px-2 py-0.5">
               {i + 1}
             </span>
-            <MarkdownRenderer content={slide} />
+            <MarkdownRenderer content={slide} slugTenants={slugTenants} />
           </div>
         ))}
       </div>
@@ -74,7 +94,7 @@ export function SlidePreview({ content }: SlidePreviewProps) {
         <span className="absolute top-3 right-3 text-xs font-medium text-foreground/40 bg-foreground/5 rounded-full px-2 py-0.5">
           {safeIndex + 1}
         </span>
-        <MarkdownRenderer content={slides[safeIndex]} />
+        <MarkdownRenderer content={slides[safeIndex]} slugTenants={slugTenants} />
       </div>
 
       {/* Navigation */}

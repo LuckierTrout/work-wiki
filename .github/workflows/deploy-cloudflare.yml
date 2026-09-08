@@ -1,7 +1,7 @@
 name: Deploy Cloudflare Worker
 
 # Inert on forks unless repo variable ENABLE_CLOUDFLARE_DEPLOY=true.
-# This fork's wrangler.jsonc still binds yopedia KV/R2 IDs; do not opt in
+# This fork's wrangler.jsonc still binds `yopedia` KV/R2 IDs; do not opt in
 # until resources in wrangler.jsonc belong to this Cloudflare account.
 
 on:

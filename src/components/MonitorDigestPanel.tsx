@@ -8,6 +8,11 @@ import type {
   MonitorDigestCadence,
   MonitorDigestSettings,
 } from "@/lib/monitor-digests";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 interface DigestResponse {
   settings: MonitorDigestSettings;
@@ -17,8 +22,18 @@ interface DigestResponse {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -82,7 +97,19 @@ export function MonitorDigestPanel() {
       setSettings(data.settings);
       setNotice("Digest preferences saved.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save digest preferences.");
+      // NOTHING CAME BACK (DW-717), so the PATCH may have been applied and the
+      // toggles on screen are the ones the owner typed rather than the ones
+      // stored. The refetch runs FIRST and the sentence LAST: `load` does not
+      // clear `error` on its way in, but its CATCH writes to that same slot,
+      // and the connection that lost the write is usually still down when the
+      // refetch goes out — so the other order replaces the honest sentence with
+      // `Failed to fetch`.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "save the digest preferences",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -105,7 +132,11 @@ export function MonitorDigestPanel() {
         setNotice(data.message ?? "There is no new monitor activity to summarize.");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not generate a digest.");
+      // A digest may have been written and its email queued before the answer
+      // went missing, so the history is refetched rather than left short.
+      const { message, unconfirmed } = writeFailure(reason, "generate a digest");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setGenerating(false);
     }
@@ -119,7 +150,12 @@ export function MonitorDigestPanel() {
       setDigests((current) => current.map((digest) => digest.id === id ? data.digest : digest));
       setUnread((current) => Math.max(0, current - 1));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not mark this digest as read.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "mark this digest as read",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 
@@ -137,7 +173,7 @@ export function MonitorDigestPanel() {
           </div>
           <h2 className="display" style={{ fontSize: 26, margin: "10px 0 5px" }}>The meaningful changes, in one place.</h2>
           <p style={{ color: "var(--ink-2)", margin: 0, maxWidth: "62ch", fontSize: 14 }}>
-            WorkWiki groups source checks, proposed revisions, failures, and recoveries. The in-app history is private to your account.
+            work-wiki groups source checks, proposed revisions, failures, and recoveries. The in-app history is private to your account.
           </p>
         </div>
         <button className="btn ghost" type="button" onClick={() => void generateNow()} disabled={generating}>

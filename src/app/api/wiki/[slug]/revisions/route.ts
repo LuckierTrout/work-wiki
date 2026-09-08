@@ -5,7 +5,9 @@ import { extractSummary } from "@/lib/ingest";
 import { serializeFrontmatter } from "@/lib/frontmatter";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { canReadSlug, canWriteFrontmatter, canReadFrontmatter } from "@/lib/authz";
+import { resolveWriteDenial } from "@/lib/write-denial";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
@@ -23,8 +25,32 @@ export async function GET(req: Request, { params }: RouteParams) {
   try {
     const { slug } = await params;
 
-    // Check the page exists first.
-    const page = await readWikiPage(slug);
+    // Check the page exists first. FRESH+STRICT (DW-497). This is the read a
+    // human actually hits, and the 404 below is the only thing it can say —
+    // so both halves are here to make that 404 mean exactly one thing:
+    // nothing is stored at this slug.
+    //
+    // FRESH. Not the sibling `POST`'s reason — that read seeds a merge base
+    // and this one seeds nothing. `pageCache` caches NEGATIVE entries too
+    // (`src/lib/wiki.ts` does `pageCache.set(slug, null)` on a true global
+    // miss), and the cache is module-global and ref-counted around bulk scans,
+    // so a scan that looked this slug up BEFORE the page existed can still be
+    // holding that `null` open when this request arrives. It would manufacture
+    // the very `page not found` this conversion exists to remove — a reader
+    // told their page has no history because an unrelated scan is mid-flight.
+    //
+    // STRICT. Without it a non-ENOENT storage blip flattens to `null` and the
+    // 404 tells the reader `page not found` about history that is still there.
+    // Strict rethrows to the catch at the bottom, which answers 500 for
+    // anything but `invalid slug`.
+    //
+    // AND STRICT REACHES FURTHER THAN THE PAGE FILE, deliberately: it forwards
+    // into `getPageIndex({ strict })`, so an unreadable or unparseable
+    // `derived-indexes/pages.json` now 500s this surface instead of degrading
+    // to the scan fallback. That is the trade taken on purpose — an index
+    // fault is a fault, and a 404 must not stand in for one. (The sibling
+    // `POST` at the bottom of this file has said the same since DW-379.)
+    const page = await readWikiPage(slug, { fresh: true, strict: true });
     if (!page) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },
@@ -129,8 +155,14 @@ export async function POST(req: Request, { params }: RouteParams) {
       );
     }
 
-    // Ensure the page exists.
-    const existing = await readWikiPageWithFrontmatter(slug);
+    // Ensure the page exists. FRESH+STRICT (DW-379): `existing.content` is the
+    // revert's merge base below, so it must be the stored file — not a
+    // superseded `pageCache` entry an open bulk scan is holding — and a storage
+    // failure must reach the catch as a 500 rather than pose as a 404.
+    const existing = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },
@@ -144,7 +176,11 @@ export async function POST(req: Request, { params }: RouteParams) {
     if (!canWriteFrontmatter(existing.frontmatter, principal, "body")) {
       return canReadFrontmatter(existing.frontmatter, principal)
         ? NextResponse.json(
-            { error: "You don't have permission to revert this page." },
+            {
+              // Readable (the cloak ran first); the resolver adds the realm
+              // explanation only when the realm gate is what refused.
+              error: resolveWriteDenial("revert", existing.frontmatter, "body"),
+            },
             { status: 403 },
           )
         : NextResponse.json(
@@ -199,12 +235,22 @@ export async function POST(req: Request, { params }: RouteParams) {
       logOp: "edit",
       crossRefSource: revisionContent,
       author: principal?.handle,
+      expectedContent: existing.content,
+      validateNewLinkTargets: true,
       logDetails: (ctx) =>
         `reverted to revision ${new Date(timestamp).toISOString()} · updated ${ctx.updatedSlugs.length} cross-ref(s)`,
     });
 
     return NextResponse.json(result);
   } catch (err) {
+    // Deployment read-only (DW-187). A revert is a full body rewrite behind a
+    // confirm; `writeWikiPageWithSideEffects` refuses it, and this is what turns
+    // that refusal into the 403 the caller can act on. The 404s above still win
+    // — a missing page and a missing revision are reads the flag does not
+    // change.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

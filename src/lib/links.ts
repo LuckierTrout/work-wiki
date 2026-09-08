@@ -5,6 +5,24 @@
  * lifecycle.ts, and lint.ts.
  */
 
+import { slugify } from "./slugify";
+
+/** Whether a Markdown destination names a remote resource, not a Wiki Page. */
+export function isExternalLinkTarget(raw: string): boolean {
+  const target = raw.trim();
+  return /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//");
+}
+
+export function normalizeWikilinkTarget(raw: string): string {
+  const trimmed = raw.trim().replace(/\.md$/i, "");
+  const last =
+    trimmed
+      .split("/")
+      .filter((part) => part && part !== "." && part !== "..")
+      .pop() ?? "";
+  return slugify(last);
+}
+
 /**
  * Escape special regex characters in a string so it can be used
  * in a `new RegExp(...)` constructor safely.
@@ -25,14 +43,45 @@ export interface WikiLink {
  * Extract all wiki-style markdown links from content.
  * Returns an array of { text, targetSlug } for each `[text](slug.md)` link found.
  */
+const WIKILINK_RE = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
+
 export function extractWikiLinks(content: string): WikiLink[] {
   const results: WikiLink[] = [];
-  const re = /\[([^\]]*)\]\(([^)]+)\.md\)/g;
+  const re = /\[([^\]]*)\]\(([^)\s#]+)\.md(?:#[^)\s]*)?(?:\s+["'][^)]*["'])?\)/g;
   let match;
   while ((match = re.exec(content)) !== null) {
+    if (isExternalLinkTarget(`${match[2]}.md`)) continue;
     results.push({ text: match[1], targetSlug: match[2] });
   }
   return results;
+}
+
+/**
+ * Markdown `[text](slug.md)` and `[[wikilink]]` / `[[slug|text]]` targets.
+ * Used by graph Relevance and Workbench Lint so both spellings count.
+ */
+export function extractAllInternalLinks(content: string): WikiLink[] {
+  const results = extractWikiLinks(content);
+  const wikiRe = new RegExp(WIKILINK_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = wikiRe.exec(content)) !== null) {
+    const targetSlug = normalizeWikilinkTarget(match[1] ?? "");
+    if (!targetSlug) continue;
+    results.push({ text: (match[2] ?? match[1] ?? targetSlug).trim(), targetSlug });
+  }
+  return results;
+}
+
+/** Distinct target slugs from markdown links and `[[wikilink]]`s. */
+export function extractAllInternalTargets(content: string): string[] {
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const { targetSlug } of extractAllInternalLinks(content)) {
+    if (seen.has(targetSlug)) continue;
+    seen.add(targetSlug);
+    targets.push(targetSlug);
+  }
+  return targets;
 }
 
 /**
@@ -40,15 +89,16 @@ export function extractWikiLinks(content: string): WikiLink[] {
  */
 export function hasLinkTo(content: string, targetSlug: string): boolean {
   const pattern = new RegExp(`\\]\\(${escapeRegex(targetSlug)}\\.md\\)`);
-  return pattern.test(content);
+  if (pattern.test(content)) return true;
+  return extractAllInternalTargets(content).includes(targetSlug);
 }
 
 // ---------------------------------------------------------------------------
 // Canonical owner-qualified URL builders (tenant-silos P2)
 //
 // Pages are addressed by `(tenant, slug)` and live at `/u/<tenant>/<slug>`,
-// where `tenant` is the lowercased owner handle. Old flat `/wiki/<slug>` URLs
-// 308-redirect to these via thin shim routes.
+// where `tenant` is the lowercased owner handle. This is the ONLY page URL
+// shape — the public commons form `/wiki/<slug>` is retired and 404s.
 //
 // These are PURE string functions (no server imports) so client components can
 // use them too: the server resolves `owner → tenant` and passes resolved tenant
@@ -76,6 +126,15 @@ export const DEFAULT_TENANT = "yopedia";
  * than a broken URL or a silo write that throws. Unicode (e.g. CJK handles) is
  * preserved — only the unsafe set is touched. Normal handles (Clerk usernames,
  * `alice--yoyo`) pass through unchanged apart from lowercasing.
+ *
+ * STORAGE addressing only — it answers "which SILO is this?". It deliberately
+ * does NOT strip the `--<agent>` suffix: `alice--yoyo` is its own tenant, so an
+ * agent's pages, dedup guards and attribution stay exactly where they are
+ * written. The different question "which HUMAN is this?" — the one workspace
+ * GUIDANCE asks, since a Workspace Purpose and a Names & Terms dictionary
+ * belong to a person rather than to each of their agents — is answered by
+ * `humanOwnerOf` (`agent-handle.ts`), which reduces the handle BEFORE it
+ * reaches this function.
  */
 export function ownerToTenant(owner?: string | null): string {
   if (typeof owner !== "string") return DEFAULT_TENANT;
@@ -88,53 +147,52 @@ export function ownerToTenant(owner?: string | null): string {
 }
 
 /**
- * Canonical PUBLIC commons page URL `/wiki/<slug>`. Commons content is global
- * (not per-handle): a public, non-agent page is the same for everyone, so it
- * lives at one context-free URL — which is also what makes it cacheable. The
- * per-owner `/u/<tenant>/<slug>` form is reserved for private/owned pages (a
- * page 308-redirects from there to `/wiki/<slug>` once it's public).
+ * Canonical owner-scoped page URL `/u/<tenant>/<slug>` (private/owned pages).
+ *
+ * The tenant segment is never allowed to be empty: `/u//<slug>` matches no
+ * route, so a caller that lost its tenant would emit a dead link instead of one
+ * the owner route can 308 onto the right handle. Empty falls back to
+ * {@link DEFAULT_TENANT}.
  */
-export function commonsPath(slug: string): string {
-  return `/wiki/${slug}`;
-}
-
-/** Canonical owner-scoped page URL `/u/<tenant>/<slug>` (private/owned pages). */
 export function pagePath(tenant: string, slug: string): string {
-  return `/u/${tenant}/${slug}`;
+  return `/u/${tenantSegment(tenant)}/${slug}`;
 }
 
-/** Canonical edit URL `/u/<tenant>/<slug>/edit`. */
+/**
+ * The `/u/<tenant>` segment: the trimmed tenant, or {@link DEFAULT_TENANT} when
+ * the caller lost it. Emitting the *untrimmed* value would put whitespace in the
+ * path, so the same trim that decides the fallback also produces the segment.
+ */
+function tenantSegment(tenant: string): string {
+  return tenant?.trim() || DEFAULT_TENANT;
+}
+
+/**
+ * The page URL to use when the call site knows only the slug. The commons URL
+ * `/wiki/<slug>` is retired (it 404s), and every page now lives at the
+ * owner-scoped `/u/<tenant>/<slug>`; addressing it through {@link DEFAULT_TENANT}
+ * is safe because the owner route 308-redirects a mismatched handle to the
+ * page's real tenant. Prefer {@link pagePath} whenever the owner IS known.
+ */
+export function slugPath(slug: string): string {
+  return pagePath(DEFAULT_TENANT, slug);
+}
+
+/**
+ * Canonical edit URL `/u/<tenant>/<slug>/edit`. Empty tenant falls back to
+ * {@link DEFAULT_TENANT} for the same reason {@link pagePath} does: `/u//<slug>`
+ * matches no route, so a caller that lost its tenant would emit a dead link.
+ */
 export function editPath(tenant: string, slug: string): string {
-  return `/u/${tenant}/${slug}/edit`;
+  return `${pagePath(tenant, slug)}/edit`;
 }
 
 /**
- * Full-screen SHARE URL `/share/<tenant>/<slug>` — the chrome-less, immersive
- * view of a page (`SiteChrome` renders `/share/*` bare). Used to "open" an
- * artifact so its rendered content fills the viewport, rather than the
- * wiki-chromed `/u/<tenant>/<slug>`. Same `(tenant, slug)` addressing and raw
- * slug as {@link pagePath}. The share route applies the same `canReadFrontmatter`
- * read-gate as the owner page, so a private page is shown only to readers it
- * permits (its owner, an admin, or the agent's human owner) and 404s for anyone
- * else — no existence leak.
+ * Canonical raw-source URL `/u/<tenant>/raw/<slug>`. Empty tenant falls back to
+ * {@link DEFAULT_TENANT} — see {@link editPath}.
  */
-export function sharePath(tenant: string, slug: string): string {
-  return `/share/${tenant}/${slug}`;
-}
-
-/** Canonical raw-source URL `/u/<tenant>/raw/<slug>`. */
 export function rawPath(tenant: string, slug: string): string {
-  return `/u/${tenant}/raw/${slug}`;
-}
-
-/**
- * Canonical public profile URL for a human handle: `/u/<handle>`. The single
- * place a username links to its profile (used by {@link Mark}, `UserLink`, and
- * the contributor lists). The handle is percent-encoded so non-ASCII / spaced
- * handles stay routable; the `/u/[handle]` route decodes it.
- */
-export function profileHref(handle: string): string {
-  return `/u/${encodeURIComponent(handle)}`;
+  return `/u/${tenantSegment(tenant)}/raw/${slug}`;
 }
 
 /**
@@ -145,20 +203,28 @@ export function profileHref(handle: string): string {
 export type SlugTenantMap = Record<string, string>;
 
 /**
- * Resolve a target slug to its canonical page path. A PUBLIC commons target
- * (slug present in `commonsSlugs`) resolves to the global `/wiki/<slug>`;
- * otherwise it falls back to the owner-scoped `/u/<tenant>/<slug>` via the
- * {@link SlugTenantMap} (and `fallbackTenant` for dangling/missing targets).
+ * Resolve a target slug to its canonical page path — always the owner-scoped
+ * `/u/<tenant>/<slug>`, via the {@link SlugTenantMap} (and `fallbackTenant` for
+ * dangling/missing targets). The global `/wiki/<slug>` commons form is retired,
+ * so there is no longer a public branch to take.
  *
- * `commonsSlugs` is optional so existing callers stay correct: without it,
- * every target resolves to the owner-scoped form (the prior behavior).
+ * The lookup is OWN-PROPERTY-ONLY and string-typed. The map is parsed response
+ * JSON (`/api/wiki/routes`) or a server-built plain object, so its real entries
+ * are always own string properties — while a page legitimately titled
+ * "Constructor" slugifies to `constructor`, which a plain `map[slug]` would
+ * answer with `Object.prototype.constructor`, a FUNCTION. That value is not a
+ * tenant, and {@link tenantSegment}'s `.trim()` would throw a TypeError in the
+ * middle of a render. Anything that isn't an own string entry falls back to
+ * `fallbackTenant` — fall back, never throw.
  */
 export function resolveSlugPath(
   slug: string,
   slugTenants: SlugTenantMap | undefined,
   fallbackTenant: string,
-  commonsSlugs?: ReadonlySet<string>,
 ): string {
-  if (commonsSlugs?.has(slug)) return `/wiki/${slug}`;
-  return `/u/${slugTenants?.[slug] ?? fallbackTenant}/${slug}`;
+  const own =
+    slugTenants && Object.prototype.hasOwnProperty.call(slugTenants, slug)
+      ? (slugTenants as Record<string, unknown>)[slug]
+      : undefined;
+  return pagePath(typeof own === "string" ? own : fallbackTenant, slug);
 }

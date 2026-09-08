@@ -5,7 +5,14 @@
  * Covers issue #500:
  * - Revision sidecar carries the reverter's handle
  * - Service principal fallback works for service-token reverts
- * - Contributor index reflects the reverter's edit
+ *
+ * And DW-379/DW-378, the revert's MERGE BASE — the page read whose bytes the
+ * route hands on as `expectedContent`:
+ * - A non-ENOENT storage failure on that read answers 5xx, not `page not found`
+ * - The revert lands against the STORED file while a stale `pageCache` entry
+ *   is open, not against the superseded cached copy
+ * - A slug with no stored file still answers 404 (`strict` does not turn a real
+ *   absence into a server error)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
@@ -21,13 +28,15 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
-import { ensureDirectories, writeWikiPage } from "../wiki";
-import { listRevisions, readRevisionMeta } from "../revisions";
 import {
-  getContributorIndex,
-  rebuildContributorIndex,
-} from "../contributor-index";
-import { _resetStorage } from "../storage";
+  ensureDirectories,
+  writeWikiPage,
+  wikiRelPath,
+  beginPageCache,
+  readWikiPage,
+} from "../wiki";
+import { listRevisions, readRevisionMeta } from "../revisions";
+import { _resetStorage, getStorage } from "../storage";
 import { _resetLocks } from "../lock";
 import { serializeFrontmatter } from "../frontmatter";
 
@@ -154,38 +163,132 @@ describe("POST /api/wiki/[slug]/revisions — revert attribution", () => {
     expect(meta).not.toBeNull();
     expect(meta!.author).toBe("bot");
   });
+});
 
-  it("contributor index reflects the reverter's edit", async () => {
-    // Seed + overwrite.
-    await seedPage("contrib-test", "# Contrib Test\n\nOriginal.");
+// ---------------------------------------------------------------------------
+// The revert's merge base is FRESH + STRICT (DW-379)
+// ---------------------------------------------------------------------------
+
+/**
+ * The route reads the page before it reverts and hands those bytes to
+ * `writeWikiPageWithSideEffects` as `expectedContent` — so that read is the
+ * revert's merge base, and it has to be the STORED file. `strict` is the other
+ * half: without it a non-ENOENT storage failure reads back as `null`, the
+ * `!existing` branch calls it `page not found`, and a transient blip tells the
+ * owner the page they are looking at has been deleted.
+ */
+describe("POST /api/wiki/[slug]/revisions — merge-base read failures", () => {
+  it("answers 5xx — NOT `page not found` — when the page read blips", async () => {
+    await seedPage("revert-blip", "# Revert Blip\n\nOriginal content.");
     await writeWikiPage(
-      "contrib-test",
+      "revert-blip",
       serializeFrontmatter(
-        { title: "contrib-test", created: "2025-01-01", updated: "2025-01-02", owner: "alice", visibility: "private" },
-        "# Contrib Test\n\nUpdated.",
+        {
+          title: "revert-blip",
+          created: "2025-01-01",
+          updated: "2025-01-02",
+          owner: "alice",
+          visibility: "private",
+        },
+        "# Revert Blip\n\nUpdated content.",
       ),
     );
-
-    // Bootstrap a contributor index so recordEditForAuthor has something to update.
-    await rebuildContributorIndex();
-
-    const revisions = await listRevisions("contrib-test");
+    const revisions = await listRevisions("revert-blip");
+    expect(revisions.length).toBeGreaterThanOrEqual(1);
     const oldTimestamp = revisions[0].timestamp;
 
-    // Grab pre-revert state.
-    const priorIdx = await getContributorIndex();
-    const priorEdit = priorIdx?.authors["alice"]?.editCount ?? 0;
+    const storage = getStorage();
+    const target = wikiRelPath("revert-blip.md");
+    const before = await storage.readFile(target);
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // A non-ENOENT failure: the file is there, the provider is not.
+        // Matched by SUFFIX rather than against `wikiRelPath` (the flat
+        // compatibility path), so the spy follows the Page if it ever becomes
+        // silo-primary. An equality check would silently stop intercepting the
+        // read under test and leave this row green for the wrong reason.
+        if (filePath.endsWith("revert-blip.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
 
-    // Revert as "alice"
-    mockedGetPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
-    const res = await callRevert("contrib-test", oldTimestamp);
-    expect(res.status).toBe(200);
+    try {
+      const res = await callRevert("revert-blip", oldTimestamp);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("storage unavailable");
+      expect(body.error).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
 
-    // The contributor index should have incremented alice's edit count.
-    const updatedIdx = await getContributorIndex();
-    expect(updatedIdx).not.toBeNull();
-    const postEdit = updatedIdx!.authors["alice"]?.editCount ?? 0;
-    expect(postEdit).toBeGreaterThan(priorEdit);
-    expect(updatedIdx!.authors["alice"]?.pagesEdited).toContain("contrib-test");
+    // Nothing was written.
+    expect(await getStorage().readFile(target)).toBe(before);
+  });
+
+  it("reverts against the STORED file while a stale page cache is open", async () => {
+    await seedPage("revert-cached", "# Revert Cached\n\nOriginal content.");
+    await writeWikiPage(
+      "revert-cached",
+      serializeFrontmatter(
+        {
+          title: "revert-cached",
+          created: "2025-01-01",
+          updated: "2025-01-02",
+          owner: "alice",
+          visibility: "private",
+        },
+        "# Revert Cached\n\nUpdated content.",
+      ),
+    );
+    const revisions = await listRevisions("revert-cached");
+    expect(revisions.length).toBeGreaterThanOrEqual(1);
+    const oldTimestamp = revisions[0].timestamp;
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent bulk scan populates the cache...
+      const cached = (await readWikiPage("revert-cached"))!;
+
+      // ...and the file then moves underneath it. Written DIRECTLY through
+      // storage, so nothing invalidates the entry.
+      // `wikiRelPath` (not a suffix match) is deliberate HERE: this write
+      // CREATES the stale-cache condition and must land on the exact path the
+      // seeded flat Page occupies. The read spy above matches by suffix
+      // instead, because it must follow the Page wherever it resolves.
+      const target = wikiRelPath("revert-cached.md");
+      const stored = cached.content.replace(
+        "Updated content.",
+        "Newer content.",
+      );
+      expect(stored).not.toBe(cached.content);
+      await getStorage().writeFile(target, stored);
+      // The cache is genuinely stale.
+      expect((await readWikiPage("revert-cached"))!.content).toBe(cached.content);
+
+      // A cached merge base would hand `expectedContent` bytes that are no
+      // longer stored, and the conditional write would refuse this revert as a
+      // conflict against a save nobody made.
+      const res = await callRevert("revert-cached", oldTimestamp);
+      expect(res.status).toBe(200);
+
+      const after = await getStorage().readFile(target);
+      expect(after).toContain("Original content.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("still answers 404 for a slug that genuinely has no stored file", async () => {
+    // `strict` must not turn a real absence into a 500 — ENOENT stays `null`,
+    // so the 404 means only what it claims.
+    const res = await callRevert("revert-never-existed", 1735689600000);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "page not found: revert-never-existed",
+    });
   });
 });

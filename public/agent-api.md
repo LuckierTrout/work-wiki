@@ -1,13 +1,12 @@
-# Using WorkWiki as an agent
+# Using work-wiki as an agent
 
 This is the guide for an **external agent runtime** (e.g. openclaw, a custom
-script, a scheduled job) to read and write WorkWiki **as a yoyo agent**, using
+script, a scheduled job) to read and write work-wiki **as a yoyo agent**, using
 that agent's own credential.
 
-The model: every WorkWiki user has a **yoyo** (a per-user agent). The owner mints
-a **token** for it, and an external runtime uses that token to **ingest content
-into the agent's knowledge**. Reading is open to everyone, so the same runtime
-can **consume** the agent's knowledge over the public API too.
+The model: every work-wiki user has a **yoyo** (a per-user agent). The owner mints
+a **token** for it, and an external runtime uses that token for **everything** —
+this deployment is private, so reads and writes both require the credential.
 
 > Base URL in these examples: `https://workwiki.app`
 
@@ -15,7 +14,7 @@ can **consume** the agent's knowledge over the public API too.
 
 ## 1. Get your agent's credential
 
-Sign in to WorkWiki, open your agent at **`/u/<your-handle>/a/yoyo`**, and click
+Sign in to work-wiki, open **`/agents`**, expand your agent, and click
 **Generate token** in the credential panel.
 
 - The token is shown **once** — copy it immediately into your runtime's config.
@@ -125,17 +124,18 @@ curl -X PUT "$BASE/api/agents/alice--yoyo" \
 
 ---
 
-## 4. Consume content (read — public; no token needed today)
+## 4. Consume content (read — token required)
 
-Reads in WorkWiki are **public**, so your runtime does **not** need the token to
-consume knowledge — it just scopes requests to the agent. (The token is a
-**write** credential. See the note below on the future of read auth.)
+work-wiki is a private, owner-only deployment: there is **no public read path**.
+Send the same Bearer token on reads as on writes, and scope requests to the
+agent.
 
 **The agent's assembled context** (identity + learnings + social + shared), one
 call — ideal for bootstrapping the agent's working context:
 
 ```bash
-curl "$BASE/api/agents/alice--yoyo/context"
+curl "$BASE/api/agents/alice--yoyo/context" \
+  -H "Authorization: Bearer $YOYO_TOKEN"
 # → { agent, context: { identity, learnings, socialWisdom, shared }, meta }
 ```
 
@@ -143,6 +143,7 @@ curl "$BASE/api/agents/alice--yoyo/context"
 
 ```bash
 curl -X POST "$BASE/api/query" \
+  -H "Authorization: Bearer $YOYO_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"What did I learn about X?","scope":"agent:alice--yoyo"}'
 ```
@@ -150,65 +151,34 @@ curl -X POST "$BASE/api/query" \
 **Search within the agent's knowledge:**
 
 ```bash
-curl "$BASE/api/wiki/search?q=topic&scope=agent:alice--yoyo"
+curl "$BASE/api/wiki/search?q=topic&scope=agent:alice--yoyo" \
+  -H "Authorization: Bearer $YOYO_TOKEN"
 ```
 
-Without a `scope`, query/search/browse return only the **public** wiki —
+Without a `scope`, query/search return the wiki the credential can read —
 agent-scoped pages surface *only* under `agent:<agent-id>`.
 
-> **Note on "same credential for reads":** today reads are open, so one token
-> covers the only thing that needs auth (writing). If WorkWiki later adds
-> **private** agent content, the same per-agent token is the natural credential
-> to gate those reads — the token already identifies the agent. Until then,
-> treat the token as write-only and read freely with the `agent:` scope.
+> **Note on read auth:** an unauthenticated read is refused, not degraded — the
+> REST routes and the MCP endpoint both answer `401` when the bearer token is
+> missing or invalid, before any tool runs. Send the token on every request.
 
 ---
 
-## 5. Publish to the commons
+## 5. Publish to the commons — retired
 
-Agent-ingested content starts as **agent-knowledge** — private to the agent's
-profile. To make a page visible in the public wiki, **publish it to the
-commons**.
-
-Publishing is a **one-way promotion**: the page's `type` is cleared, ownership
-transfers to the agent's human owner, and the agent is preserved in
-`contributors[]`. Once published, a page cannot be unpublished.
-
-```
-POST /api/agents/<agent-id>/publish
-Authorization: Bearer <token>
-Content-Type: application/json
-```
-
-Body:
-
-```json
-{ "slug": "dream-research-2026-06-27" }
-```
-
-Example:
-
-```bash
-curl -X POST "$BASE/api/agents/alice--yoyo/publish" \
-  -H "Authorization: Bearer $YOYO_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"dream-research-2026-06-27"}'
-# → { "published": true, "slug": "dream-research-2026-06-27", "owner": "alice", "agent": "alice--yoyo" }
-```
-
-Responses: `200` with `{ published: true, slug, owner, agent }`; `401`
-(missing/invalid token); `403` (token is for a different agent); `400` (missing
-slug or page isn't agent-knowledge); `500` (server error — retry).
-
-The same operation is available as the `publish_to_commons` MCP tool (see §6).
+The public commons is retired. A machine (bearer-token) caller of the
+`POST /api/agents/<agent-id>/publish` route is rejected with `401` at the
+deployment's auth gate and never reaches the route, and the
+`publish_to_commons` MCP tool no longer exists. Agent-ingested content stays
+agent-scoped, readable by its owner through the API and MCP.
 
 ---
 
 ## 6. MCP (full tool access)
 
-WorkWiki exposes an **HTTP MCP endpoint** that gives agent runtimes access to the
-full tool surface — 49 tools covering pages, ingestion, query, vaults, lint,
-discussions, revisions, and more.
+work-wiki exposes an **HTTP MCP endpoint** that gives agent runtimes access to the
+full tool surface — 40 tools covering pages, ingestion, query, vaults, lint,
+revisions, and more.
 
 **Endpoint:**
 
@@ -217,9 +187,8 @@ POST /api/mcp
 Content-Type: application/json
 ```
 
-**Auth:** the same agent token, passed as a Bearer header. Read-only tools
-(e.g. `search_wiki`, `read_page`) work without auth; write tools require the
-token.
+**Auth:** the same agent token, passed as a Bearer header. **Every** tool call
+requires it — read-only tools (e.g. `search_wiki`, `read_page`) included.
 
 **Transport:** Streamable-HTTP in stateless mode — each POST is one
 self-contained JSON-RPC request/response. No SSE, no session.
@@ -228,18 +197,19 @@ self-contained JSON-RPC request/response. No SSE, no session.
 
 ```bash
 curl -X POST "$BASE/api/mcp" \
+  -H "Authorization: Bearer $YOYO_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"my-agent","version":"1.0"}}}'
 # → { "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-03-26", "serverInfo": { "name": "yopedia", ... }, "capabilities": { "tools": {} } } }
 ```
 
-**Example — call a tool (publish to commons):**
+**Example — call a tool (read a page):**
 
 ```bash
 curl -X POST "$BASE/api/mcp" \
   -H "Authorization: Bearer $YOYO_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"publish_to_commons","arguments":{"slug":"dream-research-2026-06-27","agentId":"alice--yoyo"}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_page","arguments":{"slug":"dream-research-2026-06-27"}}}'
 ```
 
 The full tool list and schemas are in

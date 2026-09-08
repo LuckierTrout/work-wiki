@@ -4,7 +4,10 @@ import os from "os";
 import path from "path";
 import { writeWikiPage, updateIndex, ensureDirectories, readLog } from "../wiki";
 import type { IndexEntry } from "../types";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { _resetLocks } from "../lock";
+import { createWiki, writeWikiArtifact } from "../wikis";
+import { loadPageConventions } from "../schema";
 
 // Mock the LLM module so lint never calls the real API
 vi.mock("../llm", () => ({
@@ -36,25 +39,40 @@ import {
   MAX_COVERAGE_CHECKS,
   checkBrokenLinks,
 } from "../lint";
-import { saveRawSource } from "../raw";
+import {
+  saveRawSource,
+  saveRawSourceBytes,
+  saveRawSourceFor,
+  listRawSourceSnapshots,
+} from "../raw";
+import { logger } from "../logger";
+import { serializeFrontmatter } from "../frontmatter";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
 let originalDataDir: string | undefined;
+let originalOwnerHandle: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lint-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
   originalDataDir = process.env.DATA_DIR;
+  originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
+  // No site owner by default, so `loadPageConventions()` resolves no active
+  // Wiki and every test below exercises the repo-root fallback DETERMINISTICALLY
+  // — rather than inheriting whatever handle the ambient environment carries.
+  // The active-Wiki block at the bottom of this file sets it deliberately.
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  _resetLocks();
   _resetStorage();
 
   // Default: no LLM key
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
   mockedCallLLM.mockReset();
   mockedCallLLM.mockResolvedValue("[]");
 });
@@ -74,6 +92,11 @@ afterEach(async () => {
     delete process.env.DATA_DIR;
   } else {
     process.env.DATA_DIR = originalDataDir;
+  }
+  if (originalOwnerHandle === undefined) {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  } else {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
   }
   _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -96,7 +119,7 @@ describe("lint", () => {
     // Only the contradiction-skipped and missing-concept-page-skipped info issues (no LLM key)
     // Also filter unmigrated-page and uncited-claims — the test page has no work-wiki frontmatter/sources by design
     const nonLLMSkipped = result.issues.filter(
-      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims" && i.type !== "unresolved-discussions",
+      (i) => i.type !== "contradiction" && i.type !== "missing-concept-page" && i.type !== "incomplete-coverage" && i.type !== "unmigrated-page" && i.type !== "uncited-claims",
     );
     expect(nonLLMSkipped).toHaveLength(0);
     expect(result.checkedAt).toBeTruthy();
@@ -526,7 +549,7 @@ describe("parseContradictionResponse", () => {
 
 describe("checkContradictions", () => {
   it("returns info issue when no LLM key is configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await ensureDirectories();
 
     const issues = await checkContradictions(["some-slug"]);
@@ -539,7 +562,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns contradiction issues when LLM finds them", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create two pages that link to each other
     await writeWikiPage(
@@ -572,7 +595,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns no issues when LLM finds no contradictions", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "consistent-a",
@@ -595,7 +618,7 @@ describe("checkContradictions", () => {
   });
 
   it("handles malformed LLM response gracefully", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "mal-a",
@@ -621,7 +644,7 @@ describe("checkContradictions", () => {
   });
 
   it("handles LLM call failure gracefully", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "err-a",
@@ -645,7 +668,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns no issues when pages have no cross-references", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "isolated-a",
@@ -668,10 +691,39 @@ describe("checkContradictions", () => {
   });
 
   it("includes SCHEMA.md conventions in contradiction detection prompt", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    /**
+     * DW-501 — this row used to `chdir` into `tmpDir` so that
+     * `rootSchemaPath()`'s `${process.cwd()}/SCHEMA.md` would land on a
+     * synthetic fixture, and restore the cwd only in a `finally`. A throw
+     * anywhere above that restore left every LATER test in the same Vitest
+     * worker running under a working directory it never set — and this file is
+     * not the only one that resolves paths from the cwd. There is no cwd
+     * mutation here any more, so nothing this file does can leak that way.
+     *
+     * What replaces it is stronger rather than merely equivalent. The two
+     * things the old row bundled together are now asserted separately:
+     *
+     *   1. the explicit `loadPageConventions(schemaPath)` override reads the
+     *      section out of the file it is handed, and
+     *   2. the detector's no-argument load reaches the REAL repo-root
+     *      `SCHEMA.md` — its conventions arrive at the prompt surface.
+     *
+     * (2) is the pin the `chdir` could never make: a marker that exists ONLY in
+     * the root file cannot have come from a fixture this test wrote, and
+     * `CONTRADICTION_SYSTEM_PROMPT` carries no SCHEMA.md prose of its own, so
+     * it can only have come through `loadPageConventions()`. `DATA_DIR` is the
+     * tmpdir throughout (`beforeEach`), which is fine: the provider reaches the
+     * root file through a `path.relative` escape — the same fact the active-Wiki
+     * block at the bottom of this file already leans on.
+     */
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("[]");
 
-    // Write a temporary SCHEMA.md in tmpDir so loadPageConventions picks it up
+    // A marker that appears in the repo-root SCHEMA.md's `## Page conventions`
+    // and nowhere in the fixture below, so the prompt assertion cannot be
+    // satisfied by anything this test wrote.
+    const ROOT_CONVENTIONS_MARKER = "Every page starts with an H1 title";
+
     const schemaContent = `# Wiki Schema
 
 ## Page conventions
@@ -680,48 +732,57 @@ Every page must start with a level-1 heading.
 
 ## Operations
 `;
-    // loadPageConventions reads SCHEMA.md via storage provider relative to
-    // process.cwd(). Set DATA_DIR to tmpDir and reset storage so the
-    // provider picks up the temp directory.
-    const origCwd = process.cwd();
-    const origDataDir = process.env.DATA_DIR;
     const schemaPath = path.join(tmpDir, "SCHEMA.md");
     await fs.writeFile(schemaPath, schemaContent, "utf-8");
-    process.env.DATA_DIR = tmpDir;
-    const { _resetStorage } = await import("../storage");
-    _resetStorage();
-    process.chdir(tmpDir);
 
-    try {
-      await writeWikiPage(
-        "schema-a",
-        "# Schema A\n\nContent about topic. See [Schema B](schema-b.md).",
-      );
-      await writeWikiPage(
-        "schema-b",
-        "# Schema B\n\nContent about topic. See [Schema A](schema-a.md).",
-      );
-      await updateIndex([
-        { slug: "schema-a", title: "Schema A", summary: "Test" },
-        { slug: "schema-b", title: "Schema B", summary: "Test" },
-      ]);
+    // (1) The explicit override names a file and bypasses Wiki resolution
+    // entirely — it returns THAT file's section, whatever the cwd is.
+    const fixtureConventions = await loadPageConventions(schemaPath);
+    expect(fixtureConventions).toContain("## Page conventions");
+    expect(fixtureConventions).toContain("Every page must start with a level-1 heading");
+    // Non-vacuity for (2): the fixture cannot be the source of the root marker.
+    expect(fixtureConventions).not.toContain(ROOT_CONVENTIONS_MARKER);
 
-      await checkContradictions(["schema-a", "schema-b"]);
+    // PRECONDITION for (2), separated from it deliberately. The marker is a
+    // verbatim bullet from the repo-root SCHEMA.md, so two very different
+    // events would otherwise land on the SAME failing assertion below: the
+    // conventions stopping reaching the prompt (a wiring regression, the thing
+    // under test), and the root document simply being reworded or unreadable —
+    // `readSchemaFile` swallows ENOENT to `""`, so a missing root file reads as
+    // "the detector dropped the conventions". Checking the source first splits
+    // them: a failure HERE means the DOCUMENT changed, and the fix is to
+    // re-point the marker at a bullet the root file still carries. Loaded the
+    // way the detector's no-argument path loads it — no owner is configured
+    // (`beforeEach`), so this resolves the repo-root fallback exactly as it does.
+    const rootConventions = await loadPageConventions();
+    expect(
+      rootConventions,
+      "PRECONDITION FAILED, not a wiring regression: the repo-root SCHEMA.md no " +
+        "longer carries ROOT_CONVENTIONS_MARKER (reworded, or the file is " +
+        "unreadable). Re-point the marker at a `## Page conventions` bullet the " +
+        "root file still has — the prompt assertions below are unaffected.",
+    ).toContain(ROOT_CONVENTIONS_MARKER);
 
-      // The system prompt passed to callLLM should include SCHEMA.md conventions
-      expect(mockedCallLLM).toHaveBeenCalled();
-      const systemPromptArg = mockedCallLLM.mock.calls[0][0];
-      expect(systemPromptArg).toContain("conventions (from SCHEMA.md)");
-      expect(systemPromptArg).toContain("Every page must start with a level-1 heading");
-    } finally {
-      process.chdir(origCwd);
-      if (origDataDir === undefined) {
-        delete process.env.DATA_DIR;
-      } else {
-        process.env.DATA_DIR = origDataDir;
-      }
-      _resetStorage();
-    }
+    await writeWikiPage(
+      "schema-a",
+      "# Schema A\n\nContent about topic. See [Schema B](schema-b.md).",
+    );
+    await writeWikiPage(
+      "schema-b",
+      "# Schema B\n\nContent about topic. See [Schema A](schema-a.md).",
+    );
+    await updateIndex([
+      { slug: "schema-a", title: "Schema A", summary: "Test" },
+      { slug: "schema-b", title: "Schema B", summary: "Test" },
+    ]);
+
+    await checkContradictions(["schema-a", "schema-b"]);
+
+    // (2) The system prompt carries the conventions, and they are the root's.
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPromptArg = mockedCallLLM.mock.calls[0][0];
+    expect(systemPromptArg).toContain("conventions (from SCHEMA.md)");
+    expect(systemPromptArg).toContain(ROOT_CONVENTIONS_MARKER);
   });
 
   // ── Missing concept page detection ──────────────────────────────────
@@ -789,7 +850,7 @@ Every page must start with a level-1 heading.
 
   describe("checkMissingConceptPages", () => {
     it("returns info-level skip message when no LLM key is configured", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       await ensureDirectories();
 
       const issues = await checkMissingConceptPages(["page-a", "page-b"]);
@@ -801,7 +862,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns empty array when fewer than 2 pages exist", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
 
       await writeWikiPage("solo", "# Solo Page\n\nJust one page with enough content.");
 
@@ -811,7 +872,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns missing-concept-page issues when LLM identifies concepts", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue(
         JSON.stringify([
           {
@@ -840,7 +901,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns empty array when LLM returns empty array", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue("[]");
 
       await writeWikiPage(
@@ -857,7 +918,7 @@ Every page must start with a level-1 heading.
     });
 
     it("handles LLM call failure gracefully", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockRejectedValue(new Error("API error"));
 
       await writeWikiPage(
@@ -875,7 +936,7 @@ Every page must start with a level-1 heading.
   });
 
   it("lint result includes missing-concept-page issues when LLM is available", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Both checks run in parallel via Promise.all, so call order is
     // non-deterministic. Dispatch based on the system prompt content instead.
@@ -1084,7 +1145,7 @@ describe("lint with LintOptions", () => {
 
   it("excludes info-level issues when minSeverity is 'warning'", async () => {
     // Set up LLM mock to be unavailable (which generates info issues)
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     // Create two pages that mention each other's title but don't cross-link
     // → missing-crossref (info severity)
@@ -1213,7 +1274,7 @@ describe("lint with LintOptions", () => {
 
 describe("checkIncompleteCoverage", () => {
   it("returns info issue when no LLM key is configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await ensureDirectories();
 
     const issues = await checkIncompleteCoverage(["some-slug"]);
@@ -1226,7 +1287,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("returns no issues when slug has no raw source", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "no-raw",
@@ -1242,7 +1303,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("reports issues when LLM finds gaps between raw source and wiki page", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create a wiki page and its corresponding raw source
     await writeWikiPage(
@@ -1273,7 +1334,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("returns no issues when LLM finds no gaps", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "complete-page",
@@ -1294,8 +1355,652 @@ describe("checkIncompleteCoverage", () => {
     expect(issues).toHaveLength(0);
   });
 
+  it("makes a page whose only raw is a hashed snapshot a candidate (DW-437)", async () => {
+    // `listRawSources` is non-recursive BY CONTRACT, so a page whose Source
+    // arrived through Workbench Intake — `raw/sources/<slug>/<id>.md` — was
+    // never even considered for coverage. The caller unions the snapshot
+    // listing and falls back to `readRawSourceById`, so the snapshot's content
+    // is what actually reaches the comparison.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage(
+      "hashed-only",
+      "# Hashed Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "hashed-only", title: "Hashed Only", summary: "Intake arrival" },
+    ]);
+    await saveRawSourceFor(
+      "hashed-only",
+      "abc1230000000000",
+      "# Hashed Only\n\nSnapshot-only detail: 91% of runs converged.",
+    );
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Snapshot-only detail (91% of runs converged) missing", "importance": "high"}]',
+    );
+
+    const issues = await checkIncompleteCoverage(["hashed-only"]);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("incomplete-coverage");
+    expect(issues[0].slug).toBe("hashed-only");
+    // The comparison saw the SNAPSHOT bytes, not an empty/flat stand-in.
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("91% of runs converged");
+  });
+
+  it("makes a page whose only raw is BINARY no candidate at all (DW-569)", async () => {
+    // The snapshot listing describes stored bytes too now, but neither use in
+    // this check can do anything with one: `readRawSourceById` opens Markdown
+    // only, so a `.pdf` id is a fallback that always throws, and a page whose
+    // only Source is a PDF has no raw PROSE to compare the page against.
+    // Unfiltered it would be a candidate whose raw read fails on every run.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage(
+      "binary-only",
+      "# Binary Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "binary-only", title: "Binary Only", summary: "PDF arrival" },
+    ]);
+    await saveRawSourceBytes(
+      "binary-only",
+      "beef020000000000",
+      "pdf",
+      new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
+    );
+
+    // "No issue" is NOT the discriminating assertion: unfiltered, the page
+    // becomes a candidate, `readRawSourceById` throws on the `.pdf` id, and the
+    // empty `rawParts` short-circuits to the same empty result. The observable
+    // difference is the listed-but-unreadable WARNING that candidacy produces
+    // on every single run — the noise the filter exists to prevent.
+    // The premise, pinned: the artefact really is listed, so what follows is
+    // about the FILTER and not about a fixture that never landed.
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "binary-only",
+        rawId: "beef020000000000",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/binary-only/beef020000000000.pdf",
+      },
+    ]);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string;
+    try {
+      issues = await checkIncompleteCoverage(["binary-only"]);
+    } finally {
+      // Read BEFORE the restore: `mockRestore()` clears the record.
+      warnings = warn.mock.calls.map((c) => String(c[1])).join("\n");
+      warn.mockRestore();
+    }
+
+    expect(warnings).not.toContain("binary-only/beef020000000000");
+    expect(issues).toHaveLength(0);
+    // And nothing reached the model either.
+    expect(mockedCallLLM).not.toHaveBeenCalled();
+  });
+
+  it("still checks a hashed-only page when the FLAT listing fails (DW-437)", async () => {
+    // The mirror of the case above. Before the change the flat listing throwing
+    // was `return []` — the whole check abandoned — so nothing noticed if that
+    // branch came back. `listRawSources` stats every flat entry it lists, so a
+    // file that vanishes between the listing and the stat is what breaks it;
+    // the decoy exists purely to give that walk something to stat.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage(
+      "flat-listing-broken",
+      "# Flat Listing Broken\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      {
+        slug: "flat-listing-broken",
+        title: "Flat Listing Broken",
+        summary: "Intake arrival",
+      },
+    ]);
+    await saveRawSourceFor(
+      "flat-listing-broken",
+      "abc1230000000000",
+      "# Flat Listing Broken\n\nSnapshot-only detail: 77% of shards drifted.",
+    );
+    await saveRawSource("decoy-flat", "a flat source for the walk to stat");
+
+    const storage = getStorage();
+    const realStat = storage.stat.bind(storage);
+    const stat = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("decoy-flat")
+          ? Promise.reject(new Error("stat failed"))
+          : realStat(rel),
+      );
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Snapshot-only detail (77% of shards drifted) missing", "importance": "high"}]',
+    );
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    try {
+      issues = await checkIncompleteCoverage(["flat-listing-broken"]);
+    } finally {
+      stat.mockRestore();
+    }
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-listing-broken");
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("77% of shards drifted");
+  });
+
+  it("still drives the check from the flat listing when the snapshot walk fails (DW-437)", async () => {
+    // The two listings are unioned in SEPARATE try/catch blocks on purpose. A
+    // snapshot walk that throws — an unreadable `raw/sources/<slug>/` subtree —
+    // must not blank the whole check and lose the flat Sources that are right
+    // there; before the union there was one listing and one `return []`.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage(
+      "flat-only",
+      "# Flat Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "flat-only", title: "Flat Only", summary: "Flat arrival" },
+    ]);
+    await saveRawSource(
+      "flat-only",
+      "# Flat Only\n\nFlat-only detail: 77% of runs converged.",
+    );
+    // A hashed sibling, so the snapshot walk has a subtree to descend into —
+    // and therefore a place to fail. Without one the walk lists the two shared
+    // roots and returns cleanly, and this test would prove nothing.
+    await saveRawSourceFor("hashed-sibling", "abc1230000000000", "# Sibling\n");
+
+    // Fail EXACTLY the one prefix only the snapshot walk reads. The two roots
+    // both listings share (`raw` and `raw/sources`) keep answering, so this is
+    // the snapshot walk failing and nothing else.
+    const storage = getStorage();
+    const listFiles = storage.listFiles.bind(storage);
+    const spy = vi
+      .spyOn(storage, "listFiles")
+      .mockImplementation(async (prefix: string) => {
+        if (prefix === "raw/sources/hashed-sibling") {
+          throw new Error("snapshot walk failed");
+        }
+        return listFiles(prefix);
+      });
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Flat-only detail (77% of runs converged) missing", "importance": "high"}]',
+    );
+
+    let issues;
+    try {
+      // The premise, pinned: under this spy the snapshot listing really does
+      // throw, so the assertions below are about recovery, not a walk that
+      // quietly succeeded.
+      await expect(listRawSourceSnapshots()).rejects.toThrow(
+        /snapshot walk failed/,
+      );
+      issues = await checkIncompleteCoverage(["flat-only"]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-only");
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("77% of runs converged");
+  });
+
+  // The coverage budget, mirrored from `checkIncompleteCoverage`'s local
+  // `MAX_RAW_CHARS`. It is not exported, and the spec forbids raising it, so
+  // the rows below pin the number the check actually uses.
+  const COVERAGE_MAX_RAW_CHARS = 8000;
+
+  /**
+   * Split a coverage user message back into its raw parts. Everything before
+   * the `--- Wiki Page:` section is the raw side; each part is one
+   * `--- Raw Source: <slug> [<label>] ---` header line followed by the
+   * allocated content. Headers sit OUTSIDE the budget, so the assertions below
+   * count only the content.
+   */
+  function coverageRawParts(
+    message: string,
+  ): { label: string; content: string }[] {
+    const wikiAt = message.indexOf("\n\n--- Wiki Page: ");
+    const rawSection = message.slice(
+      0,
+      wikiAt === -1 ? message.length : wikiAt,
+    );
+    return rawSection.split("\n\n--- Raw Source: ").map((chunk, index) => {
+      const body = index === 0 ? chunk.replace(/^--- Raw Source: /, "") : chunk;
+      const newline = body.indexOf("\n");
+      const header = newline === -1 ? body : body.slice(0, newline);
+      return {
+        label: header.match(/\[(.+)\] ---$/)?.[1] ?? "",
+        content: newline === -1 ? "" : body.slice(newline + 1),
+      };
+    });
+  }
+
+  it("compares EVERY stored Source for a page in one call (DW-571)", async () => {
+    // The defect: the hashed snapshots were reached only inside the `catch` of
+    // `readRawSource`, and the loop `break`s on the first that opens. A page
+    // with a flat blob never had its snapshots compared at all, and a page
+    // with several snapshots was judged against one of them, picked by
+    // directory-listing order.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("multi-source", "# Multi Source\n\nA thin overview.");
+    await updateIndex([
+      { slug: "multi-source", title: "Multi Source", summary: "Several arrivals" },
+    ]);
+    await saveRawSource(
+      "multi-source",
+      "# Multi Source\n\nFlat detail: 11% of runs converged.",
+    );
+    await saveRawSourceFor(
+      "multi-source",
+      "aa11000000000000",
+      "# Multi Source\n\nFirst snapshot detail: 22% of shards drifted.",
+    );
+    await saveRawSourceFor(
+      "multi-source",
+      "bb22000000000000",
+      "# Multi Source\n\nSecond snapshot detail: 33% of nodes stalled.",
+    );
+
+    // A real gap payload, not `[]`: the multi-part path has to keep producing
+    // issues, not merely a well-shaped prompt.
+    mockedCallLLM.mockResolvedValue(
+      '[{"gap": "Snapshot detail (33% of nodes stalled) missing from the page", "importance": "high"}]',
+    );
+
+    const issues = await checkIncompleteCoverage(["multi-source"]);
+
+    // One call for the page — the cap counts calls, not Sources.
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("11% of runs converged");
+    expect(message).toContain("22% of shards drifted");
+    expect(message).toContain("33% of nodes stalled");
+    const flatAt = message.indexOf("--- Raw Source: multi-source [flat] ---");
+    const firstSnapshotAt = message.indexOf(
+      "--- Raw Source: multi-source [snapshot aa11000000000000] ---",
+    );
+    const secondSnapshotAt = message.indexOf(
+      "--- Raw Source: multi-source [snapshot bb22000000000000] ---",
+    );
+    expect(flatAt).toBeGreaterThanOrEqual(0);
+    // Collection order, as the rendering comment claims: the flat blob first,
+    // then the snapshots as listed. Header presence alone would pass whatever
+    // order the budget split happened to produce.
+    expect(flatAt).toBeLessThan(firstSnapshotAt);
+    expect(flatAt).toBeLessThan(secondSnapshotAt);
+    expect(message).toContain("--- Wiki Page: multi-source ---");
+    // The gap still becomes an issue on the multi-part path.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("incomplete-coverage");
+    expect(issues[0].slug).toBe("multi-source");
+    expect(issues[0].message).toContain("33% of nodes stalled");
+    expect(issues[0].suggestion).toBeTruthy();
+    // A multi-part payload behind a prompt that still promises the model
+    // exactly two documents is a contract nobody was told about.
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("One or more");
+    expect(systemPrompt).toContain("raw sources");
+    expect(systemPrompt).not.toContain("You will be given two documents");
+  });
+
+  it("carries every snapshot when a page has no flat Source (DW-571)", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("snapshots-only", "# Snapshots Only\n\nA thin overview.");
+    await updateIndex([
+      { slug: "snapshots-only", title: "Snapshots Only", summary: "Intake only" },
+    ]);
+    await saveRawSourceFor(
+      "snapshots-only",
+      "aa11000000000000",
+      "# Snapshots Only\n\nFirst arrival: 44% of jobs retried.",
+    );
+    await saveRawSourceFor(
+      "snapshots-only",
+      "bb22000000000000",
+      "# Snapshots Only\n\nSecond arrival: 55% of queues drained.",
+    );
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["snapshots-only"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("44% of jobs retried");
+    expect(message).toContain("55% of queues drained");
+    expect(message).not.toContain("[flat]");
+  });
+
+  it("warns and carries on when one listed snapshot cannot be read", async () => {
+    // Skipped, never fatal — but not silent either: the two listing catches in
+    // this same function log rather than swallow, on the rationale that a
+    // broken listing and an empty one must not look alike. A page compared
+    // against a partial Source set is that same lie in a smaller shape.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("partly-readable", "# Partly Readable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "partly-readable", title: "Partly Readable", summary: "Intake only" },
+    ]);
+    await saveRawSourceFor(
+      "partly-readable",
+      "aa11000000000000",
+      "# Partly Readable\n\nReadable arrival: 66% of writes landed.",
+    );
+    await saveRawSourceFor(
+      "partly-readable",
+      "bb22000000000000",
+      "# Partly Readable\n\nUnreadable arrival: 77% of writes landed.",
+    );
+
+    // The snapshot stays LISTED (the walk uses `listFiles`); only the read of
+    // its bytes fails, which is the shape of a file that vanishes or turns
+    // unreadable between the listing and the read.
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("bb22000000000000.md")
+          ? Promise.reject(new Error("snapshot read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    // `mockRestore` clears the recorded calls too, so the warnings are copied
+    // out before the spies come down.
+    let warnings: string[] = [];
+    try {
+      await checkIncompleteCoverage(["partly-readable"]);
+    } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("66% of writes landed");
+    expect(message).not.toContain("77% of writes landed");
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("partly-readable/bb22000000000000"),
+      ),
+    ).toBe(true);
+  });
+
+  it("warns when a LISTED flat Source will not open, and carries on", async () => {
+    // `readRawSource` throws two different things: "this page has no flat
+    // blob" — the normal shape for an Intake-only page, and silent by design —
+    // and "the flat blob is listed but will not open", which is a fault. The
+    // flat listing's own slug set separates them, so this failure is reported
+    // in the same shape a listed-but-unreadable snapshot is.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("flat-unreadable", "# Flat Unreadable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "flat-unreadable", title: "Flat Unreadable", summary: "Mixed arrival" },
+    ]);
+    await saveRawSource(
+      "flat-unreadable",
+      "# Flat Unreadable\n\nFlat detail: 12% of writes stalled.",
+    );
+    await saveRawSourceFor(
+      "flat-unreadable",
+      "aa11000000000000",
+      "# Flat Unreadable\n\nSnapshot detail: 34% of writes stalled.",
+    );
+
+    // Only the flat blob's own key fails, at either of the two locations
+    // `readRawSource` tries. The listing (`listFiles` + `stat`) still reports
+    // the slug, which is exactly what makes this a fault rather than an
+    // absence.
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        /^raw\/(sources\/)?flat-unreadable\.md$/.test(rel)
+          ? Promise.reject(new Error("flat read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    mockedCallLLM.mockResolvedValue(
+      '[{"gap": "Snapshot detail (34% of writes stalled) missing", "importance": "high"}]',
+    );
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string[] = [];
+    try {
+      issues = await checkIncompleteCoverage(["flat-unreadable"]);
+    } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("flat raw source flat-unreadable"),
+      ),
+    ).toBe(true);
+    // The readable snapshot still reaches the single comparison...
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("34% of writes stalled");
+    expect(message).not.toContain("12% of writes stalled");
+    // ...and the issue path is untouched by the failed read.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-unreadable");
+    expect(issues[0].message).toContain("34% of writes stalled");
+  });
+
+  it("makes no LLM call when no Source for the slug can be read", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("all-unreadable", "# All Unreadable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "all-unreadable", title: "All Unreadable", summary: "Intake only" },
+    ]);
+    // No flat blob at all, so `readRawSource` throws on its own; the one
+    // snapshot is listed but its bytes will not come back.
+    await saveRawSourceFor(
+      "all-unreadable",
+      "aa11000000000000",
+      "# All Unreadable\n\nDetail nobody can read.",
+    );
+
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("aa11000000000000.md")
+          ? Promise.reject(new Error("snapshot read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string[] = [];
+    try {
+      issues = await checkIncompleteCoverage(["all-unreadable"]);
+    } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(issues).toHaveLength(0);
+    expect(mockedCallLLM).not.toHaveBeenCalled();
+    // Not silent: the slug is dropped, but the snapshot that would not open is
+    // still reported. Only the absent flat blob passes without a word.
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("all-unreadable/aa11000000000000"),
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some((warning) => warning.includes("flat raw source")),
+    ).toBe(false);
+  });
+
+  it("sends byte-identical Sources once so the budget is not spent twice", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    const shared = "# Duplicate\n\nIdentical detail: 88% of replicas agreed.";
+    await writeWikiPage("duplicate-source", "# Duplicate\n\nA thin overview.");
+    await updateIndex([
+      { slug: "duplicate-source", title: "Duplicate", summary: "Same bytes twice" },
+    ]);
+    await saveRawSource("duplicate-source", shared);
+    await saveRawSourceFor("duplicate-source", "aa11000000000000", shared);
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["duplicate-source"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].label).toBe("flat");
+    expect(
+      mockedCallLLM.mock.calls[0][1].split("88% of replicas agreed").length - 1,
+    ).toBe(1);
+  });
+
+  it("gives a lone Source the whole budget and drops what is past it", async () => {
+    // Both sides on purpose: a lower bound alone would pass with truncation
+    // removed entirely, and an upper bound alone would pass with no budget
+    // reaching the model at all.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("lone-source", "# Lone Source\n\nA thin overview.");
+    await updateIndex([
+      { slug: "lone-source", title: "Lone Source", summary: "One flat blob" },
+    ]);
+    const marker = "PAST-THE-BUDGET";
+    await saveRawSource(
+      "lone-source",
+      "L".repeat(COVERAGE_MAX_RAW_CHARS + 500) + marker,
+    );
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["lone-source"]);
+
+    const message = mockedCallLLM.mock.calls[0][1];
+    const parts = coverageRawParts(message);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toHaveLength(COVERAGE_MAX_RAW_CHARS);
+    expect(message).not.toContain(marker);
+  });
+
+  it("splits the budget evenly when every Source is oversized", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("even-split", "# Even Split\n\nA thin overview.");
+    await updateIndex([
+      { slug: "even-split", title: "Even Split", summary: "Four big arrivals" },
+    ]);
+    const big = COVERAGE_MAX_RAW_CHARS; // Every part far longer than its share.
+    await saveRawSource("even-split", "F".repeat(big));
+    await saveRawSourceFor("even-split", "aa11000000000000", "A".repeat(big));
+    await saveRawSourceFor("even-split", "bb22000000000000", "B".repeat(big));
+    await saveRawSourceFor("even-split", "cc33000000000000", "C".repeat(big));
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["even-split"]);
+
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(4);
+    // Every Source represented — none starved out of the payload...
+    for (const part of parts) {
+      expect(part.content.length).toBeGreaterThan(0);
+    }
+    // ...and the total still inside the budget, a quarter each.
+    const total = parts.reduce((sum, part) => sum + part.content.length, 0);
+    expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
+    for (const part of parts) {
+      expect(part.content).toHaveLength(COVERAGE_MAX_RAW_CHARS / 4);
+    }
+  });
+
+  it("redistributes the unused share of short Sources to a long one", async () => {
+    // The regression a plain `MAX_RAW_CHARS / n` split would introduce: an
+    // oversized flat blob beside three tiny snapshots would keep 2 000 chars
+    // and leave ~5 970 of the budget unspent, so bytes that reach the model
+    // today would stop reaching it.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("need-aware", "# Need Aware\n\nA thin overview.");
+    await updateIndex([
+      { slug: "need-aware", title: "Need Aware", summary: "One big, three tiny" },
+    ]);
+    await saveRawSource("need-aware", "F".repeat(30_000));
+    await saveRawSourceFor("need-aware", "aa11000000000000", "tiny-aa11000000000000.");
+    await saveRawSourceFor("need-aware", "bb22000000000000", "tiny-bb22000000000000.");
+    await saveRawSourceFor("need-aware", "cc33000000000000", "tiny-cc33000000000000.");
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["need-aware"]);
+
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(4);
+    const flat = parts.find((part) => part.label === "flat");
+    const snapshots = parts.filter((part) => part.label !== "flat");
+    // The short Sources arrive whole...
+    expect(snapshots).toHaveLength(3);
+    for (const snapshot of snapshots) {
+      expect(snapshot.content).toBe(`tiny-${snapshot.label.split(" ")[1]}.`);
+    }
+    // ...and the long one takes the rest, far more than an equal 2 000 share.
+    // Derived from what the three short Sources actually spent, so the
+    // assertion says "the rest" rather than restating a fixture length.
+    const tinyTotal = snapshots.reduce((sum, part) => sum + part.content.length, 0);
+    expect(flat?.content.length).toBe(COVERAGE_MAX_RAW_CHARS - tinyTotal);
+    const total = parts.reduce((sum, part) => sum + part.content.length, 0);
+    expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
+  });
+
+  // 30 pages, each costing a page write plus a raw-source write, plus the index
+  // write — every one of them a whole-file write that since DW-161 fsyncs a tmp
+  // file before renaming it into place. Measured here: ~35ms before the change,
+  // ~0.5s after it solo, and ~4.9s under the full parallel suite, i.e. sitting
+  // right on the default 5s budget. Same situation as the query-history cap row
+  // and the contributors trust-score row: the durability cost is intended, but
+  // it leaves no headroom, so the row goes flaky on a loaded or slower machine
+  // without an explicit budget. Only the budget moves; the cap assertion below
+  // is untouched.
   it("processes at most MAX_COVERAGE_CHECKS pages per run", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create more pages with raw sources than the cap
     const count = MAX_COVERAGE_CHECKS + 10;
@@ -1317,7 +2022,7 @@ describe("checkIncompleteCoverage", () => {
 
     // The LLM should have been called at most MAX_COVERAGE_CHECKS times
     expect(mockedCallLLM).toHaveBeenCalledTimes(MAX_COVERAGE_CHECKS);
-  });
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -1350,5 +2055,252 @@ describe("parseIncompleteCoverageResponse", () => {
   it("returns empty array for empty array response", () => {
     const result = parseIncompleteCoverageResponse("[]");
     expect(result).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// disputed-page dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * `checkDisputedPages` has its own unit coverage in `lint-checks.test.ts`. What
+ * only this file can observe is the WIRING: the check has to be imported into
+ * `lint.ts`, gated on the enabled-check set, awaited in the lightweight batch,
+ * AND concatenated into the returned issues. A check that is written but not
+ * spread into the result array passes every unit test and returns nothing to a
+ * caller — which is the exact failure mode `disputed-page` is being restored to
+ * fix (DW-76), so it is worth pinning end to end.
+ */
+describe("lint dispatches the disputed-page check", () => {
+  async function seedDisputedAndSettled() {
+    await writeWikiPage(
+      "contested-page",
+      serializeFrontmatter(
+        { disputed: true, created: "2025-01-01" },
+        "# Contested Page\n\nSources disagree about this page and it has enough body text.",
+      ),
+    );
+    await writeWikiPage(
+      "settled-page",
+      serializeFrontmatter(
+        { disputed: false, created: "2025-01-01" },
+        "# Settled Page\n\nNothing is contested here and it has enough body text.",
+      ),
+    );
+    const entries: IndexEntry[] = [
+      { slug: "contested-page", title: "Contested Page", summary: "Contested" },
+      { slug: "settled-page", title: "Settled Page", summary: "Settled" },
+    ];
+    await updateIndex(entries);
+  }
+
+  it("returns exactly one disputed-page warning, for the disputed slug", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint();
+
+    const disputed = result.issues.filter((i) => i.type === "disputed-page");
+    expect(disputed).toHaveLength(1);
+    expect(disputed[0].slug).toBe("contested-page");
+    expect(disputed[0].severity).toBe("warning");
+    expect(disputed[0].suggestion).toContain("/api/wiki/contested-page");
+  });
+
+  it("skips the check when it is not in the requested check list", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint({ checks: ["orphan-page"] });
+
+    expect(result.issues.filter((i) => i.type === "disputed-page")).toHaveLength(0);
+  });
+
+  it("runs nothing at all when checks is an EMPTY array", async () => {
+    await seedDisputedAndSettled();
+
+    // `lint()` branches on `options?.checks !== undefined`, so `[]` means "run
+    // no checks" and `undefined` means "run all". The distinction is one
+    // `?.length` truthiness refactor away from collapsing — at which point `[]`
+    // would silently re-enable every check, including this one. The UI relies
+    // on the current meaning: `useLint` posts `checks: []` when the user
+    // deselects everything, expecting an empty result rather than a full scan.
+    const result = await lint({ checks: [] });
+
+    expect(result.issues.filter((i) => i.type === "disputed-page")).toHaveLength(0);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("runs the check when it is the ONLY requested check", async () => {
+    await seedDisputedAndSettled();
+
+    // The complement of the test above: asking for only `disputed-page` has to
+    // reach the check, or "gated off" and "never wired in" would look identical.
+    const result = await lint({ checks: ["disputed-page"] });
+
+    expect(result.issues.map((i) => i.type)).toEqual(["disputed-page"]);
+    expect(result.issues[0].slug).toBe("contested-page");
+  });
+
+  it("survives the warning severity floor", async () => {
+    await seedDisputedAndSettled();
+
+    const result = await lint({ checks: ["disputed-page"], minSeverity: "warning" });
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].type).toBe("disputed-page");
+  });
+});
+
+/**
+ * DW-158 — both LLM detectors must resolve the ACTIVE Wiki's Schema.
+ *
+ * `checkContradictions()` and `checkMissingConceptPages()` each call
+ * `loadPageConventions()` with NO argument, which is what makes the resolution
+ * deployment-global (`readActiveWikiSchema` → `NEXT_PUBLIC_OWNER_HANDLE`). The
+ * rest of this file never configures an owner, so pinning either detector to
+ * the repo-root `SCHEMA.md` — `loadPageConventions(`${process.cwd()}/SCHEMA.md`)`
+ * — passes the whole suite. These two tests are the ones that would not.
+ *
+ * Deliberately nothing that hides the repo-root file — no cwd change, no
+ * fixture standing in for it (DW-501 removed the last such trick from the
+ * root-conventions test above): the contrast under test is "the active Wiki's
+ * seeded conventions" vs "the real repo-root SCHEMA.md", so the root file must
+ * stay reachable for the marker assertion to mean anything.
+ * `"Preserve sequence when it matters"` is the `reading` Scenario Template's
+ * own prose — present in a seeded `schema.md`, absent from the repo-root file.
+ */
+describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
+  const OWNER = "alice";
+  const WIKI_MARKER = "Preserve sequence when it matters";
+  const PURPOSE_MARKER = "Build a lasting understanding of long-form reading";
+
+  async function seedActiveWiki() {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER; // restored in afterEach
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+  }
+
+  it("checkContradictions prompts with the active Wiki's conventions", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockResolvedValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+
+    // Two mutually-linked pages, so `buildClusters` forms a cluster and the
+    // detector actually reaches `callLLM`.
+    await writeWikiPage(
+      "active-a",
+      "# Active A\n\nContent about the topic. See [Active B](active-b.md).",
+    );
+    await writeWikiPage(
+      "active-b",
+      "# Active B\n\nContent about the topic. See [Active A](active-a.md).",
+    );
+    await updateIndex([
+      { slug: "active-a", title: "Active A", summary: "Test" },
+      { slug: "active-b", title: "Active B", summary: "Test" },
+    ]);
+
+    await checkContradictions(["active-a", "active-b"]);
+
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_MARKER);
+    expect(systemPrompt).toContain(PURPOSE_MARKER);
+  });
+
+  it("checkMissingConceptPages prompts with the active Wiki's conventions", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockResolvedValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await writeWikiPage(
+      "active-c",
+      "# Active C\n\nA page with enough content to be sampled by the detector.",
+    );
+    await writeWikiPage(
+      "active-d",
+      "# Active D\n\nAnother page with enough content to be sampled as well.",
+    );
+
+    await checkMissingConceptPages(["active-c", "active-d"]);
+
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_MARKER);
+    expect(systemPrompt).toContain(PURPOSE_MARKER);
+  });
+
+  it("checkIncompleteCoverage prompts with the active Wiki's Purpose", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockResolvedValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+    await writeWikiPage("active-coverage", "# Active coverage\n\nA short distillation.");
+    await saveRawSource("active-coverage", "# Active coverage\n\nA much fuller source.");
+
+    await checkIncompleteCoverage(["active-coverage"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][0]).toContain(PURPOSE_MARKER);
+  });
+
+  it("keeps one Purpose snapshot stable in flight and resolves the next lint fresh", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const wiki = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    const firstPurpose = "# Shelf\n\nFirst operation Purpose marker.\n";
+    const nextPurpose = "# Shelf\n\nNext operation Purpose marker.\n";
+    await writeWikiArtifact(OWNER, wiki.id, "purpose.md", firstPurpose);
+    mockedHasLLMKey.mockResolvedValue(true);
+    await writeWikiPage(
+      "cache-a",
+      "# Cache A\n\nShared topic. See [Cache B](cache-b.md).",
+    );
+    await writeWikiPage(
+      "cache-b",
+      "# Cache B\n\nShared topic. See [Cache A](cache-a.md).",
+    );
+    await updateIndex([
+      { slug: "cache-a", title: "Cache A", summary: "Shared topic" },
+      { slug: "cache-b", title: "Cache B", summary: "Shared topic" },
+    ]);
+    await saveRawSource("cache-a", "# Cache A\n\nFull source for the shared topic.");
+
+    let changed = false;
+    mockedCallLLM.mockImplementation(async () => {
+      if (!changed) {
+        changed = true;
+        await writeWikiArtifact(OWNER, wiki.id, "purpose.md", nextPurpose);
+      }
+      return "[]";
+    });
+    await lint({
+      checks: ["contradiction", "missing-concept-page", "incomplete-coverage"],
+    });
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(3);
+    for (const [systemPrompt] of mockedCallLLM.mock.calls) {
+      expect(systemPrompt).toContain("First operation Purpose marker.");
+      expect(systemPrompt).not.toContain("Next operation Purpose marker.");
+    }
+
+    mockedCallLLM.mockClear();
+    mockedCallLLM.mockResolvedValue("[]");
+    await lint({
+      checks: ["contradiction", "missing-concept-page", "incomplete-coverage"],
+    });
+    expect(mockedCallLLM).toHaveBeenCalledTimes(3);
+    for (const [systemPrompt] of mockedCallLLM.mock.calls) {
+      expect(systemPrompt).toContain("Next operation Purpose marker.");
+      expect(systemPrompt).not.toContain("First operation Purpose marker.");
+    }
+  });
+
+  it("the repo-root SCHEMA.md does NOT carry the marker", async () => {
+    // Non-vacuity guard for the two pins above: if the root file ever gained
+    // this phrase, they would pass without resolving any Wiki at all.
+    // Explicit path, so the env var cannot steer this either way — no owner
+    // needs clearing, and the static import above is enough.
+    const root = await loadPageConventions(`${process.cwd()}/SCHEMA.md`);
+    expect(root).toContain("## Page conventions");
+    expect(root).not.toContain(WIKI_MARKER);
   });
 });

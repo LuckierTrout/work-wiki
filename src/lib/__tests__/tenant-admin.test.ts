@@ -16,6 +16,10 @@ const ENV_KEYS = [
   "DATA_DIR",
   "YOPEDIA_SERVICE_TOKEN",
   "YOPEDIA_SERVICE_PRINCIPAL",
+  // Cleared per case and restored in teardown: `write()` below goes through the
+  // kernel page writer, which refuses while the flag is set, so an exported
+  // value would turn this whole file red on one machine and nowhere else.
+  "YOPEDIA_READONLY",
 ];
 
 beforeEach(async () => {
@@ -26,6 +30,7 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
   delete process.env.YOPEDIA_SERVICE_TOKEN;
   delete process.env.YOPEDIA_SERVICE_PRINCIPAL;
+  delete process.env.YOPEDIA_READONLY;
   _resetStorage();
   await ensureDirectories();
 });
@@ -118,6 +123,65 @@ describe("deleteTenant", () => {
   });
 });
 
+/**
+ * A read-only deployment must not half-destroy a tenant (DW-187, DW-188).
+ *
+ * `deleteTenant` is the caller the kernel gate alone gets WRONG, and dangerously
+ * so. Its per-page loop swallows every `deleteWikiPage` failure into `errors`
+ * and carries on, and the silo `deleteDirectory` at the tail is not a kernel
+ * writer at all — so with only the writer gated, a read-only deployment would
+ * leave every flat page standing while destroying `tenants/<t>/`: the silo
+ * mirrors, the tenant's private query history, all of it. And it would answer
+ * 207, which reads as "mostly worked".
+ *
+ * So the assertion is NO MUTATION AT ALL, checked on three different artifacts
+ * that the broken ordering destroys separately.
+ */
+describe("deleteTenant on a read-only deployment", () => {
+  it("refuses before touching anything — pages, silo and query history all survive", async () => {
+    await write("alice-1", { owner: "alice" });
+    await write("alice-2", { owner: "alice" });
+    const { appendQuery } = await import("../query-history");
+    await appendQuery({
+      question: "q",
+      answer: "a",
+      sources: [],
+      timestamp: "2025-01-01T00:00:00Z",
+      owner: "alice",
+    });
+    expect(await getStorage().fileExists("tenants/alice/wiki/alice-1.md")).toBe(true);
+    expect(await getStorage().fileExists("tenants/alice/query-history.json")).toBe(true);
+
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expect(deleteTenant("alice")).rejects.toThrow(/read-only/);
+
+    // The flat pages the loop would have reported as `errors`…
+    expect(await readWikiPage("alice-1")).not.toBeNull();
+    expect(await readWikiPage("alice-2")).not.toBeNull();
+    // …and the silo the unconditional `deleteDirectory` would have taken with it.
+    expect(await getStorage().fileExists("tenants/alice/wiki/alice-1.md")).toBe(true);
+    expect(await getStorage().fileExists("tenants/alice/wiki/alice-2.md")).toBe(true);
+    expect(await getStorage().fileExists("tenants/alice/query-history.json")).toBe(true);
+  });
+
+  it("refuses before the page listing, so an unknown tenant answers the same", async () => {
+    process.env.YOPEDIA_READONLY = "1";
+    await expect(deleteTenant("nobody-here")).rejects.toThrow(/read-only/);
+  });
+
+  it("deletes exactly as before with the flag unset — the control case", async () => {
+    await write("alice-1", { owner: "alice" });
+
+    const result = await deleteTenant("alice");
+
+    expect(result.deletedPages).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(await readWikiPage("alice-1")).toBeNull();
+    expect(await getStorage().fileExists("tenants/alice/wiki/alice-1.md")).toBe(false);
+  });
+});
+
 describe("DELETE /api/admin/tenant/[handle] — gating", () => {
   async function del(
     handle: string,
@@ -168,5 +232,21 @@ describe("DELETE /api/admin/tenant/[handle] — gating", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).deletedPages).toBe(1);
     expect(await readWikiPage("seed")).toBeNull();
+  });
+
+  it("answers 403 on a read-only deployment, not 500 and not 207", async () => {
+    process.env.YOPEDIA_SERVICE_TOKEN = "tok";
+    process.env.YOPEDIA_SERVICE_PRINCIPAL = "yopedia";
+    await write("alice-1", { owner: "alice" });
+    process.env.YOPEDIA_READONLY = "1";
+
+    const res = await del("alice", { token: "tok", confirm: "alice" });
+
+    // 207 is what the un-gated ordering answered — a half-destroyed tenant
+    // reported as a partial success. 500 is what the catch would say without
+    // the classification.
+    expect(res.status).toBe(403);
+    expect(String((await res.json()).error)).toContain("read-only");
+    expect(await readWikiPage("alice-1")).not.toBeNull();
   });
 });

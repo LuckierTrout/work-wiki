@@ -5,6 +5,8 @@ import { deleteDiscussions } from "./talk";
 import {
   validateSlug,
   writeWikiPage,
+  writeWikiPageIfContentMatches,
+  createWikiPage,
   readWikiPage,
   readWikiPageWithFrontmatter,
   listWikiPages,
@@ -12,31 +14,41 @@ import {
   findRelatedPages,
   updateRelatedPages,
   appendToLog,
+  findStoredPageKey,
   wikiRelPath,
   tenantForOwner,
   tenantWikiRelPath,
   isArtifactType,
   enrichEntry,
 } from "./wiki";
-import { syncPageIndexForPage, removePageIndexForSlug } from "./page-index";
+import {
+  clearPageIndexDirty,
+  markPageIndexDirty,
+  syncPageIndexForPage,
+  removePageIndexForSlug,
+} from "./page-index";
+import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
-import { withFileLock } from "./lock";
-import { escapeRegex } from "./links";
-import { getErrorMessage } from "./errors";
+import { withDurableLock } from "./lock";
+import { escapeRegex, extractAllInternalTargets } from "./links";
+import { getErrorMessage, isEnoent } from "./errors";
+import { getVectorSearchSettings } from "./config";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { mapWithConcurrency } from "./concurrency";
 import { removeAliasForPage, updateAliasIndexForPage } from "./alias-index";
 import { removeSourceForPage } from "./source-index";
 import { syncCommonsForPage, removeCommonsEntryBySlug, belongsInCommons } from "./commons";
 import { syncOwnerIndexForPage, removeOwnerIndexForSlug, tenantsForPage } from "./owner-index";
 import { syncBacklinksForPage, removeBacklinksForSlug } from "./backlink-index";
-import { recordEditForAuthor, reverseEditForAuthor } from "./contributor-index";
 import { pushRecentEvent, removeRecentForSlug } from "./recent-index";
 import { isAgentHandle, removeSlugFromAgentPages } from "./agents";
 import { removeSlugFromAllVaults } from "./vault";
+import { removeSiloForPage } from "./silo";
 import { normalizeActor } from "./agent-handle";
 import { parseFrontmatter } from "./frontmatter";
 import { parseSources, newestSourceType } from "./sources";
 import type { LogOperation } from "./wiki";
+import { appendToLogOnce, withTriggeredBy } from "./wiki-log";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +88,30 @@ export interface WritePageOptions {
   crossRefSource?: string | null;
   /** Who made this change — stored in the revision sidecar for attribution. */
   author?: string;
+  /** Optional revision-sidecar reason for internal conditional rewrites. */
+  revisionReason?: string;
+  /** Refuse to overwrite the tenant-primary Page when it already exists. */
+  createOnly?: boolean;
+  /** Refuse to overwrite unless the authoritative Page still has these bytes. */
+  expectedContent?: string;
+  /** Refuse an edit that introduces a link to a Page missing at commit time. */
+  validateNewLinkTargets?: boolean;
+  /**
+   * Refuse this write unless another Page still exists while both lifecycle
+   * locks are held. Cross-reference injection uses this to make the source
+   * existence check and linker mutation atomic with source deletion.
+   */
+  requiresExistingSlug?: string;
+  /** Tenant the required source must still belong to. */
+  requiresExistingTenant?: string;
+  /** Tenant the target Page must still belong to at mutation time. */
+  requiredTargetTenant?: string;
+  /**
+   * Durable crash-recovery receipt. When the target Page already has `content`
+   * but this exact receipt is absent, lifecycle resumes its idempotent side
+   * effects instead of mistaking Page bytes for completion.
+   */
+  idempotency?: { key: string; receiptPath: string };
 }
 
 /** Result of a {@link writeWikiPageWithSideEffects} call. */
@@ -131,13 +167,39 @@ type PageLifecycleOp =
       crossRefSource?: string | null;
       /** Who made this change — stored in the revision sidecar. */
       author?: string;
+      revisionReason?: string;
+      createOnly?: boolean;
+      expectedContent?: string;
+      validateNewLinkTargets?: boolean;
+      requiresExistingSlug?: string;
+      requiresExistingTenant?: string;
+      requiredTargetTenant?: string;
     }
   | {
       kind: "delete";
       /** Title used in the log entry (captured before unlink). */
       title: string;
-      /** Who performed the deletion — used for contributor-index cleanup. */
+      /** Who performed the deletion. Carried for symmetry with the write op;
+       *  no step reads it today — the per-author index decrement that did was
+       *  removed with the contributor index's last reader. */
       author?: string;
+      /** Refuse deletion unless the authoritative Page still has these bytes. */
+      expectedContent?: string;
+      /**
+       * Keep the page's silo raw Sources when the delete-time silo cleanup
+       * runs (DW-609). A plain DISCARD leaves this off and clears the whole
+       * silo. A MERGE-ABSORB delete sets it on: `mergePages` unions the
+       * absorbed page's sources into the survivor's frontmatter before
+       * deleting it through this same branch, so dropping those bytes would
+       * destroy provenance the survivor now claims. Discussions and assets are
+       * cleaned either way.
+       *
+       * It does NOT mean those Sources stay at this slug's silo address:
+       * `mergePages` moves them to the SURVIVOR's silo first, and that move is
+       * fail-soft (DW-743). This flag is what keeps the delete from dropping
+       * what a failed move left behind.
+       */
+      preserveRawSources?: boolean;
     };
 
 /** Internal result of a lifecycle op — a superset of Write/Delete result shapes. */
@@ -159,7 +221,10 @@ interface LifecycleOpResult {
 function stripBacklinksTo(slug: string, content: string): string {
   const escapedSlug = escapeRegex(slug);
   // `g` flag: declared at narrowest scope to avoid cross-call `lastIndex` leaks.
-  const linkRe = new RegExp(`\\[[^\\]]+\\]\\(${escapedSlug}\\.md\\)`, "g");
+  const linkRe = new RegExp(
+    `\\[[^\\]]+\\]\\(${escapedSlug}\\.md(?:#[^\\s)]*)?(?:\\s+["'][^)]*["'])?\\)`,
+    "g",
+  );
 
   // 1. Strip the actual link occurrences.
   let updated = content.replace(linkRe, "");
@@ -189,6 +254,81 @@ function stripBacklinksTo(slug: string, content: string): string {
 /** Max concurrent R2 reads/writes during a page lifecycle op. */
 const LIFECYCLE_CONCURRENCY = 12;
 
+export class LifecyclePageConflictError extends Error {
+  constructor(slug: string, reason = "changed; run Lint again") {
+    super(`Page "${slug}" ${reason}`);
+    this.name = "LifecyclePageConflictError";
+  }
+}
+
+async function storageFileExists(relPath: string): Promise<boolean> {
+  try {
+    await getStorage().readFile(relPath);
+    return true;
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
+}
+
+async function acquirePageLifecycleLocks<T>(
+  slugs: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const keys = [...new Set(slugs)]
+    .map((pageSlug) => `page-lifecycle:${pageSlug}`)
+    .sort();
+  const acquire = (index: number): Promise<T> => (
+    index === keys.length
+      ? fn()
+      : withDurableLock(keys[index], () => acquire(index + 1))
+  );
+  return acquire(0);
+}
+
+const activePageLifecycleLockTokens = new WeakSet<object>();
+
+async function slugIsClaimedAsAliasByAnotherPage(
+  slug: string,
+  tenant: string,
+): Promise<boolean> {
+  for (const entry of await listWikiPages({ strict: true })) {
+    if (entry.slug === slug || tenantForOwner(entry.owner) !== tenant) continue;
+    const page = await readWikiPageWithFrontmatter(entry.slug, { fresh: true, strict: true });
+    if (!page) continue;
+    const aliases = Array.isArray(page.frontmatter.aliases)
+      ? page.frontmatter.aliases
+      : [];
+    if (aliases.some((alias) => (
+      typeof alias === "string" && alias.trim().toLowerCase() === slug.toLowerCase()
+    ))) return true;
+  }
+  return false;
+}
+
+/** Proof passed only while one Page's lifecycle lock is held by a coordinator. */
+export interface PageLifecycleLockHeld {
+  readonly slugs: readonly string[];
+}
+
+/** Coordinate a compound operation while Page locks are held in lexical order. */
+export async function withPageLifecycleLocks<T>(
+  slugs: string[],
+  fn: (held: PageLifecycleLockHeld) => Promise<T>,
+): Promise<T> {
+  const normalized = [...new Set(slugs)].sort();
+  normalized.forEach(validateSlug);
+  return acquirePageLifecycleLocks(normalized, async () => {
+    const token: PageLifecycleLockHeld = Object.freeze({ slugs: Object.freeze(normalized) });
+    activePageLifecycleLockTokens.add(token);
+    try {
+      return await fn(token);
+    } finally {
+      activePageLifecycleLockTokens.delete(token);
+    }
+  });
+}
+
 async function runPageLifecycleOp(
   slug: string,
   op: PageLifecycleOp,
@@ -197,12 +337,35 @@ async function runPageLifecycleOp(
     crossRefedSlugs: string[];
     strippedBacklinksFrom: string[];
   }) => string | undefined,
+  recovery?: {
+    pageAlreadyWritten: boolean;
+    primaryDeleteAlreadyApplied?: boolean;
+    previousContent?: string;
+    logIdempotencyKey?: string;
+  },
+  pageLockAlreadyHeld = false,
+  skipDeleteBacklinks = false,
+  mergeCoordinatorAlreadyHeld = false,
 ): Promise<LifecycleOpResult> {
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
-
-  // --- Silo-primary: resolve the write tenant from content frontmatter ---
+  const previousTargets = op.kind === "write"
+      && op.validateNewLinkTargets
+    ? new Set(op.expectedContent === undefined
+        ? []
+        : extractAllInternalTargets(op.expectedContent))
+    : new Set<string>();
+  const requiredExistingSlugs = op.kind === "write"
+    ? [...new Set([
+        ...(op.requiresExistingSlug ? [op.requiresExistingSlug] : []),
+        ...(!op.validateNewLinkTargets
+          ? []
+          : extractAllInternalTargets(op.content).filter(
+              (target) => !previousTargets.has(target),
+            )),
+      ])].filter((target) => target !== slug)
+    : [];
   let writeTenant: string | undefined;
   if (op.kind === "write") {
     try {
@@ -213,7 +376,68 @@ async function runPageLifecycleOp(
       writeTenant = tenantForOwner(undefined);
     }
   }
+  let postIndexEntries!: IndexEntry[];
+  let removedFromIndex = false;
+  const mutatePrimaryAndIndexes = async (): Promise<void> => {
+    if (op.kind === "write" && op.requiredTargetTenant) {
+      const target = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (
+        !target
+        || tenantForOwner(
+          typeof target.frontmatter.owner === "string" ? target.frontmatter.owner : undefined,
+        ) !== op.requiredTargetTenant
+      ) {
+        throw new LifecyclePageConflictError(slug, "target Page changed owner");
+      }
+    }
+    if (op.kind === "write") {
+      for (const requiredSlug of requiredExistingSlugs) {
+        const source = await readWikiPageWithFrontmatter(
+          requiredSlug,
+          { fresh: true, strict: true },
+        );
+        const isDiscoveredLinkTarget = requiredSlug !== op.requiresExistingSlug
+          && op.validateNewLinkTargets;
+        if (isDiscoveredLinkTarget) {
+          // A wikilink to a slug that was never a Page is a dangling link.
+          // Owner create, Lint, and Graph seeding all write those on purpose.
+          // Refuse only a same-tenant alias claim or a live Page in another
+          // tenant — those are replaced or cross-owner identities, not gaps.
+          if (await slugIsClaimedAsAliasByAnotherPage(requiredSlug, writeTenant!)) {
+            throw new LifecyclePageConflictError(
+              slug,
+              `cannot link to missing or replaced Page "${requiredSlug}"`,
+            );
+          }
+          if (
+            source
+            && tenantForOwner(
+              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+            ) !== writeTenant
+          ) {
+            throw new LifecyclePageConflictError(
+              slug,
+              `cannot link to missing or replaced Page "${requiredSlug}"`,
+            );
+          }
+          continue;
+        }
+        if (
+          !source
+          || (requiredSlug === op.requiresExistingSlug && op.requiresExistingTenant
+            && tenantForOwner(
+              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+            ) !== op.requiresExistingTenant)
+        ) {
+          throw new LifecyclePageConflictError(
+            slug,
+            `cannot link to missing or replaced Page "${requiredSlug}"`,
+          );
+        }
+      }
+    }
 
+  // --- Silo-primary: resolve the write tenant from content frontmatter ---
   // Capture the deleted page's owner BEFORE removing it, so the delete path
   // knows which tenant silo to target.
   let deletedOwner: string | undefined;
@@ -225,21 +449,208 @@ async function runPageLifecycleOp(
 
   // 2. Mutate the page file.
   if (op.kind === "write") {
-    try {
-      const pre = await readWikiPage(slug);
-      prevContent = pre?.content;
-    } catch {
-      // No prior page (new) or unreadable → treat as no previous links.
+    // Mark this metadata entry untrusted BEFORE authoritative Page bytes can
+    // change. If the derived-index sync later fails or the Worker crashes,
+    // listWikiPages re-reads this Page instead of trusting stale visibility or
+    // ownership metadata.
+    await markPageIndexDirty(slug);
+    if (recovery?.pageAlreadyWritten) {
+      prevContent = recovery.previousContent;
+    } else if (op.expectedContent !== undefined) {
+      prevContent = op.expectedContent;
+    } else {
+      try {
+        const pre = await readWikiPage(slug);
+        prevContent = pre?.content;
+      } catch {
+        // No prior page (new) or unreadable → treat as no previous links.
+      }
     }
-    // Silo-primary: write to tenants/<tenant>/wiki/<slug>.md
-    await writeWikiPage(slug, op.content, op.author, undefined, writeTenant);
-    // Also write flat copy (transition — removable after #869) so readWikiPage
-    // can find the page without a page index. writeWikiPage without tenant
-    // targets the flat path.
-    await writeWikiPage(slug, op.content, op.author);
+    if (recovery?.pageAlreadyWritten) {
+      // The authoritative bytes for this exact operation already landed, but
+      // its lifecycle receipt did not. Resume derived indexes, cross-links,
+      // log and version without rewriting the authoritative Page or creating a
+      // revision. Repair a compatibility copy that the crash interrupted.
+      const tenant = writeTenant ?? tenantForOwner(undefined);
+      const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+      try {
+        const silo = await getStorage().readFile(siloPath);
+        if (silo !== op.content) throw new LifecyclePageConflictError(slug);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        // DW-740 changed what a `false` here MEANS. `createWikiPage` now refuses
+        // when any case spelling of `<slug>.md` holds the slug, so on a
+        // case-SENSITIVE store whose silo object is variant-spelled this resume
+        // throws a conflict on every retry instead of forking the identity into
+        // a second object. That is the ruling applied consistently — a loud
+        // conflict beats a silent fork — not an oversight. Teaching this branch
+        // to READ the variant (as `readWikiPage` does) is a different door and
+        // is deliberately not in DW-740.
+        const created = await createWikiPage(slug, op.content, tenant);
+        if (!created) throw new LifecyclePageConflictError(slug);
+      }
+
+      const flatPath = wikiRelPath(`${slug}.md`);
+      try {
+        const flat = await getStorage().readFile(flatPath);
+        if (flat !== op.content && op.expectedContent !== undefined && flat === op.expectedContent) {
+          await writeWikiPageIfContentMatches(
+            slug,
+            op.content,
+            op.expectedContent,
+            op.author,
+            "conditional lifecycle compatibility repair",
+          );
+        } else if (flat !== op.content) {
+          logger.warn("wiki", `flat compatibility copy changed for "${slug}"; left untouched`);
+        }
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        // A `false` no longer means only "the copy appeared underneath us"
+        // (DW-740): the likelier cause on a case-SENSITIVE store is that a case
+        // variant of `<slug>.md` holds the slug, which the canonical read above
+        // reported as ENOENT. Both are "something else already holds this slug
+        // under the flat root", and both leave the copy unwritten.
+        const created = await createWikiPage(slug, op.content);
+        if (!created) {
+          logger.warn(
+            "wiki",
+            `flat compatibility copy not created for "${slug}": another object already holds the slug`,
+          );
+        }
+      }
+    } else if (op.createOnly) {
+      const flatPath = wikiRelPath(`${slug}.md`);
+      // DW-740: the gate asks which OBJECT holds the slug under the flat root,
+      // not whether the canonical NAME is taken — a case variant counts as the
+      // page already existing, the same answer the delete and existence doors
+      // give. It has to be asked HERE and not left to `createWikiPage`'s own
+      // refusal below, because this gate refuses BEFORE the silo is published:
+      // a variant-held flat claim must never reach the compensation path.
+      // `findStoredPageKey` re-throws a non-ENOENT fault exactly as
+      // `storageFileExists` did, so only what counts as present has changed.
+      if ((await findStoredPageKey(slug, null)) !== null) {
+        throw new LifecyclePageConflictError(slug, "already exists");
+      }
+
+      // Publish the authoritative silo first. If the compatibility claim then
+      // fails, compensate the exact silo bytes while this slug lock is still
+      // held; a split identity must not strand every later retry.
+      const created = await createWikiPage(slug, op.content, writeTenant);
+      if (!created) throw new LifecyclePageConflictError(slug, "already exists");
+
+      let publicationError: unknown = null;
+      try {
+        const flatCreated = await createWikiPage(slug, op.content);
+        if (!flatCreated) publicationError = new LifecyclePageConflictError(slug, "already exists");
+      } catch (error) {
+        // A provider timeout can be ambiguous. Exact bytes at the claim path
+        // prove this identity landed; recovery may continue instead of
+        // compensating the authoritative half of a completed publication.
+        try {
+          if (await getStorage().readFile(flatPath) !== op.content) publicationError = error;
+        } catch {
+          publicationError = error;
+        }
+      }
+      if (publicationError) {
+        const tenant = writeTenant ?? tenantForOwner(undefined);
+        const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+        try {
+          if (await getStorage().readFile(siloPath) === op.content) {
+            await getStorage().deleteFile(siloPath);
+          }
+        } catch (cleanupError) {
+          if (!isEnoent(cleanupError)) {
+            logger.warn("wiki", `create compensation failed for "${slug}"`, cleanupError);
+          }
+        }
+        throw publicationError;
+      }
+    } else if (op.expectedContent !== undefined) {
+      const tenant = writeTenant ?? tenantForOwner(undefined);
+      const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+      let siloMatches = false;
+      let siloExists = false;
+      try {
+        siloExists = true;
+        siloMatches = await getStorage().readFile(siloPath) === op.expectedContent;
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+        siloExists = false;
+      }
+      if (siloMatches) {
+        const siloUpdated = await writeWikiPageIfContentMatches(
+          slug,
+          op.content,
+          op.expectedContent,
+          op.author,
+          op.revisionReason ?? "conditional lifecycle edit",
+          tenant,
+        );
+        if (!siloUpdated) throw new LifecyclePageConflictError(slug);
+        try {
+          const flatUpdated = await writeWikiPageIfContentMatches(
+            slug,
+            op.content,
+            op.expectedContent,
+            op.author,
+            op.revisionReason ?? "conditional lifecycle edit",
+          );
+          if (!flatUpdated && !await storageFileExists(wikiRelPath(`${slug}.md`))) {
+            // `storageFileExists` answers about the canonical NAME, so it says
+            // "absent" for a flat slug held by a case variant — and since DW-740
+            // the create below then refuses. Its two sibling branches each log
+            // or raise; dropping this refusal on the floor would leave the copy
+            // neither repaired nor mentioned.
+            const flatCreated = await createWikiPage(slug, op.content);
+            if (!flatCreated) {
+              logger.warn(
+                "wiki",
+                `flat compatibility copy not repaired for "${slug}": another object already holds the slug`,
+              );
+            }
+          }
+        } catch (error) {
+          logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);
+        }
+      } else if (siloExists) {
+        // A silo copy is authoritative whenever it exists. Never let a stale
+        // transitional flat copy authorize overwriting newer owner bytes.
+        throw new LifecyclePageConflictError(slug);
+      } else {
+        // Before the page-metadata index is seeded, reads intentionally fall
+        // back to the flat tree. CAS that exact merge base, then repair/promote
+        // the tenant copy while the per-slug lifecycle lock is still held.
+        const flatUpdated = await writeWikiPageIfContentMatches(
+          slug,
+          op.content,
+          op.expectedContent,
+          op.author,
+          op.revisionReason ?? "conditional lifecycle edit",
+        );
+        if (!flatUpdated) throw new LifecyclePageConflictError(slug);
+        await writeWikiPage(slug, op.content, op.author, "conditional lifecycle silo repair", tenant);
+      }
+    } else {
+      // Silo-primary: write to tenants/<tenant>/wiki/<slug>.md
+      await writeWikiPage(slug, op.content, op.author, undefined, writeTenant);
+      // Also write flat copy (transition — removable after #869) so readWikiPage
+      // can find the page without a page index. writeWikiPage without tenant
+      // targets the flat path.
+      await writeWikiPage(slug, op.content, op.author);
+    }
   } else {
     try {
-      const pre = await readWikiPageWithFrontmatter(slug);
+      const pre = recovery?.primaryDeleteAlreadyApplied && op.expectedContent !== undefined
+        ? {
+            content: op.expectedContent,
+            frontmatter: parseFrontmatter(op.expectedContent).data,
+          }
+        : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (op.expectedContent !== undefined && pre?.content !== op.expectedContent) {
+        throw new LifecyclePageConflictError(slug, "Page changed before delete");
+      }
       deletedOwner =
         typeof pre?.frontmatter.owner === "string"
           ? pre.frontmatter.owner
@@ -249,13 +660,54 @@ async function runPageLifecycleOp(
             (c): c is string => typeof c === "string",
           )
         : [];
-    } catch {
+    } catch (error) {
+      if (error instanceof LifecyclePageConflictError || op.expectedContent !== undefined) {
+        throw error;
+      }
       // Owner/contributors unknown → falls back to the default tenant in step 3c.
     }
-    // Delete from silo (primary target).
     const deleteTenant = tenantForOwner(deletedOwner);
+    // A HARD DELETE MUST REMOVE THE OBJECT THE PRE-DELETE READ WAS SHOWN
+    // (DW-741). On a case-SENSITIVE store the Page can be held on `<slug>.MD`,
+    // and unlinking the canonical name there removes nothing while reporting
+    // success — the next read serves the full body back. `findStoredPageKey` is
+    // the same canonical-first, ENOENT-gated election the read and write doors
+    // use, so a case-INSENSITIVE store never reaches the probe and each key
+    // below is the one this branch always built.
+    //
+    // RESOLVED BEFORE THE UNLINK, never on its ENOENT: `deleteFile` is
+    // provider-dependent on a missing key (R2 deletes silently, the filesystem
+    // throws), so a re-election hung off that catch would be dead code on R2 —
+    // which is the deployment the case-sensitive store actually is.
+    //
+    // BOTH KEYS RESOLVE BEFORE ANYTHING IS DESTROYED. These are strict reads,
+    // so a storage fault fails the op; doing them here rather than beside each
+    // unlink means such a fault aborts with the revisions still erasable and
+    // neither root touched, instead of leaving revisions gone (or the silo
+    // object unlinked) under a Page that is still there.
+    //
+    // Resolution only NARROWS the target: when no spelling is present the
+    // canonical unlink is still issued, and behaves exactly as it does today.
+    //
+    // IT ELECTS ONE SPELLING PER ROOT, it does not sweep every spelling. A
+    // DEFEATED case sibling therefore survives this delete and is promoted to
+    // the winner for the slug on the next read — recorded as deferred work on
+    // this spec, because "which spellings a delete is entitled to sweep" is a
+    // wider ruling than the one this change carries.
+    const siloKey =
+      (await findStoredPageKey(slug, deleteTenant)) ??
+      tenantWikiRelPath(deleteTenant, `${slug}.md`);
+    const flatKey = (await findStoredPageKey(slug, null)) ?? wikiRelPath(`${slug}.md`);
+    // Revision bytes are part of the hard-delete contract, not a derived index.
+    // Erase both layouts before removing the authoritative Page so a transient
+    // cleanup failure leaves a visible Page the operator can safely retry.
+    await Promise.all([
+      deleteRevisions(slug),
+      deleteRevisions(slug, deleteTenant),
+    ]);
+    // Delete from silo (primary target).
     try {
-      await getStorage().deleteFile(tenantWikiRelPath(deleteTenant, `${slug}.md`));
+      await getStorage().deleteFile(siloKey);
     } catch (err: unknown) {
       if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
         throw err;
@@ -263,7 +715,7 @@ async function runPageLifecycleOp(
     }
     // Also delete flat copy (transition cleanup — removable after #869).
     try {
-      await getStorage().deleteFile(wikiRelPath(`${slug}.md`));
+      await getStorage().deleteFile(flatKey);
     } catch (err: unknown) {
       // Flat copy may already be gone — swallow ENOENT.
       if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
@@ -272,10 +724,17 @@ async function runPageLifecycleOp(
     }
   }
 
-  // 2b–2d. Secondary storage cleanup. All steps are failure-tolerant (logged +
-  //        swallowed) so they never fail the op. On the delete path the three
-  //        independent ops (embedding, revisions, discussions) run CONCURRENTLY
-  //        instead of one-after-another to cut latency.
+  // 2b–2d. Secondary storage cleanup. Derived, recoverable steps are
+  //        failure-tolerant (logged + swallowed) so they never fail the op.
+  //        Revision ERASURE is still the required pre-delete step above, not a
+  //        member of this batch, because portable exports include tenant data
+  //        and so a revision-erasure failure must leave a visible Page the
+  //        operator can retry. `removeSiloForPage` below does call
+  //        `deleteDirSafe` on tenants/<t>/wiki/.revisions/<slug> — that is a
+  //        deliberate ENOENT-safe overlap on a path the pre-delete step has
+  //        already cleared, keeping the helper whole-silo idempotent for its
+  //        other callers. It is not a second erasure policy, and it is not what
+  //        guarantees revisions are gone.
   if (op.kind === "write") {
     // Skip embedding rendered artifacts (e.g. saved `html` outputs): they're
     // excluded from the search/query corpus, and their raw markup would pollute
@@ -293,7 +752,7 @@ async function runPageLifecycleOp(
         getErrorMessage(err, String(err)),
       );
     }
-    if (!isArtifact) {
+    if (!isArtifact && getVectorSearchSettings().enabled) {
       try {
         await upsertEmbedding(slug, op.content);
       } catch (err) {
@@ -307,8 +766,21 @@ async function runPageLifecycleOp(
   } else {
     const cleanups: { label: string; run: Promise<unknown> }[] = [
       { label: "embedding remove", run: removeEmbedding(slug) },
-      { label: "deleteRevisions", run: deleteRevisions(slug) },
       { label: "deleteDiscussions", run: deleteDiscussions(slug) },
+      // DW-609. Step 2 removes only the silo wiki md; every OTHER per-page silo
+      // artifact (flat + hashed raw Sources, discuss thread, assets) would leak,
+      // and the reverse-orphan pass cannot recover it because it discovers
+      // ghosts by scanning the very md the delete just removed. Fail-soft, and
+      // deliberately NOT beside `deleteRevisions`: these are derived and
+      // recoverable, so a failure here must never fail an already-committed
+      // page delete. Same tenant the primary md delete and `deleteRevisions`
+      // used, so an unknown owner cleans the default tenant.
+      {
+        label: "removeSiloForPage",
+        run: removeSiloForPage(slug, tenantForOwner(deletedOwner), {
+          preserveRawSources: op.preserveRawSources === true,
+        }),
+      },
     ];
     const settled = await Promise.allSettled(cleanups.map((c) => c.run));
     settled.forEach((r, i) => {
@@ -352,13 +824,10 @@ async function runPageLifecycleOp(
   }
 
   // 3. Mutate the index. The read → mutate → write cycle is performed under
-  //    a single withFileLock("index.md") so that concurrent lifecycle ops
-  //    cannot clobber each other (TOCTOU race fix). We use updateIndexUnsafe
-  //    since we already hold the lock.
-  let postIndexEntries: IndexEntry[];
-  let removedFromIndex = false;
-  await withFileLock("index.md", async () => {
-    const entries = await listWikiPages();
+  //    one durable index lock so concurrent Worker isolates cannot clobber
+  //    each other. We use updateIndexUnsafe since we already hold the lock.
+  await withDurableLock("index.md", async () => {
+    const entries = await listWikiPages({ strict: true });
     if (op.kind === "write") {
       const existingIdx = entries.findIndex((e) => e.slug === slug);
       if (existingIdx !== -1) {
@@ -449,25 +918,6 @@ async function runPageLifecycleOp(
     logger.warn("backlink-index", `backlink index sync skipped for "${slug}":`, err);
   }
 
-  // 3b-iv. Contributor index — incremental edit facts only. We bump editCount /
-  //         pagesEdited / firstSeen / lastSeen for op.author (decrement on
-  //         delete); revertCount and talk counts are left to the daily rebuild
-  //         (see contributor-index.ts header). No-op until the daily rebuild has
-  //         seeded the index (recordEditForAuthor returns early when absent).
-  //         Fail-soft.
-  try {
-    if (op.kind === "delete") {
-      // Decrement per-author edit counts when the delete op carries an author.
-      if (op.author) {
-        await reverseEditForAuthor(op.author, slug);
-      }
-    } else if (op.author) {
-      await recordEditForAuthor(op.author, slug);
-    }
-  } catch (err) {
-    logger.warn("contributor-index", `contributor index sync skipped for "${slug}":`, err);
-  }
-
   // 3b-v. Recent-activity index (the homepage Trail). PUBLIC, non-agent pages
   //        only — the public trail never surfaces private activity. No-op until
   //        the daily rebuild has seeded the index. Fail-soft.
@@ -539,7 +989,7 @@ async function runPageLifecycleOp(
   }
 
   // 3b-vi. Page-metadata index (_idx:pages) — the enriched IndexEntry per slug,
-  //         so listWikiPages enriches with one KV read instead of reading every
+  //         so listWikiPages enriches with one derived-index read instead of every
   //         page file. Holds ALL pages (visibility filtering is on the read side).
   //         No-op until the daily rebuild has seeded it. Fail-soft.
   try {
@@ -551,14 +1001,29 @@ async function runPageLifecycleOp(
         enrichEntry({ title: op.title, slug, summary: op.summary }, fm),
       );
     }
+    await clearPageIndexDirty(slug);
   } catch (err) {
     logger.warn("page-index", `page index sync skipped for "${slug}":`, err);
   }
 
-  // 3c. (Retired) Silo writes now happen directly at step 2 — the lifecycle
-  //     write targets tenants/<tenant>/wiki/ via writeWikiPage(…, tenant), and
-  //     the delete targets the silo path explicitly. The redundant syncSiloForPage
-  //     / removeSiloForPage mirror is no longer needed here.
+  // 3c. (Write mirror retired; delete-side cleanup lives at 2b–2d.) Silo WRITES
+  //     now happen directly at step 2 — the lifecycle write targets
+  //     tenants/<tenant>/wiki/ via writeWikiPage(…, tenant), so the redundant
+  //     syncSiloForPage mirror is genuinely gone from here.
+  //
+  //     The DELETE side is NOT retired, only relocated. Step 2 removes the silo
+  //     wiki md (and the flat copy) as the throwing primary step; every other
+  //     per-page silo artifact — flat and hashed raw Sources, the discuss
+  //     thread, binary assets — is cleared by `removeSiloForPage` in the
+  //     fail-soft `cleanups` batch at 2b–2d. Without it a hard delete leaks
+  //     those artifacts, and the reverse-orphan pass in `reconcileSilos` cannot
+  //     recover them because it discovers ghosts by scanning the very silo wiki
+  //     md the delete already removed (DW-609). A merge-absorb delete passes
+  //     `preserveRawSources` so the absorbed page's Sources — which the
+  //     survivor's frontmatter now claims — survive that cleanup; `mergePages`
+  //     has normally already moved them into the SURVIVOR's silo by then, and
+  //     the flag covers the run where that fail-soft move did not finish
+  //     (DW-743).
 
   // 3d. (removed) Pages no longer auto-join a vault. In the multi-vault model
   //     vault membership is EXPLICIT — a page joins a vault only via an
@@ -591,6 +1056,25 @@ async function runPageLifecycleOp(
       logger.warn("vault", `vault cleanup skipped for "${slug}":`, err);
     }
   }
+  };
+  if (pageLockAlreadyHeld) {
+    await mutatePrimaryAndIndexes();
+  } else if (mergeCoordinatorAlreadyHeld) {
+    await (
+      op.kind === "write" && requiredExistingSlugs.length > 0
+        ? acquirePageLifecycleLocks([slug, ...requiredExistingSlugs], mutatePrimaryAndIndexes)
+        : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
+    );
+  } else {
+    // Global coordinator first, then Page locks. A merge holds the same global
+    // lock through its final physical backlink scan, so ordinary writes/deletes
+    // cannot publish a dangling link inside that completion window.
+    await withDurableLock("merge-pages", () => (
+      op.kind === "write" && requiredExistingSlugs.length > 0
+        ? acquirePageLifecycleLocks([slug, ...requiredExistingSlugs], mutatePrimaryAndIndexes)
+        : withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes)
+    ));
+  }
 
   // 4. Cross-reference other pages.
   //    - write: discover related pages and add backlinks TO this slug.
@@ -602,15 +1086,29 @@ async function runPageLifecycleOp(
       const sourceForCrossRef = op.crossRefSource ?? op.content;
       // Use entries captured inside the lock to avoid TOCTOU — a concurrent
       // ingest between the lock release and a fresh read could produce stale data.
-      const refreshedEntries = postIndexEntries!;
+      let sourceTenant = tenantForOwner(undefined);
+      try {
+        const fm = parseFrontmatter(op.content).data;
+        sourceTenant = tenantForOwner(typeof fm.owner === "string" ? fm.owner : undefined);
+      } catch {
+        // The write path used the same default-tenant fallback.
+      }
+      const refreshedEntries = postIndexEntries!.filter(
+        (entry) => tenantForOwner(entry.owner) === sourceTenant,
+      );
       const relatedSlugs = await findRelatedPages(
         slug,
         sourceForCrossRef,
         refreshedEntries,
       );
-      crossRefedSlugs = await updateRelatedPages(slug, op.title, relatedSlugs);
+      crossRefedSlugs = await updateRelatedPages(
+        slug,
+        op.title,
+        relatedSlugs,
+        { requireSource: true, tenant: sourceTenant },
+      );
     }
-  } else {
+  } else if (!skipDeleteBacklinks) {
     // Strip links to the deleted page from every other page. Read all pages
     // CONCURRENTLY (bounded) — this was the main sequential bottleneck and the
     // part that scaled badly with page count. Then rewrite only the linkers.
@@ -622,31 +1120,137 @@ async function runPageLifecycleOp(
     const linkers = pages.filter(
       ({ page }) => page && page.content.includes(`${slug}.md`),
     );
-    await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry, page }) => {
-      const updated = stripBacklinksTo(slug, page!.content);
-      if (updated !== page!.content) {
-        // Resolve the stripped page's tenant so writeWikiPage targets the silo directly.
-        let stripTenant: string | undefined;
-        try {
-          const ownerVal = parseFrontmatter(updated).data.owner;
-          stripTenant = tenantForOwner(typeof ownerVal === "string" ? ownerVal : undefined);
-        } catch {
-          stripTenant = tenantForOwner(undefined);
+    await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry }) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const rewrite = async () => {
+          // Holding both locks makes the target-absence decision and the linker
+          // CAS one operation. Lexical acquisition order prevents two deletes
+          // of mutually linked Pages from deadlocking.
+          if (await readWikiPage(slug, { fresh: true, strict: true })) return false;
+          const current = await readWikiPageWithFrontmatter(
+            entry.slug,
+            { fresh: true, strict: true },
+          );
+          if (!current) return false;
+          const updated = stripBacklinksTo(slug, current.content);
+          if (updated === current.content) return false;
+          await writeWikiPageWithSideEffectsInternal({
+            slug: entry.slug,
+            title: typeof current.frontmatter.title === "string"
+              ? current.frontmatter.title
+              : entry.title,
+            content: updated,
+            summary: entry.summary,
+            logOp: "edit",
+            logDetails: () => `backlink strip after deleting "${slug}"`,
+            crossRefSource: null,
+            author: "system",
+            revisionReason: "backlink strip",
+            expectedContent: current.content,
+          }, true);
+          return true;
+        };
+        // A compound merge already holds the deleted slug. Re-entering that
+        // non-reentrant lock would deadlock; only the linker remains to fence.
+        const changed = pageLockAlreadyHeld
+          ? await withDurableLock(`page-lifecycle:${entry.slug}`, rewrite)
+          : await acquirePageLifecycleLocks([slug, entry.slug], rewrite);
+        if (changed) {
+          strippedBacklinksFrom.push(entry.slug);
+          return;
         }
-        // Silo-primary write for the stripped page.
-        await writeWikiPage(entry.slug, updated, "system", "backlink strip", stripTenant);
-        // Also write flat copy (transition — removable after #869).
-        await writeWikiPage(entry.slug, updated, "system", "backlink strip");
-        strippedBacklinksFrom.push(entry.slug);
+        const targetExists = await readWikiPage(slug, { fresh: true, strict: true });
+        if (targetExists) return;
+        const current = await readWikiPage(entry.slug, { fresh: true, strict: true });
+        if (!current?.content.includes(`${slug}.md`)) return;
       }
+      logger.warn("wiki", `backlink strip exhausted retries for "${entry.slug}"`);
     });
   }
 
   // 5. Log.
   const details = logDetails?.({ crossRefedSlugs, strippedBacklinksFrom });
-  await appendToLog(logOp, op.title, details);
+  if (recovery?.logIdempotencyKey) {
+    await appendToLogOnce(logOp, op.title, details, recovery.logIdempotencyKey);
+  } else {
+    await appendToLog(logOp, op.title, details);
+  }
+
+  // 6. Bump the Workbench's refresh signal (Story 1.7).
+  //
+  //    This is the pipeline's single tail, and it is also where "the op
+  //    succeeded" actually becomes true — every step above can throw, and a
+  //    throw means nothing bumped. Both `writeWikiPageWithSideEffects` and
+  //    `deleteWikiPage` are thin wrappers over this function, so one line here
+  //    covers both verbs, all ~40 call sites (routes, `mcp.ts`, `cli.ts`,
+  //    `ingest.ts`, `lint-fix.ts`, …) and every future caller — without one of
+  //    them knowing the counter exists. It is NOT in `writeWikiPage`, which this
+  //    pipeline itself calls 2–4× per op.
+  //
+  //    Fail-soft, in the shape every other side effect here uses: a config-store
+  //    hiccup must not reject a write that already landed. A stale tree is
+  //    recoverable by the next poll or reload; a lost save is not.
+  //    `bumpDataVersion` already swallows its own failures — this is the guard
+  //    that stays correct if that ever stops being true.
+  try {
+    await bumpDataVersion();
+  } catch (err) {
+    logger.warn("data-version", `bump skipped for "${slug}":`, err);
+  }
 
   return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };
+}
+
+/**
+ * Drop a stale `index.md` membership under the index lock, with log + data-version
+ * history. Used when the referenced Page no longer exists.
+ *
+ * `triggeredBy` is the handle of whoever ASKED for the fix, when a door resolved
+ * one (DW-447). This op writes no page and so mints no revision — its log detail
+ * line is the only durable record it leaves, and therefore the only place a
+ * trigger can land.
+ *
+ * It is NOT an author, and there is deliberately no author parameter beside it:
+ * this op has ONE production caller (`fixStaleIndex`), and the `_author` that
+ * used to sit in this slot was ignored on every path. Leaving an ignored
+ * optional string ahead of a live one is how `pruneStaleIndexEntry(slug, handle)`
+ * — written by someone meaning the trigger — silently drops it.
+ */
+export async function pruneStaleIndexEntry(
+  slug: string,
+  triggeredBy?: string,
+): Promise<{ removed: boolean }> {
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+  validateSlug(slug);
+  if (await readWikiPage(slug, { fresh: true, strict: true })) {
+    return { removed: false };
+  }
+  let removed = false;
+  await withDurableLock("index.md", async () => {
+    if (await readWikiPage(slug, { fresh: true, strict: true })) return;
+    const entries = await listWikiPages({ strict: true });
+    const filtered = entries.filter((entry) => entry.slug !== slug);
+    if (filtered.length === entries.length) return;
+    await updateIndexUnsafe(filtered);
+    removed = true;
+  });
+  if (!removed) return { removed: false };
+  try {
+    await removePageIndexForSlug(slug);
+  } catch (err) {
+    logger.warn("page-index", `cleanup skipped for stale index "${slug}":`, err);
+  }
+  await appendToLog(
+    "edit",
+    slug,
+    withTriggeredBy(`auto-fix: removed stale index entry for ${slug}`, triggeredBy),
+  );
+  try {
+    await bumpDataVersion();
+  } catch (err) {
+    logger.warn("data-version", `bump skipped for stale index "${slug}":`, err);
+  }
+  return { removed: true };
 }
 
 /**
@@ -657,36 +1261,162 @@ async function runPageLifecycleOp(
  * in the shared pipeline. See the block comment above `runPageLifecycleOp`
  * for details.
  *
- * Hard delete only — no trash, no undo. Raw source files in `raw/` are
- * intentionally NOT touched (the raw layer is immutable per the founding
- * vision).
+ * Hard delete only — no trash, no undo. Raw source bytes in the FLAT `raw/`
+ * tree are intentionally NOT touched (that layer is immutable per the founding
+ * vision); dropping them is `deleteRawSourceBytes`' job, on cascade delete. The
+ * page's TENANT SILO raw mirror (`tenants/<t>/raw/…`) is different: a hard
+ * delete clears it, along with the silo discuss thread and assets, via the
+ * fail-soft `removeSiloForPage` cleanup (DW-609). The one exception is a
+ * merge-absorb delete, which passes `preserveRawSources` so the absorbed page's
+ * silo Sources — provenance the survivor's frontmatter now claims — survive.
+ * Those Sources do not stay HERE: `mergePages` relocates them into the
+ * survivor's silo before deleting, and the flag covers a failed move (DW-743).
+ *
+ * `triggeredBy` is the handle of whoever ASKED for an automated delete, when a
+ * door resolved one (DW-447) — today only the `empty-page` lint auto-fix passes
+ * it. It joins the log detail line and nothing else: `author` stays whatever the
+ * caller declared (`"lint-fix"` for a lint fix), so `normalizeActor` and the
+ * contributor list never see the human's handle. See `withTriggeredBy`.
  */
 export async function deleteWikiPage(
   slug: string,
   author?: string,
+  expectedContent?: string,
+  triggeredBy?: string,
 ): Promise<DeletePageResult> {
+  // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
+  // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
+  // the stdio MCP handlers, the CLI, the agent runtime and the bulk ingest
+  // delete all arrive here, and none of them can be reached by an HTTP gate.
+  // Refusing ahead of the slug check keeps the answer identical for every
+  // slug, so it leaks nothing about what is stored.
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+
   validateSlug(slug);
 
   // Capture the title BEFORE unlinking so the log entry is human-readable.
-  const page = await readWikiPage(slug);
+  //
+  // FRESH+STRICT (DW-691). The throw below is mapped by
+  // `src/app/api/wiki/[slug]/route.ts` — `message.startsWith("page not found")`
+  // → 404 — so without `strict` a non-ENOENT storage blip on THIS read tells
+  // the caller their page is gone, through the very door DW-378 hardened one
+  // read earlier. The locked sibling `deleteWikiPageWhileLocked` below is
+  // already fresh+strict; this is the parity gap.
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
   if (!page) {
     throw new Error(`page not found: ${slug}`);
   }
   const title = page.title ?? slug;
 
-  const result = await runPageLifecycleOp(
+  const result = await withDurableLock("merge-pages", () => runPageLifecycleOp(
     slug,
-    { kind: "delete", title, author },
+    { kind: "delete", title, author, expectedContent },
     "delete",
     ({ strippedBacklinksFrom }) =>
-      `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
-  );
+      withTriggeredBy(
+        `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
+        triggeredBy,
+      ),
+    undefined,
+    false,
+    false,
+    true,
+  ));
 
   return {
     slug: result.slug,
     removedFromIndex: result.removedFromIndex,
     strippedBacklinksFrom: result.strippedBacklinksFrom,
   };
+}
+
+/**
+ * Delete under a lock minted by {@link withPageLifecycleLocks}.
+ *
+ * `preserveRawSources` marks this delete a MERGE-ABSORB rather than a discard:
+ * the caller has already unioned this page's sources into a survivor's
+ * frontmatter, so the delete-time silo cleanup (DW-609) must not drop the silo
+ * raw Sources while still clearing the discuss thread and assets. The caller
+ * also relocates them to the survivor's silo first, so on the happy path this
+ * spares nothing; it is the floor under a failed relocation (DW-743).
+ */
+export async function deleteWikiPageWhileLocked(
+  slug: string,
+  held: PageLifecycleLockHeld,
+  author?: string,
+  expectedContent?: string,
+  idempotency?: { key: string; receiptPath: string },
+  skipDeleteBacklinks = false,
+  preserveRawSources = false,
+): Promise<DeletePageResult> {
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+  validateSlug(slug);
+  if (!activePageLifecycleLockTokens.has(held) || !held.slugs.includes(slug)) {
+    throw new Error(`page lifecycle lock for "${slug}" is not held`);
+  }
+  if (idempotency) {
+    try {
+      const receipt = JSON.parse(await getStorage().readFile(idempotency.receiptPath)) as {
+        key?: unknown;
+        result?: DeletePageResult;
+      };
+      if (receipt.key === idempotency.key && receipt.result?.slug === slug) {
+        if (await readWikiPage(slug, { fresh: true, strict: true })) {
+          throw new LifecyclePageConflictError(
+            slug,
+            "reappeared after a completed delete",
+          );
+        }
+        return receipt.result;
+      }
+    } catch (error) {
+      if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+    }
+  }
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
+  const primaryDeleteAlreadyApplied = !page;
+  if (!page && (!idempotency || expectedContent === undefined)) {
+    throw new Error(`page not found: ${slug}`);
+  }
+  const recoveredTitle = expectedContent
+    ? parseFrontmatter(expectedContent).body.match(/^#\s+(.+)$/m)?.[1]?.trim()
+    : undefined;
+  const result = await runPageLifecycleOp(
+    slug,
+    {
+      kind: "delete",
+      title: page?.title ?? recoveredTitle ?? slug,
+      author,
+      expectedContent,
+      preserveRawSources,
+    },
+    "delete",
+    ({ strippedBacklinksFrom }) =>
+      `deleted after merge · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
+    idempotency
+      ? {
+          pageAlreadyWritten: false,
+          primaryDeleteAlreadyApplied,
+          previousContent: expectedContent,
+          logIdempotencyKey: idempotency.key,
+        }
+      : undefined,
+    true,
+    skipDeleteBacklinks,
+  );
+  const publicResult = {
+    slug: result.slug,
+    removedFromIndex: result.removedFromIndex,
+    strippedBacklinksFrom: result.strippedBacklinksFrom,
+  };
+  if (idempotency) {
+    await getStorage().writeFile(idempotency.receiptPath, JSON.stringify({
+      key: idempotency.key,
+      completedAt: new Date().toISOString(),
+      result: publicResult,
+    }));
+  }
+  return publicResult;
 }
 
 /**
@@ -705,10 +1435,59 @@ export async function deleteWikiPage(
  * Thin wrapper over {@link runPageLifecycleOp} — the actual 5 steps live in
  * the shared pipeline, which `deleteWikiPage` also flows through.
  */
-export async function writeWikiPageWithSideEffects(
+async function writeWikiPageWithSideEffectsInternal(
   opts: WritePageOptions,
+  pageLockAlreadyHeld = false,
 ): Promise<WritePageResult> {
+  // Deployment read-only (DW-188), answered before anything is read, validated
+  // or written. Every page create, edit, revert, re-ingest, lint-fix and merge
+  // in the codebase funnels through here, so this one line is what makes the
+  // refusal deployment-wide instead of door-by-door. See `read-only.ts` for why
+  // it throws rather than returning.
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+
   const { slug, title, content, summary, logOp, logDetails } = opts;
+
+  if (opts.idempotency) {
+    try {
+      const parsed = JSON.parse(await getStorage().readFile(opts.idempotency.receiptPath)) as {
+        key?: unknown;
+        result?: WritePageResult;
+      };
+      if (
+        parsed.key === opts.idempotency.key
+        && parsed.result?.slug === slug
+        && Array.isArray(parsed.result.updatedSlugs)
+      ) {
+        return parsed.result;
+      }
+    } catch (error) {
+      if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+    }
+  }
+
+  let pageAlreadyWritten = false;
+  if (opts.idempotency) {
+    let tenant = tenantForOwner(undefined);
+    try {
+      const fm = parseFrontmatter(content).data;
+      tenant = tenantForOwner(typeof fm.owner === "string" ? fm.owner : undefined);
+    } catch {
+      // The lifecycle uses the same default-tenant fallback below.
+    }
+    try {
+      pageAlreadyWritten = await getStorage().readFile(
+        tenantWikiRelPath(tenant, `${slug}.md`),
+      ) === content;
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      try {
+        pageAlreadyWritten = await getStorage().readFile(wikiRelPath(`${slug}.md`)) === content;
+      } catch (flatError) {
+        if (!isEnoent(flatError)) throw flatError;
+      }
+    }
+  }
 
   const result = await runPageLifecycleOp(
     slug,
@@ -719,10 +1498,54 @@ export async function writeWikiPageWithSideEffects(
       summary,
       crossRefSource: opts.crossRefSource,
       author: opts.author,
+      revisionReason: opts.revisionReason,
+      createOnly: opts.createOnly,
+      expectedContent: opts.expectedContent,
+      validateNewLinkTargets: opts.validateNewLinkTargets,
+      requiresExistingSlug: opts.requiresExistingSlug,
+      requiresExistingTenant: opts.requiresExistingTenant,
+      requiredTargetTenant: opts.requiredTargetTenant,
     },
     logOp,
     ({ crossRefedSlugs }) => logDetails?.({ updatedSlugs: crossRefedSlugs }),
+    opts.idempotency
+      ? {
+          pageAlreadyWritten,
+          previousContent: opts.expectedContent,
+          logIdempotencyKey: opts.idempotency.key,
+        }
+      : undefined,
+    pageLockAlreadyHeld,
   );
 
-  return { slug: result.slug, updatedSlugs: result.crossRefedSlugs };
+  const publicResult = { slug: result.slug, updatedSlugs: result.crossRefedSlugs };
+  if (opts.idempotency) {
+    await getStorage().writeFile(
+      opts.idempotency.receiptPath,
+      JSON.stringify({
+        key: opts.idempotency.key,
+        completedAt: new Date().toISOString(),
+        result: publicResult,
+      }),
+    );
+  }
+  return publicResult;
+}
+
+export async function writeWikiPageWithSideEffects(
+  opts: WritePageOptions,
+): Promise<WritePageResult> {
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
+  return writeWikiPageWithSideEffectsInternal(opts);
+}
+
+/** Write under a lock minted by {@link withPageLifecycleLocks}. */
+export async function writeWikiPageWithSideEffectsWhileLocked(
+  opts: WritePageOptions,
+  held: PageLifecycleLockHeld,
+): Promise<WritePageResult> {
+  if (!activePageLifecycleLockTokens.has(held) || !held.slugs.includes(opts.slug)) {
+    throw new Error(`page lifecycle lock for "${opts.slug}" is not held`);
+  }
+  return writeWikiPageWithSideEffectsInternal(opts, true);
 }

@@ -5,6 +5,7 @@
  * Maps the abstract storage operations to Cloudflare's services:
  *   - Text files + assets → R2 Bucket
  *   - Derived indexes → KV Namespace
+ *   - Atomic counters (`ATOMIC_COUNTER_INDEX_KEYS`) → R2 compare-and-swap
  *   - Embeddings → Vectorize Index (optional, falls back to KV)
  *
  * R2 is a flat key-value store, so "directories" are simulated using
@@ -13,12 +14,20 @@
 
 import type {
   StorageProvider,
+  BatchWriter,
   FileInfo,
   FileWithEtag,
   FileEntry,
-  EmbeddingMatch,
   EmbeddingEntry,
+  EmbeddingFilter,
+  EmbeddingQueryResult,
 } from "./types";
+import {
+  ATOMIC_COUNTER_INDEX_KEYS,
+  isAtomicCounterIndexKey,
+  mergeEmbeddingEntries,
+} from "./types";
+import { narrowIndexInteger } from "./index-integer";
 
 import type {
   CloudflareEnv,
@@ -38,8 +47,59 @@ const R2_LIST_PAGE_SIZE = 1000;
 /** KV key prefix for index entries. */
 const INDEX_PREFIX = "_idx:";
 
+/**
+ * R2 object prefix for counters that must increment across Worker isolates.
+ * Distinct from the KV `_idx:` prefix so a leftover KV value can seed the
+ * first compare-and-swap without the two stores writing the same key space.
+ */
+const ATOMIC_INDEX_R2_PREFIX = "_idx/";
+
+/** Give up rather than livelock a request if every compare-and-swap loses. */
+const INCREMENT_INDEX_MAX_ATTEMPTS = 32;
+
+function atomicIndexR2Key(key: string): string {
+  return `${ATOMIC_INDEX_R2_PREFIX}${key}`;
+}
+
 /** KV key for fallback embedding store when Vectorize is unavailable. */
 const EMBEDDINGS_KV_KEY = "_idx:embeddings";
+
+/**
+ * Vectors per `vectorize.upsert` call.
+ *
+ * `upsertEmbeddings` takes a set of ANY size — the interface puts no cap on it,
+ * and a caller is entitled to hand over a whole rebuild — while Vectorize caps
+ * one request. Chunking here rather than asking callers to is the difference
+ * between a large flush costing more requests and a large flush REJECTING, which
+ * on the rebuild path would cost every page in it. 1000 is comfortably under
+ * the documented per-request ceiling and is not load-bearing: any value that
+ * fits works, and the merge that precedes it already fixed the ordering.
+ */
+const VECTORIZE_UPSERT_CHUNK = 1000;
+
+/**
+ * The FLOOR this branch raises a filtered Vectorize request to.
+ *
+ * Vectorize ranks SERVER-side, so the pre-slice guarantee cannot be met by
+ * asking it for the top-K accepted vectors — see the comment on
+ * `queryEmbeddings` for why a server-side metadata filter is not the answer
+ * either. The branch therefore asks for a window at least this wide, filters it
+ * here, and slices to the caller's `topK`. Without the floor a filtered
+ * `topK: 1` would hand the single slot to whichever vector the predicate is
+ * about to refuse, which is the DW-598 shape exactly.
+ *
+ * It is a floor, never a cap: the request is `Math.max(topK, …)`, so a caller
+ * asking for more than this still gets its own width. Narrowing the door's
+ * ANSWER to buy a tidier filtered window would be the worse trade — callers
+ * already pass 30 (`RELATED_CANDIDATE_POOL`) and 64 (`browse.ts`).
+ *
+ * 20 is where the documented `topK` ceiling for `returnMetadata: "all"` sits,
+ * and this branch needs the metadata to evaluate the predicate at all. A caller
+ * that already asks for more than that is a PRE-EXISTING condition of this
+ * branch — it requested `returnMetadata: "all"` at that width before the
+ * predicate existed — which this change neither introduces nor fixes.
+ */
+const VECTORIZE_FILTERED_TOPK = 20;
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -135,6 +195,9 @@ export class R2StorageProvider implements StorageProvider {
     return {
       size: head.size,
       lastModified: head.uploaded,
+      // The keyspace is flat and `head` only answers for a real object, so
+      // there is no directory here to report.
+      isDirectory: false,
     };
   }
 
@@ -179,6 +242,21 @@ export class R2StorageProvider implements StorageProvider {
   // Optimistic concurrency
   // -------------------------------------------------------------------------
 
+  /**
+   * THE RAW `etag`, NOT `httpEtag`.
+   *
+   * `httpEtag` is the RFC-9110 QUOTED form, for putting in a response header;
+   * `R2Conditional.etagMatches` takes the raw one. Feeding the quoted value back
+   * into `writeFileIfMatch` compares `"abc"` against `abc`, which a strict
+   * runtime never matches — so every compare-and-set after the first would fail
+   * forever. Since DW-272 the settings save depends on this pair, and a
+   * permanently-losing CAS there means no save on Workers ever lands again, with
+   * no path out from any surface the owner can see.
+   *
+   * Safe because this etag is opaque to every caller and is never emitted as an
+   * HTTP header: `config.ts` and `graphify-jobs.ts` are the only readers, and
+   * both hand it straight back to {@link writeFileIfMatch}.
+   */
   async readFileWithEtag(path: string): Promise<FileWithEtag> {
     const obj = await this.bucket.get(path);
     if (!obj) {
@@ -186,8 +264,31 @@ export class R2StorageProvider implements StorageProvider {
     }
     return {
       content: await obj.text(),
-      etag: obj.httpEtag,
+      etag: obj.etag,
     };
+  }
+
+  async writeFileIfAbsent(path: string, content: string): Promise<boolean> {
+    const result = await this.bucket.put(path, content, {
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    return result !== null;
+  }
+
+  /**
+   * The binary twin of {@link writeFileIfAbsent}: the same native create-only
+   * conditional put, handed the `ArrayBuffer` instead of a string.
+   *
+   * `etagDoesNotMatch: "*"` is R2's "only if nothing is there" — one round
+   * trip that both tests and publishes, so concurrent creators cannot both
+   * win. A HEAD-then-`put` pair would reintroduce exactly the race this
+   * exists to close.
+   */
+  async writeAssetIfAbsent(path: string, data: ArrayBuffer): Promise<boolean> {
+    const result = await this.bucket.put(path, data, {
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    return result !== null;
   }
 
   async writeFileIfMatch(
@@ -207,12 +308,65 @@ export class R2StorageProvider implements StorageProvider {
   // -------------------------------------------------------------------------
 
   async getIndex<T = unknown>(key: string): Promise<T | null> {
+    if (isAtomicCounterIndexKey(key)) {
+      const obj = await this.bucket.get(atomicIndexR2Key(key));
+      if (obj) {
+        try {
+          return JSON.parse(await obj.text()) as T;
+        } catch {
+          return null;
+        }
+      }
+    }
     const value = await this.kv.get(`${INDEX_PREFIX}${key}`, "json");
     return (value as T) ?? null;
   }
 
   async putIndex<T = unknown>(key: string, value: T): Promise<void> {
+    if (isAtomicCounterIndexKey(key)) {
+      await this.bucket.put(atomicIndexR2Key(key), JSON.stringify(value));
+      return;
+    }
     await this.kv.put(`${INDEX_PREFIX}${key}`, JSON.stringify(value));
+  }
+
+  async incrementIndex(key: string): Promise<number> {
+    if (!isAtomicCounterIndexKey(key)) {
+      throw new Error(
+        `incrementIndex is only defined for atomic counter keys (${ATOMIC_COUNTER_INDEX_KEYS.join(", ")}); got ${JSON.stringify(key)}`,
+      );
+    }
+
+    const r2Key = atomicIndexR2Key(key);
+    const kvKey = `${INDEX_PREFIX}${key}`;
+
+    for (let attempt = 0; attempt < INCREMENT_INDEX_MAX_ATTEMPTS; attempt++) {
+      const obj = await this.bucket.get(r2Key);
+      let current: number;
+      let result: Awaited<ReturnType<R2Bucket["put"]>>;
+
+      if (obj) {
+        try {
+          current = narrowIndexInteger(JSON.parse(await obj.text()));
+        } catch {
+          current = 0;
+        }
+        result = await this.bucket.put(r2Key, JSON.stringify(current + 1), {
+          onlyIf: { etagMatches: obj.etag },
+        });
+      } else {
+        current = narrowIndexInteger(await this.kv.get(kvKey, "json"));
+        result = await this.bucket.put(r2Key, JSON.stringify(current + 1), {
+          onlyIf: { etagDoesNotMatch: "*" },
+        });
+      }
+
+      if (result) return current + 1;
+    }
+
+    throw new Error(
+      `incrementIndex(${key}) exhausted ${INCREMENT_INDEX_MAX_ATTEMPTS} compare-and-swap attempts`,
+    );
   }
 
   async listIndexKeys(prefix: string): Promise<string[]> {
@@ -233,6 +387,13 @@ export class R2StorageProvider implements StorageProvider {
       cursor = result.list_complete ? undefined : result.cursor;
     } while (cursor);
 
+    for (const atomic of ATOMIC_COUNTER_INDEX_KEYS) {
+      if (!atomic.startsWith(prefix) || keys.includes(atomic)) continue;
+      if (await this.bucket.head(atomicIndexR2Key(atomic))) {
+        keys.push(atomic);
+      }
+    }
+
     return keys;
   }
 
@@ -240,52 +401,123 @@ export class R2StorageProvider implements StorageProvider {
   // Embeddings / vector search
   // -------------------------------------------------------------------------
 
+  /**
+   * One vector, through the bulk door — the same delegation the filesystem
+   * provider makes, for the same reason: one implementation of the merge rule
+   * means a single upsert and a bulk upsert cannot disagree.
+   */
   async upsertEmbedding(
     id: string,
     vector: number[],
     metadata: Record<string, string>,
   ): Promise<void> {
-    if (this.vectorize) {
-      await this.vectorize.upsert([{ id, values: vector, metadata }]);
-    } else {
-      // Fallback: store in KV as a JSON blob (same approach as filesystem)
-      const entries = await this.loadEmbeddingsFromKV();
-      const idx = entries.findIndex((e) => e.id === id);
-      const entry = { id, vector, metadata };
-      if (idx >= 0) {
-        entries[idx] = entry;
-      } else {
-        entries.push(entry);
-      }
-      await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify(entries));
-    }
+    await this.upsertEmbeddings([{ id, vector, metadata }]);
   }
 
+  /**
+   * The whole set in one operation.
+   *
+   * Vectorize's `upsert` already takes an ARRAY, so the bulk door is what that
+   * API wanted all along; the set is de-duplicated first (`mergeEmbeddingEntries`
+   * against an empty base) so a repeated id inside one call resolves to the
+   * last value here rather than however the managed index happens to order
+   * two writes of one id in a single request. The KV fallback collapses to one
+   * load / merge / put, which is where the real saving is: it is the branch
+   * that otherwise rewrote the whole blob per vector.
+   *
+   * An empty set does nothing at all.
+   */
+  async upsertEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    if (this.vectorize) {
+      const vectors = mergeEmbeddingEntries([], entries).map((entry) => ({
+        id: entry.id,
+        values: entry.vector,
+        metadata: entry.metadata,
+      }));
+      // Chunked, so a set larger than the per-request ceiling costs more
+      // requests rather than rejecting the whole flush. De-duplication happened
+      // above, so no id can straddle two chunks and land twice.
+      for (let i = 0; i < vectors.length; i += VECTORIZE_UPSERT_CHUNK) {
+        await this.vectorize.upsert(vectors.slice(i, i + VECTORIZE_UPSERT_CHUNK));
+      }
+      return;
+    }
+    // Fallback: store in KV as a JSON blob (same approach as filesystem)
+    const stored = await this.loadEmbeddingsFromKV();
+    await this.kv.put(
+      EMBEDDINGS_KV_KEY,
+      JSON.stringify(mergeEmbeddingEntries(stored, entries)),
+    );
+  }
+
+  /**
+   * Two branches, and only one of them can honour the pre-slice guarantee
+   * exactly.
+   *
+   * The KV fallback ranks locally over a blob it already holds in memory, so it
+   * mirrors the filesystem provider precisely: filter, then score, sort and
+   * slice.
+   *
+   * Vectorize ranks SERVER-side. When `accept` is supplied this branch
+   * over-fetches to {@link VECTORIZE_FILTERED_TOPK}, filters that window here,
+   * and slices to `topK` — so `rejected` is WINDOW-SCOPED, not corpus-scoped: it
+   * counts what the over-fetched window turned away and says nothing about
+   * vectors ranked below it. A corpus deeper than the ceiling can therefore
+   * still hand back fewer than `topK` accepted matches, and the caller's drift
+   * gate is stated in those terms rather than pretending otherwise (see
+   * `warnedMisconfigurations` in `embeddings.ts`).
+   *
+   * A server-side metadata filter is NOT the fix, and is deliberately not used.
+   * The only caller's predicate is "the vector's model is the active one OR the
+   * vector carries no model at all" — unlabelled legacy vectors are KEPT on
+   * purpose, since dropping them empties the corpus after a first deploy.
+   * Vectorize's filter grammar is `$eq/$ne/$lt/$lte/$gt/$gte/$in/$nin` over a
+   * field with no existence operator, and a vector missing the filtered field
+   * is excluded, so every expressible approximation would drop the legacy
+   * vectors from what this door RETURNS, not merely from what the caller
+   * judges. That is a change to the answer, which the caller forbids.
+   */
   async queryEmbeddings(
     vector: number[],
     topK: number,
-  ): Promise<EmbeddingMatch[]> {
+    accept?: EmbeddingFilter,
+  ): Promise<EmbeddingQueryResult> {
     if (this.vectorize) {
       const result = await this.vectorize.query(vector, {
-        topK,
+        topK: accept ? Math.max(topK, VECTORIZE_FILTERED_TOPK) : topK,
         returnMetadata: "all",
       });
-      return result.matches.map((m) => ({
+      const window = result.matches.map((m) => ({
         id: m.id,
         score: m.score,
         metadata: (m.metadata as Record<string, string>) ?? {},
       }));
+      if (!accept) return { matches: window, rejected: 0 };
+      const kept = window.filter((m) => accept(m.metadata));
+      return {
+        matches: kept.slice(0, topK),
+        rejected: window.length - kept.length,
+      };
     }
 
-    // Fallback: brute-force cosine similarity in KV
+    // Fallback: brute-force cosine similarity in KV. Local ranking, so the
+    // predicate narrows the candidate set BEFORE the sort and slice — exactly
+    // as the filesystem provider does.
     const entries = await this.loadEmbeddingsFromKV();
-    const scored = entries.map((e) => ({
+    const candidates = accept
+      ? entries.filter((e) => accept(e.metadata))
+      : entries;
+    const scored = candidates.map((e) => ({
       id: e.id,
       score: cosineSimilarity(vector, e.vector),
       metadata: e.metadata,
     }));
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
+    return {
+      matches: scored.slice(0, topK),
+      rejected: entries.length - candidates.length,
+    };
   }
 
   async getEmbeddingById(id: string): Promise<EmbeddingEntry | null> {
@@ -327,6 +559,54 @@ export class R2StorageProvider implements StorageProvider {
       return;
     }
     await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify([]));
+  }
+
+  // -------------------------------------------------------------------------
+  // Batched writes
+  // -------------------------------------------------------------------------
+
+  /**
+   * A pass-through — R2 has nothing to batch.
+   *
+   * The filesystem door exists because a whole-file write there costs a real
+   * fsync, and a loop of them costs one each. An R2 write is a single-object
+   * PUT: it is already its own barrier, it is already atomic, and it is already
+   * acknowledged as durable when it resolves. There is no per-write cost to
+   * defer and therefore nothing a scope could amortise.
+   *
+   * It is implemented anyway because the door is part of the
+   * {@link StorageProvider} contract, and a caller must be able to take it
+   * without asking which provider it is talking to. On this provider the
+   * "trade" the interface describes simply is not made: every batch member is
+   * as durable as if it had been written alone.
+   */
+  async withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T> {
+    // Closed at scope exit even though nothing here is deferred, because the
+    // CONTRACT must not differ per provider: a body that leaks the writer has
+    // to fail the same way on both, or the bug is found only in production.
+    let closed = false;
+    const guard = (filePath: string): void => {
+      if (!closed) return;
+      throw new Error(
+        `withBatchedWrites: the batch writer was used after its scope exited (${filePath}). ` +
+          "Every write must be awaited inside the body.",
+      );
+    };
+    const batch: BatchWriter = {
+      writeFile: async (filePath, content) => {
+        guard(filePath);
+        await this.writeFile(filePath, content);
+      },
+      writeAsset: async (filePath, data) => {
+        guard(filePath);
+        await this.writeAsset(filePath, data);
+      },
+    };
+    try {
+      return await fn(batch);
+    } finally {
+      closed = true;
+    }
   }
 
   // -------------------------------------------------------------------------

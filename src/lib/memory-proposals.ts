@@ -427,6 +427,7 @@ export async function applyMemoryChangeProposal(
       logOp: proposal.kind === "create" ? "save" : "edit",
       crossRefSource: null,
       author: reviewedBy,
+      ...(current ? { expectedContent: current.content } : { createOnly: true }),
       logDetails: () => `accepted memory proposal ${proposal.id}`,
     });
 

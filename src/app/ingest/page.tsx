@@ -79,13 +79,13 @@ export default function IngestPage() {
   const currentStep: 1 | 2 = stage === "queued" ? 2 : 1;
 
   return (
-    <main
+    <div
       className="mx-auto px-6"
       style={{ maxWidth: 900, paddingTop: 56, paddingBottom: 88 }}
     >
       {/* Hero — persists across all three steps */}
       <p className="fmark" style={{ marginBottom: 18 }}>
-        contribute to the commons
+        add to your wiki
       </p>
       <h1
         className="display"
@@ -105,7 +105,7 @@ export default function IngestPage() {
         }}
       >
         Drop a link, document, spreadsheet, PDF, or post. yoyo synthesizes it into a cited page — and
-        merges it if the source already lives in the commons.
+        merges it if the source already lives in your wiki.
       </p>
 
       <IngestStepper current={currentStep} />
@@ -414,6 +414,6 @@ export default function IngestPage() {
           <RecentIngests />
         </>
       )}
-    </main>
+    </div>
   );
 }

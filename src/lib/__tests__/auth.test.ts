@@ -7,8 +7,19 @@ vi.mock("@clerk/nextjs/server", () => ({
   currentUser: vi.fn(),
 }));
 
+const cookieValue = vi.hoisted(() => ({ current: undefined as string | undefined }));
+vi.mock("next/headers", () => ({
+  cookies: vi.fn(async () => ({
+    get: (name: string) =>
+      name === "yopedia_e2e" && cookieValue.current
+        ? { value: cookieValue.current }
+        : undefined,
+  })),
+}));
+
 import { getServicePrincipal, getPrincipal } from "../auth";
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { E2E_DEFAULT_HANDLE, mintE2eCookie } from "../e2e-identity";
 import { logger } from "../logger";
 
 const mockedAuth = vi.mocked(auth);
@@ -16,6 +27,31 @@ const mockedCurrentUser = vi.mocked(currentUser);
 
 const TOKEN = "s3cr3t-service-token-abcdef";
 const HANDLE = "yoyo-bot";
+
+/**
+ * DW-500 — TWO configured owner ids, because one cannot be told from a
+ * hardcode.
+ *
+ * The row below used to arm `YOPEDIA_OWNER_USER_ID` and mint the cookie from a
+ * single literal, so `e2eOwnerUserId()` could have ignored the environment and
+ * returned that constant with the assertion none the wiser — the same vacuity
+ * this file's handle fix closes, one field over. Whichever id such a hardcode
+ * named, the other case here refuses to mint a principal at all.
+ */
+const E2E_OWNER_IDS = ["user_e2e_owner", "user_e2e_rotated_owner"] as const;
+const E2E_SECRET = "e2e-local-secret-do-not-use-in-prod-32";
+/**
+ * DW-500 — the E2E row's handle, deliberately NOT `E2E_DEFAULT_HANDLE`.
+ *
+ * The row used to arm the harness with the literal `"e2e-owner"`, which IS the
+ * default `e2eOwnerHandle()` falls back to. On that evidence the function could
+ * have ignored `NEXT_PUBLIC_OWNER_HANDLE` entirely and returned the constant,
+ * and this file would have stayed green — the two sides of the assertion were
+ * one value. Configuring something the fallback can never produce is what makes
+ * the row observe the environment rather than the default. The `not.toBe` guard
+ * inside the row keeps that true if either literal is ever edited.
+ */
+const E2E_CONFIGURED_HANDLE = "e2e-configured-owner";
 
 function reqWith(authHeader?: string): Request {
   const headers = new Headers();
@@ -193,4 +229,50 @@ describe("getPrincipal", () => {
     warn.mockRestore();
     error.mockRestore();
   });
+
+  it.each(E2E_OWNER_IDS)(
+    "returns the local E2E owner %s, carrying the CONFIGURED handle, without calling Clerk",
+    async (ownerUserId) => {
+      // DW-500 — non-vacuity first: if the fixture handle ever became the
+      // default again, the assertion below would stop distinguishing "read the
+      // environment" from "returned the constant" and this row would go quiet.
+      expect(E2E_CONFIGURED_HANDLE).not.toBe(E2E_DEFAULT_HANDLE);
+      // …and the two configured owners must actually differ, for the same reason.
+      expect(new Set(E2E_OWNER_IDS).size).toBe(E2E_OWNER_IDS.length);
+
+      const saved = {
+        flag: process.env.YOPEDIA_E2E,
+        secret: process.env.YOPEDIA_E2E_SECRET,
+        owner: process.env.YOPEDIA_OWNER_USER_ID,
+        site: process.env.YOPEDIA_SITE_URL,
+        handle: process.env.NEXT_PUBLIC_OWNER_HANDLE,
+      };
+      process.env.YOPEDIA_E2E = "1";
+      process.env.YOPEDIA_E2E_SECRET = E2E_SECRET;
+      process.env.YOPEDIA_OWNER_USER_ID = ownerUserId;
+      delete process.env.YOPEDIA_SITE_URL;
+      process.env.NEXT_PUBLIC_OWNER_HANDLE = E2E_CONFIGURED_HANDLE;
+      cookieValue.current = await mintE2eCookie(ownerUserId, E2E_SECRET);
+      mockedAuth.mockClear();
+      try {
+        await expect(getPrincipal()).resolves.toEqual({
+          id: ownerUserId,
+          handle: E2E_CONFIGURED_HANDLE,
+        });
+        expect(mockedAuth).not.toHaveBeenCalled();
+      } finally {
+        cookieValue.current = undefined;
+        restoreEnv("YOPEDIA_E2E", saved.flag);
+        restoreEnv("YOPEDIA_E2E_SECRET", saved.secret);
+        restoreEnv("YOPEDIA_OWNER_USER_ID", saved.owner);
+        restoreEnv("YOPEDIA_SITE_URL", saved.site);
+        restoreEnv("NEXT_PUBLIC_OWNER_HANDLE", saved.handle);
+      }
+    },
+  );
 });
+
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}

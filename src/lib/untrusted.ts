@@ -1,6 +1,6 @@
 /**
  * Data-vs-instructions boundary ("spotlighting") for untrusted content fed to an
- * LLM. Wiki page bodies are collectively editable and ingested from third-party
+ * LLM. Wiki page bodies are multi-author and ingested from third-party
  * sources (web / X / PDF / YouTube), so when they're inlined into a prompt they
  * are a live indirect-prompt-injection channel (OWASP LLM01). When we hand such
  * content to a model we delimit it in a labeled `<wiki_content>` block and tell

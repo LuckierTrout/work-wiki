@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { Alert } from "@/components/Alert";
 import {
@@ -9,6 +8,7 @@ import {
   type HistoryEntry,
 } from "@/components/QueryHistorySidebar";
 import { QueryResultPanel } from "@/components/QueryResultPanel";
+import { DataviewPanel } from "@/components/DataviewPanel";
 import { useStreamingQuery } from "@/hooks/useStreamingQuery";
 import type { QueryFormat } from "@/lib/query-format";
 import { Icon } from "@/components/folio/icons";
@@ -16,7 +16,7 @@ import { logger } from "@/lib/logger";
 
 const EXAMPLES = [
   "What is harness engineering?",
-  "How is WorkWiki different from RAG?",
+  "How is work-wiki different from RAG?",
   "What are the agentic harness patterns?",
 ];
 
@@ -227,7 +227,7 @@ export default function QueryPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6" style={{ paddingTop: 64, paddingBottom: 88 }}>
+    <div className="mx-auto max-w-4xl px-6" style={{ paddingTop: 64, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 18 }}>
         ask the accumulated brain
       </p>
@@ -251,12 +251,9 @@ export default function QueryPage() {
           >
             <span style={{ color: "var(--muted)" }}>
               Answering from{" "}
-              <Link
-                href={`/u/${scopedHandle}`}
-                style={{ color: "var(--ink)", fontWeight: 600, textDecoration: "none" }}
-              >
+              <span style={{ color: "var(--ink)", fontWeight: 600 }}>
                 @{scopedHandle}
-              </Link>
+              </span>
               ’s pages
             </span>
             <button
@@ -335,7 +332,7 @@ export default function QueryPage() {
                       e.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  placeholder="Ask the commons a question…"
+                  placeholder="Ask your wiki a question…"
                   aria-label="Your question"
                   rows={2}
                   style={{
@@ -409,7 +406,7 @@ export default function QueryPage() {
                 margin: "22px 4px 0",
               }}
             >
-              Unlike a chat, an answer here is grounded in the commons — it cites
+              Unlike a chat, an answer here is grounded in your wiki — it cites
               the pages it stands on, with each page&apos;s confidence shown, so
               you can trace and trust it.
             </p>
@@ -468,6 +465,22 @@ export default function QueryPage() {
           )}
         </div>
 
+        {/* Structured (Dataview) query over page frontmatter. It used to be a
+            collapsible panel on the wiki index, which was retired with the
+            commons (AD-21); `/api/wiki/dataview` was never part of that cut, so
+            the panel is re-homed here beside the natural-language ask. */}
+        <details style={{ marginTop: 40 }}>
+          <summary
+            className="receipt"
+            style={{ cursor: "pointer", color: "var(--muted)", fontSize: 12.5 }}
+          >
+            Structured query — filter pages by frontmatter field
+          </summary>
+          <div style={{ marginTop: 16 }}>
+            <DataviewPanel />
+          </div>
+        </details>
+
         {/* Recent queries — below the answer (was a right-hand sidebar). */}
         <div style={{ marginTop: 48 }}>
           <QueryHistorySidebar
@@ -478,6 +491,6 @@ export default function QueryPage() {
           />
         </div>
       </div>
-    </main>
+    </div>
   );
 }

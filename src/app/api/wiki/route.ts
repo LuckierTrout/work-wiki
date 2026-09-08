@@ -11,6 +11,7 @@ import {
 import { extractSummary } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 /**
  * GET /api/wiki
@@ -99,8 +100,18 @@ export async function POST(req: Request) {
 
     validateSlug(slug);
 
-    // Conflict check — don't overwrite existing pages
-    const existing = await readWikiPage(slug);
+    // Conflict check — don't overwrite existing pages.
+    //
+    // FRESH (DW-195). This read's answer decides a mutation: `null` here is
+    // what lets the create below proceed. `pageCache` is module-global and
+    // ref-counted around bulk scans, so a concurrent scan can hold a superseded
+    // entry open and the guard would rule on bytes that are no longer stored.
+    //
+    // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+    // `null`, indistinguishable from "no page here", and the guard reads a
+    // blip as proof the slug is free — landing a create over a stored Page.
+    // Strict rethrows to the catch below, which already answers 500.
+    const existing = await readWikiPage(slug, { fresh: true, strict: true });
     if (existing) {
       return NextResponse.json(
         { error: `page already exists: ${slug}` },
@@ -147,6 +158,8 @@ export async function POST(req: Request) {
       logOp: "ingest",
       crossRefSource: content,
       author: authorStr,
+      createOnly: true,
+      validateNewLinkTargets: true,
       logDetails: (ctx) =>
         `created · found ${ctx.updatedSlugs.length} cross-ref(s)`,
     });
@@ -155,6 +168,15 @@ export async function POST(req: Request) {
     // `/u/<tenant>/<slug>` URL after creation (tenant-silos P2).
     return NextResponse.json({ ...result, owner: authorStr }, { status: 201 });
   } catch (err) {
+    // Deployment read-only (DW-187). `writeWikiPageWithSideEffects` is the
+    // enforcement point — this maps its refusal to the 403 the sibling
+    // `/api/wiki/[slug]` routes already answer, instead of the 500 the
+    // fall-through below would give it. The 409 above still wins for a slug
+    // that already exists: that conflict is true regardless of the flag, and
+    // the read costs nothing.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

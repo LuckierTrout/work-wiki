@@ -1,20 +1,18 @@
 import type { IndexEntry } from "./types";
-import { commonsPath, ownerToTenant, pagePath } from "./links";
+import { ownerToTenant, pagePath } from "./links";
 import { isArtifactType } from "./page-types";
 
 export interface BrowsePageKind {
   label: string;
 }
 
-/** Resolve a browse result to the same canonical destination used by article rows. */
+/**
+ * Resolve a browse result to the same canonical destination used by article
+ * rows — always the owner-scoped `/u/<tenant>/<slug>`, since the public commons
+ * URL is retired.
+ */
 export function browsePageHref(page: IndexEntry): string {
-  const isCommons =
-    page.visibility !== "private" &&
-    !page.type?.startsWith("agent-") &&
-    !isArtifactType(page.type);
-  return isCommons
-    ? commonsPath(page.slug)
-    : pagePath(ownerToTenant(page.owner), page.slug);
+  return pagePath(ownerToTenant(page.owner), page.slug);
 }
 
 /** A compact, honest file-kind label using metadata available in the index. */

@@ -23,7 +23,7 @@ export function PageError({
   const hint = getErrorHint(error.message);
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <div className="mx-auto max-w-3xl px-6 py-12">
       <h1 className="text-2xl font-bold">{title}</h1>
       <p className="mt-2 text-foreground/60">{description}</p>
       <p className="mt-4 rounded-lg border border-red-500/20 bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
@@ -56,6 +56,6 @@ export function PageError({
           {backLabel}
         </Link>
       </div>
-    </main>
+    </div>
   );
 }

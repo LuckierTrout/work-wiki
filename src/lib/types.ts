@@ -55,6 +55,11 @@ export interface IngestResult {
    * rather than "created".
    */
   deduped?: boolean;
+  /**
+   * True when SHA-256 of the stored Source bytes already had a page — Activity
+   * shows `skipped` and Analysis/Generation did not run.
+   */
+  skipped?: boolean;
 }
 
 /** Result from a query against the wiki. */
@@ -67,7 +72,7 @@ export interface QueryResult {
 
 /** A single issue found by the lint operation. */
 export interface LintIssue {
-  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "unresolved-discussions" | "disputed-page" | "supersedes-dangling" | "incomplete-coverage";
+  type: "orphan-page" | "stale-index" | "missing-crossref" | "empty-page" | "contradiction" | "missing-concept-page" | "broken-link" | "stale-page" | "low-confidence" | "unmigrated-page" | "duplicate-entity" | "uncited-claims" | "supersedes-dangling" | "incomplete-coverage" | "disputed-page";
   slug: string;
   /** Structured target slug for cross-ref, contradiction, broken-link, and duplicate-entity fixes.
    * Eliminates the need to parse human-readable messages to extract targets. */
@@ -97,7 +102,7 @@ export interface LintResult {
 /** A single provenance entry in the structured `sources[]` array. */
 export interface SourceEntry {
   /** Provenance type: how the source was acquired. */
-  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
+  type: "url" | "text" | "x-mention" | "wiki-ref" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   /** Source URL or "text-paste" for pasted content. */
   url: string;
   /** ISO date string of when the source was fetched/ingested. */
@@ -108,8 +113,18 @@ export interface SourceEntry {
    * Identifier of this source's per-source raw snapshot at
    * `raw/<slug>/<raw_id>.md`. Absent on legacy pages ingested before per-source
    * raw existed (those keep only the single latest `raw/<slug>.md`).
+   *
+   * When present it is a hex digest at one of the two lengths the writers mint —
+   * 16 from `contentHash` (`embeddings.ts`) or 64 from
+   * `sourceSha256`/`bytesSha256` (`source-sha256.ts`). That bound is enforced,
+   * not merely documented: `RAW_ID_RE` in `raw.ts` is the ONE rule the writers,
+   * `readRawSourceById` and `isRawSnapshotName` all test, so an id of any other
+   * length is rejected at the writer and names no snapshot the listing or the
+   * silo mirror will admit (DW-744).
    */
   raw_id?: string;
+  /** Plaud-origin Intake. Absent on other doors. Survives job GC. */
+  origin?: "plaud";
 }
 
 // ---------------------------------------------------------------------------
@@ -257,4 +272,20 @@ export interface ProviderInfo {
   model: string | null;
   /** true if the active provider supports embeddings */
   embeddingSupport: boolean;
+  /**
+   * Why `OLLAMA_BASE_URL` was thrown away, or `null` when it was not (DW-402).
+   *
+   * THE ENV LEG ONLY, matching everything else on this object: `ProviderInfo`
+   * reports what the ENVIRONMENT selects, and `detectEnvProvider` does not
+   * consult the stored config by DW-370's own design. A stored endpoint the
+   * resolver refused is reported on `EffectiveSettings.ollamaBaseUrlIssue`
+   * instead, which is the full ladder's answer.
+   *
+   * It exists because refusing the variable is otherwise INVISIBLE to every
+   * consumer of `/api/status`: `configured: false` and `provider: null` are the
+   * same reading for "nothing was set" and for "what you set was rejected", and
+   * only the second has a fix. `StatusBadge`'s help panel advertises this very
+   * variable, so without the sentence it recommends the step already taken.
+   */
+  ollamaBaseUrlIssue: string | null;
 }

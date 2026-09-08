@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { lint, ALL_CHECK_TYPES } from "@/lib/lint";
 import { getErrorMessage } from "@/lib/errors";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import type { LintOptions, LintIssue } from "@/lib/types";
 import { logger } from "@/lib/logger";
 
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   try {
     // Lint is an owner-only admin tool.
     const principal = await getPrincipal();
-    if (!isOwnerHandle(principal?.handle)) {
+    if (!isOwnerPrincipal(principal)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

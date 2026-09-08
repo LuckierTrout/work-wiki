@@ -1,0 +1,2241 @@
+"use client";
+
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type ReactNode,
+} from "react";
+import { APP_NAME } from "@/lib/brand";
+import { nextAnnouncement } from "@/lib/live-region";
+import { usePageOrigin } from "@/hooks/usePageOrigin";
+import { useSidecarStatus } from "@/hooks/useSidecarStatus";
+import { useShortcutAction } from "@/hooks/useKeyboardShortcuts";
+import {
+  DEFAULT_WORKBENCH_MODE,
+  workbenchMode,
+  type WorkbenchModeId,
+} from "@/lib/workbench-modes";
+import {
+  DEFAULT_SPLIT_WIDTHS,
+  SPLIT_NARROW_QUERY,
+  SPLIT_WIDE_QUERY,
+  clampSplitWidth,
+  clampSplitWidths,
+  layoutSignature,
+  nextSplitWidthFromKey,
+  showSplitHandle,
+  splitBounds,
+  splitGrabOffset,
+  splitLabel,
+  splitStyleVars,
+  splitWidthFromPointer,
+  withSplitWidth,
+  type SplitBounds,
+  type SplitId,
+  type SplitLayout,
+  type SplitWidths,
+} from "@/lib/workbench-split";
+import {
+  readStoredCollapsed,
+  readStoredMode,
+  readStoredSelection,
+  readStoredSplitWidths,
+  readStoredTreeTab,
+  writeStoredCollapsed,
+  writeStoredMode,
+  writeStoredSelection,
+  writeStoredResearchFill,
+  writeStoredSplitWidths,
+  writeStoredTreeTab,
+} from "@/lib/workbench-state";
+import {
+  initialMode,
+  locationHref,
+  readSettingsCategoryFromSearch,
+  readSettingsFromSearch,
+  surfaceHref,
+} from "@/lib/workbench-url";
+import {
+  DEFAULT_SETTINGS_CATEGORY,
+  SETTINGS_LABEL,
+  settingsAnnouncement,
+  settingsCategory,
+  type SettingsCategoryId,
+} from "@/lib/workbench-settings";
+import {
+  PREVIEW_CLOSED_COPY,
+  PREVIEW_DISCARD_CONFIRM_BODY,
+  PREVIEW_DISCARD_CONFIRM_LABEL,
+  PREVIEW_DISCARD_CONFIRM_TITLE,
+  PREVIEW_KEEP_EDITING_COPY,
+  PREVIEW_REMOVED_COPY,
+  previewDockAnnouncement,
+} from "@/lib/workbench-preview";
+import {
+  INTAKE_DROP_COPY,
+  INTAKE_FILE_REQUIRED_COPY,
+  INTAKE_IN_FLIGHT_COPY,
+  INTAKE_READ_ONLY_COPY,
+  intakeDragHasFiles,
+} from "@/lib/workbench-intake";
+import {
+  intakeReport,
+  intakeShouldRefresh,
+  emptyFolderOutcome,
+  submitIntakeFiles,
+  submitIntakeUrl,
+  type IntakeOutcome,
+} from "@/lib/workbench-intake-client";
+import { requestDataVersionCheck } from "@/lib/workbench-data-version";
+import {
+  DEFAULT_TREE_TAB,
+  isKernelSelection,
+  isSameSelection,
+  restorableSelection,
+  selectionName,
+  selectionRefreshAction,
+  shouldDockPreview,
+  wikilinkSelection,
+  type TreeSelection,
+  type TreeTabId,
+} from "@/lib/workbench-tree";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { send } from "@/lib/workbench-request";
+import {
+  SOURCE_DELETE_BODY,
+  SOURCE_DELETE_CANCEL,
+  SOURCE_DELETE_CONFIRM,
+  SOURCE_DELETE_TITLE,
+  SOURCE_ROUTE,
+} from "@/lib/source-delete";
+import { IconRail } from "./IconRail";
+import { ActivityDock } from "./ActivityDock";
+import { IntakeControls } from "./IntakeControls";
+import { SourcesTree } from "./SourcesTree";
+import { CANVAS_ID, ModeCanvas } from "./ModeCanvas";
+import { PreviewColumn } from "./PreviewColumn";
+import { SettingsCanvas } from "./SettingsCanvas";
+import { SettingsNav } from "./SettingsNav";
+import { SplitHandle } from "./SplitHandle";
+import { TreePanel } from "./TreePanel";
+import { WikiSwitcher } from "./WikiSwitcher";
+import { WorkspacePreview } from "./WorkspacePreview";
+import { useWorkbenchData } from "./WorkbenchData";
+import { useReviewBadge } from "./useReviewBadge";
+import type { EditableArtifactFile } from "@/lib/wiki-scenarios";
+
+/**
+ * The Workbench shell — rail, left column, canvas, and the Preview column that
+ * docks beside them — and the container Stories 1.5 through 1.7 build inside.
+ *
+ * Switching modes is `setMode` on ONE mounted shell: never `router.push`, never
+ * a `<Link>`. Routing per mode would unmount everything above the mode panel,
+ * which is exactly what `epics.md:367` forbids (a mode switch must not destroy
+ * typed Chat input). Epic 1 ships no composer, so the rule has no visible
+ * surface yet; honouring it structurally now is what lets Story 3.2 lift a
+ * draft into this state without a rewrite.
+ *
+ * The active mode is nonetheless MIRRORED into `?mode=` (DW-27), and an open
+ * Settings surface into `?settings=1` beside it (DW-167), so a surface can be
+ * linked, bookmarked and reached with Back — and so Back from Settings on the
+ * first entry of a session closes the surface instead of leaving the app with
+ * its unsaved draft. That is `window.history`
+ * pushState / replaceState — Next 15's sanctioned shallow-routing call, which
+ * updates the URL with no server round trip and no unmount — never the router,
+ * and never a `next/navigation` search-params hook (it would force a Suspense
+ * boundary onto `page.tsx`). The ban is on ROUTING, not on the URL. Every rule
+ * about WHAT the URL says lives in `workbench-url.ts` where the node suite can
+ * execute it; all that is spelled here is WHEN a history entry is written.
+ *
+ * One consequence of that mirroring reaches outside this file: because Next
+ * patches the history methods, the search-params hook elsewhere in the tree SEES
+ * each write — and `Analytics` (mounted app-wide by `ClientProviders`) captures
+ * a `$pageview` whenever it changes. So a mode switch is now a pageview — one
+ * per rail click, plus one more when the mount seed corrects the URL — and so
+ * is opening or closing Settings, for the same reason and by the same route.
+ * Recorded rather than suppressed: a surface has an address now, so counting a
+ * switch as a page view is the honest reading, and the alternative is teaching
+ * `Analytics` to special-case the two params this component owns.
+ *
+ * DOM order is rail → left column → canvas → Preview, so the tab order the
+ * accessibility floor specifies falls out of the markup instead of `tabindex`
+ * juggling.
+ */
+
+export interface WorkbenchProps {
+  /** The Wiki mode canvas — Story 1.2's server-rendered surface. */
+  children: ReactNode;
+  /** Rail badge counts. Epics 4 and 5 own the real numbers; 0 hides the badge. */
+  todoCount?: number;
+  reviewCount?: number;
+}
+
+/** Stable so the sheet trigger can name the rail it opens via `aria-controls`. */
+const RAIL_ID = "wb-mode-rail";
+
+/** Stable so the rail's collapse chevron can name the column it toggles. */
+const LEFT_ID = "wb-left-column";
+
+/**
+ * Stable so the Preview divider can name the column it resizes (DW-45).
+ *
+ * The `<aside>` is rendered while `previewDocked`, which is `shouldDockPreview`
+ * on its own — so the id this separator points at exists for at least as long
+ * as the separator does, and `aria-controls` never dangles.
+ *
+ * It can now outlive the separator by one condition, and only one: while
+ * Settings is showing the column stays MOUNTED behind `hidden` (DW-412) so its
+ * unsaved markdown survives the visit, and `showSplitHandle("preview", …)`
+ * reads `previewOpen` — the on-screen boolean — so the divider is gone. An id
+ * on a withdrawn element with no separator pointing at it is nothing; a
+ * separator pointing at an id that had been unmounted would be the broken
+ * direction, and that one cannot happen.
+ */
+const PREVIEW_ID = "wb-preview-column";
+
+export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount: reviewCountProp = 0 }: WorkbenchProps) {
+  // The left column's working set is server-loaded in `page.tsx` and handed
+  // across the server/client boundary by `WorkbenchDataProvider`.
+  const {
+    wikis,
+    currentWikiId,
+    registryUnavailable,
+    knowledge,
+    knowledgeUnavailable,
+    files,
+    filesUnavailable,
+    filesTruncated,
+    dataVersion,
+    readOnly,
+  } = useWorkbenchData();
+  const [todoCount, setTodoCount] = useState(todoCountProp);
+  const todoBadgeSeq = useRef(0);
+  const [reviewCount, handleReviewCountChange] = useReviewBadge(
+    currentWikiId,
+    dataVersion,
+    reviewCountProp,
+  );
+  const [researchFillId, setResearchFillId] = useState<string | null>(null);
+  const [mode, setModeState] = useState<WorkbenchModeId>(DEFAULT_WORKBENCH_MODE);
+  const [collapsed, setCollapsed] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [treeTab, setTreeTab] = useState<TreeTabId>(DEFAULT_TREE_TAB);
+  // Story 1.9's surface. Deliberately NOT persisted: `workbench-state.ts`'s
+  // durable set is mode, tab, selection, collapse and widths, and a reload must
+  // not land the owner in Settings holding a form they have no context for.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCategoryId, setSettingsCategoryId] = useState<SettingsCategoryId>(
+    DEFAULT_SETTINGS_CATEGORY,
+  );
+  // Which tree row is showing in the Preview column. The shell owns it — not
+  // the tree — so Story 1.6 has one place to restore it from and the Preview
+  // dock is decided by the same component that owns the grid.
+  const [selection, setSelection] = useState<TreeSelection | null>(null);
+  // A pick the owner made that has NOT been applied, because the Preview editor
+  // is holding unsaved text (DW-36). State rather than a ref: the discard dialog
+  // renders from it, and `null` is the whole of "no pick is being held". The
+  // held pick changes nothing else — no announcement, no `ownerPickedRef` write,
+  // no storage write — so cancelling leaves the shell byte-identical.
+  const [pendingSelection, setPendingSelection] = useState<TreeSelection | null>(null);
+  const [pendingArtifactNavigation, setPendingArtifactNavigation] =
+    useState<EditableArtifactFile | null>(null);
+  // Story 2.1's Intake state, all three pieces owned HERE rather than in
+  // `IntakeControls`: the same submit path is reached from the control and from
+  // this shell's own drop handler, and a control that owned the flag, the
+  // sentence or the outcomes would leave a drop and a pick reporting themselves
+  // differently. Deliberately not persisted — an arrival is an event, and a
+  // reload must not restore a sentence about one that finished.
+  const [intakeBusy, setIntakeBusy] = useState(false);
+  // The disabled chrome reads `intakeBusy` state. The GATE reads this ref: two
+  // drops or a drop+click in the same tick both see the state as false, share
+  // one `finally`, and the first to resolve clears the flag while the second
+  // is still posting. The ref is set synchronously before either request.
+  const intakeBusyRef = useRef(false);
+  const [intakeStatus, setIntakeStatus] = useState("");
+  const [sourceDeletePath, setSourceDeletePath] = useState<string | null>(null);
+  const [sourceDeleteBusy, setSourceDeleteBusy] = useState(false);
+  const [sourceDeleteError, setSourceDeleteError] = useState<string | null>(null);
+  // Is a file drag currently over the shell? The visible affordance only.
+  const [dropActive, setDropActive] = useState(false);
+  // `dragenter`/`dragleave` fire for every DESCENDANT the pointer crosses, so a
+  // drag moving across the tree rows emits a leave for each row it exits. A
+  // counter is what distinguishes "left a child" from "left the shell"; without
+  // it the affordance flickers off over the first boundary it meets. A ref
+  // rather than state: nothing renders from the depth itself, only from the
+  // boolean above.
+  const dragDepthRef = useRef(0);
+  // Stored layout state exists only in the browser. Rendering it during SSR
+  // would hydrate a different tree than the server sent, so the first paint is
+  // always the default and the restore lands in an effect.
+  const [mounted, setMounted] = useState(false);
+  // What the live region says. Deliberately separate from `mode`: restoring a
+  // stored mode on load is not a change the owner made, and announcing it would
+  // report a mode switch that never happened. Only `selectMode` fills this in.
+  const [announcement, setAnnouncement] = useState("");
+  /**
+   * THE way anything writes that region (DW-182).
+   *
+   * A live region is announced when its content CHANGES, so `setAnnouncement`
+   * called with the sentence already in there is indistinguishable from not
+   * calling it: re-picking a surface whose label matches the one just spoken —
+   * closing Settings back onto the mode it was opened from, two picks that
+   * resolve to the same name — reported nothing at all. `nextAnnouncement`
+   * alternates an invisible mark onto a repeat so the value always moves; the
+   * sentence a reader hears is unchanged.
+   *
+   * A state UPDATER, because the comparison is against what the region holds
+   * NOW rather than against whatever a closure captured — and pure, so the
+   * StrictMode double-invoke every other updater in this file is careful about
+   * costs nothing here.
+   *
+   * Stable (`[]`), so the callbacks and the effect below can depend on it.
+   */
+  const announce = useCallback((sentence: string) => {
+    setAnnouncement((current) => nextAnnouncement(current, sentence));
+  }, []);
+  // The owner's PREFERRED column widths — what they dragged to, not what fits.
+  // `clampSplitWidths` reduces them to the frame at render, so narrowing the
+  // window never quietly rewrites the layout they chose.
+  const [widths, setWidths] = useState<SplitWidths>(DEFAULT_SPLIT_WIDTHS);
+  // The measured shell. Zero until the mount effect runs, which is what keeps
+  // the first paint the server's and the inline width vars unwritten.
+  const [shellWidth, setShellWidth] = useState(0);
+  const [resizing, setResizing] = useState(false);
+  const sidecar = useSidecarStatus();
+  // The other half of what the rail dot needs to be honest about `down`
+  // (DW-750). `null` until the hook's mount effect runs, which is the state the
+  // label selector degrades to — so the shell's first client render is
+  // byte-identical to the server's.
+  const pageOrigin = usePageOrigin();
+  const headingId = useId();
+  const railRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const sheetTriggerRef = useRef<HTMLButtonElement>(null);
+  // Focus returns to the trigger only when the sheet was dismissed, not when it
+  // was never opened — otherwise the first paint steals focus.
+  const restoreFocusRef = useRef(false);
+  // The layout a restored selection belongs to. See the reset effect below: the
+  // restore and the reset would otherwise fight, and the reset would win.
+  const restoreSignatureRef = useRef<string | null>(null);
+  // Mirrors `mode` for the `popstate` handler, which has to ask "did this
+  // traversal actually move the mode?" without taking `mode` as a dependency —
+  // that would tear the listener down and rebuild it on every mode change, and
+  // on every re-render that follows one. Assigned during render, the same idiom
+  // `sheetOpenRef` and `latestRef` already use.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  // …and the same for the Settings SURFACE, which the URL now carries too
+  // (DW-167). The `popstate` handler has to ask "did this traversal move the
+  // surface?" as well as "did it move the mode?", and `openSettings` reads the
+  // mode without taking a dependency on it — both for the reason above: a
+  // listener rebuilt on every surface change is a listener registered on the
+  // wrong render.
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
+  // …and the category, for the SAME reason: closed over as state it would make
+  // `applySurface` — and `applyMode`, `selectMode`, `openResearch` and the
+  // `popstate` listener behind them — a new identity on every category pick,
+  // which is exactly the listener churn `modeRef` exists to avoid.
+  //
+  // Since DW-514 the pane is in the URL too, so this is read by the paths that
+  // CARRY it rather than only by the announcement: `selectMode` and
+  // `applyArtifactNavigation` hand it to `applySurface`/`pushSurface` so a
+  // surface change preserves the pane it is leaving, and the `popstate` guard
+  // compares against it to tell a traversal that moved the pane from one that
+  // moved nothing. What it is NOT is the announcement's source on a traversal:
+  // `applySurface` takes the pane as an argument, because this ref still holds
+  // the pane the traversal LEFT while the sentence has to name the one it
+  // lands on. `selectSettingsCategory` still drives the state.
+  const settingsCategoryIdRef = useRef(settingsCategoryId);
+  settingsCategoryIdRef.current = settingsCategoryId;
+  // Read inside handlers and the mount effect without taking a dependency on
+  // them — assigned during render, the `useDialogA11y` idiom `PreviewColumn`
+  // already follows. The mount effect must see the trees the FIRST render was
+  // given; a dependency on them would re-run the whole restore on every refetch.
+  const latestRef = useRef({ currentWikiId, knowledge, files, widths });
+  latestRef.current = { currentWikiId, knowledge, files, widths };
+  // WHICH layout the current selection belongs to. A dependency of the
+  // reconciliation effect below rather than something it reads from a ref: the
+  // effect owns a record of the last signature it saw, and a record only that
+  // effect writes goes STALE the moment the layout moves without it running.
+  // The next tree-only refresh — a genuinely different commit — would then
+  // still compare against the pre-switch signature, conclude the layout had
+  // just moved, and stand down on a real deletion. So a layout change re-runs
+  // this effect too: it records the new signature and returns.
+  const signature = layoutSignature(mode, currentWikiId, treeTab);
+  // The live pick, for the reconciliation effect and the two selection setters.
+  // Assigned during render, the same idiom as `latestRef` above: taking
+  // `selection` as a dependency would re-run "did the row leave the tree?" on
+  // every pick, which is the one moment the answer is guaranteed to be about
+  // the wrong thing.
+  const liveRef = useRef({ selection, docked: false });
+  // The docked column, so a narrow layout can scroll it into view (DW-34).
+  const previewRef = useRef<HTMLElement>(null);
+  // Has the OWNER picked a row in this session? Only the two selection setters
+  // write it, which is what separates a dock the owner asked for from the mount
+  // restore — the one commit where a Preview appears with nobody having touched
+  // anything, and the one where scrolling to it would move the page under them.
+  const ownerPickedRef = useRef(false);
+  // The layout signature the last reconciliation ran against. A Wiki, mode or
+  // tab change and a refreshed server render can land in the SAME commit, and
+  // the reset effect owns the clear in that case — so this is how the
+  // reconciliation recognises the commit it must stay out of.
+  const reconciledSignatureRef = useRef<string | null>(null);
+  // Does the docked Preview's editor hold unsaved text (DW-36)? A ref, not
+  // state: nothing renders from it and it is read inside a click handler, the
+  // same split `sheetOpenRef` and `liveRef` already make. Written only by the
+  // column's own report, which an unmounting column ends with `false`.
+  const previewDirtyRef = useRef(false);
+
+  const surface = workbenchMode(mode);
+
+  // The dock rule is a pure function in `workbench-tree`, not a condition typed
+  // here: it is the story's headline behaviour, and inlined in JSX it could only
+  // ever be grepped for, never executed by a test.
+  // …with one conjunction: a docked Preview beside a Settings detail column
+  // would describe a tree row the owner cannot point at, because the trees are
+  // not on screen while the settings nav has the left column.
+  //
+  // Computed HERE, above the effects, because two of them need it: the narrow
+  // reveal, and the reconciliation — which must not speak about a column that
+  // is not on screen. Settings holds a live selection with this false for as
+  // long as it is open.
+  //
+  // TWO booleans, because a Settings visit must stop moving them together
+  // (DW-412). MOUNTED is the dock rule alone: the Preview editor can be holding
+  // unsaved markdown, and unmounting the column for the visit discarded it with
+  // no confirm and no way back — the same loss DW-373 removed one column over.
+  const previewDocked = shouldDockPreview(mode, selection);
+  // ON SCREEN, which is what the layout reads. Mounting is the line above:
+  // Settings withdraws this column, it does not take the draft down with it.
+  const previewOpen = previewDocked && !settingsOpen;
+  liveRef.current = { selection, docked: previewOpen };
+
+  // Is the viewport below the stacking breakpoint (DW-719)?
+  //
+  // Owned HERE and handed down, because `ModeCanvas` may not ask: that component
+  // spells no width, no breakpoint, no `matchMedia` and no `max-width`, and the
+  // chrome scan enforces all four. Together with `previewOpen` above this is the
+  // pair of conditions on which `globals.css` releases `.wb-shell`'s clamp and
+  // the DOCUMENT — rather than `.wb-canvas` — becomes the thing that scrolls
+  // behind the canvas. Neither boolean is READ for its meaning down there; they
+  // re-run the canvas's restore so it can probe the surface again.
+  //
+  // `TreePanel`'s idiom exactly, down to seeding inside the effect so the first
+  // render is the server's on both sides of the breakpoint, and the query itself
+  // is `workbench-split`'s single copy of the number.
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    // SSR, and the handful of embedded webviews without the API: the effect
+    // returns early and the canvas keeps its original `[hidden]` behaviour.
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(SPLIT_NARROW_QUERY);
+    setNarrow(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    setTodoCount(todoCountProp);
+  }, [todoCountProp]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const seq = ++todoBadgeSeq.current;
+    send<{ pendingCount?: number }>("/api/todos", { method: "GET" })
+      .then((body) => {
+        if (!cancelled && seq === todoBadgeSeq.current && typeof body.pendingCount === "number") {
+          setTodoCount(body.pendingCount);
+        }
+      })
+      .catch(() => {
+        /* Badge stays at the last known count. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataVersion]);
+
+  useEffect(() => {
+    // The URL wins over storage for the MODE (DW-27) and is the WHOLE of the
+    // Settings surface's restore (DW-167): a deep link is an explicit
+    // instruction, while the stored mode is a preference from an earlier
+    // session, and Settings has no stored counterpart at all to lose an
+    // argument to. Everything below still reads storage and nothing else — the
+    // tab, the collapse flag, the widths and the row are browser-local view
+    // state with nothing to link to.
+    //
+    // URL-first is not an SSR guarantee. This is an EFFECT, exactly like the
+    // widths and the selection restore below it: the first paint is the
+    // server's, so `/?mode=chat` paints the default Wiki canvas for one frame
+    // and this corrects it. Reading the param during render instead would put a
+    // browser-only value in the server's markup and hydrate a different tree —
+    // the same reason `mounted` exists (see its declaration above).
+    //
+    // `readStoredMode` and `readStoredTreeTab` are each read more than once —
+    // for the resolution, for the comparison below, and at the call sites
+    // `workbench-chrome.test.ts` and `workbench-left-column.test.ts:72-82` pin
+    // verbatim. The accessors are guarded reads with no side effect, so the
+    // extra calls cost nothing and the frozen forms stay exactly as they were.
+    const restoredMode = initialMode(window.location.search, readStoredMode());
+    // SILENT, exactly like the mode restore: no announcement and no focus move,
+    // because landing on a link somebody sent is not a change the owner made.
+    // The surface is restored OVER the mode the same URL names, so closing it
+    // reveals the canvas the link intended rather than a default.
+    const restoredSettings = readSettingsFromSearch(window.location.search);
+    // The PANE, and only when the URL names the surface as OPEN (DW-514). A
+    // `?category=` with no flag beside it is a stray — a link hand-shortened or
+    // assembled from two halves — and honouring it would leave the shell holding
+    // a pane for a surface nobody asked to see; the seed below then deletes the
+    // param in the same write that names the mode, so the stray survives exactly
+    // one load. An unknown or empty value is `null` from the reader and lands on
+    // `DEFAULT_SETTINGS_CATEGORY` here, which is the pane a link that named none
+    // would have opened anyway.
+    const restoredCategory = restoredSettings
+      ? (readSettingsCategoryFromSearch(window.location.search) ??
+        DEFAULT_SETTINGS_CATEGORY)
+      : DEFAULT_SETTINGS_CATEGORY;
+    const restoredTab = readStoredTreeTab();
+    setModeState(restoredMode);
+    setSettingsOpen(restoredSettings);
+    // SILENT too, and for the reason above it: the pane a link names is the
+    // sender's reading position, not a move the visitor made.
+    setSettingsCategoryId(restoredCategory);
+    setCollapsed(readStoredCollapsed());
+    setTreeTab(readStoredTreeTab());
+    setWidths(readStoredSplitWidths());
+    // Seed the URL so the FIRST entry names its mode AND its surface too.
+    // Without this, Back after one switch lands on an entry with no `mode` at
+    // all and the popstate handler below would have to invent a policy for it.
+    // On a load with Settings CLOSED that is one `replaceState`, so no entry is
+    // added and the owner's Back button still leaves the app on the first press.
+    //
+    // That REPLACE is what makes DW-167's second half work IN SESSION: the
+    // entry Settings is then pushed onto names the surface as closed, so Back
+    // from Settings lands on it and closes the surface instead of leaving.
+    //
+    // A load whose URL carries `settings=1` is seeded as a PAIR instead
+    // (DW-512). The case that motivates it is the DEEP LINK followed into a
+    // fresh tab: its entry is the first of that session, so a lone replace
+    // rewrites it in place and leaves nothing behind it — Back walks straight
+    // out of the app carrying whatever the visitor had typed into Settings, with
+    // no way to close the surface short of editing the URL by hand. So the
+    // replace writes the surface CLOSED — something to land on — and a push puts
+    // the open one on top of it. The mode's Back contract really does change for
+    // such a load: the visitor's FIRST press closes Settings onto the canvas the
+    // link named rather than leaving, and the second press leaves as it always
+    // did. That is the recorded trade — a surface holding an unsaved draft is
+    // worth one press.
+    //
+    // The predicate is `restoredSettings` ALONE, not "is this the first entry of
+    // the session" — the History API will not answer the second question, and
+    // `history.length` counts entries the shell did not write. So the pair is
+    // seeded on ANY load carrying the flag, a RELOAD of an in-session Settings
+    // URL included. There the entry being replaced was already the open one, so
+    // the stack ends up with two adjacent CLOSED entries around it: the first
+    // Back closes the surface, the second moves between two entries the triple
+    // guard below finds identical and is swallowed — a press that changes
+    // nothing on screen, one more of them per reload. Judged the cheaper half of
+    // the trade against a Back that leaves the app holding an unsaved draft.
+    // (React StrictMode runs this effect twice in DEV, so a dev reload seeds the
+    // pair twice; there is no ran-once ref here and production mounts once.)
+    //
+    // A load with Settings CLOSED is untouched by all of it: `beneath` and
+    // `seeded` are then the same string, no push runs, and `history.length` does
+    // not move.
+    try {
+      // BOTH hrefs off the PRE-SEED location, before either write moves it.
+      // `surfaceHref` leaves a param where it already sits, so `/?settings=1`
+      // normalizes to `?settings=1&mode=lint`; reading the location again after
+      // the replace would see `?mode=lint` and hand back `?mode=lint&settings=1`,
+      // reordering the visitor's own link for nothing.
+      const beneath = surfaceHref(
+        window.location,
+        restoredMode,
+        false,
+        restoredCategory,
+      );
+      const seeded = surfaceHref(
+        window.location,
+        restoredMode,
+        restoredSettings,
+        restoredCategory,
+      );
+      if (beneath !== locationHref(window.location)) {
+        window.history.replaceState(null, "", beneath);
+      }
+      // Only when the URL carries the flag — and with its OWN `try`, because the
+      // two calls can fail INDEPENDENTLY. The Safari limit the outer `catch`
+      // cites is a rate, not a capability: it is crossed between two adjacent
+      // calls as readily as before either. A replace that lands followed by a
+      // push that throws would leave the address bar naming the surface CLOSED
+      // while Settings is open on screen — the visitor's own `?settings=1`
+      // rewritten away, so copying the link now loses the surface. That is worse
+      // than writing nothing at all, so the failure is repaired by putting the
+      // open href back in place: the entry Back would have consumed is lost, the
+      // URL still agrees with the screen. If THAT throws too — history is simply
+      // gone, not rate-limited — it falls through to the outer `catch`, which is
+      // the same place the replace's own failure lands and leaves the URL as the
+      // visitor wrote it. Either way the restore below runs.
+      if (restoredSettings) {
+        try {
+          window.history.pushState(null, "", seeded);
+        } catch {
+          window.history.replaceState(null, "", seeded);
+        }
+      }
+    } catch {
+      // History unavailable — a sandboxed iframe or opaque-origin document
+      // throws `SecurityError`, and Safari throws it again after ~100 calls in
+      // 30 seconds. The shell keeps working for this session; only the linkable
+      // URL is lost. Deliberately caught HERE rather than around the whole
+      // effect: the selection restore and `setMounted(true)` come after this,
+      // and letting a history failure skip them would leave the split handles
+      // unrendered and the inline width vars unwritten — a layout bug with no
+      // visible connection to the URL.
+    }
+    // A stored row is restored only when it belongs to the Wiki the registry
+    // still calls current AND still names a row in the trees this render was
+    // given. A deleted page, another Wiki's row, or a kind whose tree does not
+    // contain it all restore nothing: no Preview docks, and no row carries
+    // `aria-current`.
+    const { currentWikiId: wikiId, knowledge: groups, files: nodes } = latestRef.current;
+    const restored = restorableSelection(readStoredSelection(), wikiId, groups, nodes);
+    if (restored) {
+      // …and it is restored onto the tab that can MARK it (DW-46). The stored
+      // row and the stored tab are two independent values, and `wikilinkSelection`
+      // deliberately produces a page/Files pairing — so the tab is corrected to
+      // `restored.tab` rather than the row being rejected. Not persisted: the
+      // correction is a pure function of the row, so a reload reproduces it, and
+      // writing it would overwrite the owner's last explicit tab choice.
+      if (restored.tab !== restoredTab) setTreeTab(restored.tab);
+      // The EFFECTIVE mode, never the stored one. On a deep link the two differ,
+      // and a signature naming a layout the shell is not in never arrives — so
+      // the reset effect's guard returns forever and the Preview goes on
+      // describing a row that has left the tree on screen.
+      //
+      // …and the EFFECTIVE tab, for exactly the same reason: a signature naming
+      // the tab that was stored rather than the one just switched to would never
+      // arrive either, so the reset effect would stop clearing forever and the
+      // very next tab change would leave a Preview docked over a tree with
+      // nothing current in it.
+      restoreSignatureRef.current = layoutSignature(restoredMode, wikiId, restored.tab);
+      setSelection(restored.selection);
+    }
+    // LAST, and deliberately after every storage READ above: a deep link that
+    // beat storage writes itself down, and doing it earlier would make the reads
+    // above observe a value this same effect had just written — which is exactly
+    // how the signature bug one line up stops being reachable in a test.
+    //
+    // Why write at all: `applyMode` keeps "what is on screen" and "what a
+    // param-less reload would restore" in step on every other path, and a deep
+    // link must not be the one place they diverge — otherwise `/?mode=chat`
+    // shows Chat, and the owner's next visit to a bare `/` silently drops them
+    // back into Wiki. Silent by design: this moves storage, not the live region,
+    // and a restore is still not a change the owner made. It is also what makes
+    // the `popstate` guard below sound for a foreign entry carrying no `mode` at
+    // all — `initialMode` then falls back to storage, which now names the mode
+    // already on screen, so the guard skips it instead of announcing a switch
+    // that never happened.
+    if (restoredMode !== readStoredMode()) writeStoredMode(restoredMode);
+    setMounted(true);
+  }, []);
+
+  // Leaving Wiki mode, switching Wikis, or switching tabs undocks the Preview:
+  // in each case the selection names a row in a tree that is no longer the one
+  // on screen, so the docked column would describe something the owner cannot
+  // point at and nothing visible would carry `aria-current`. Undocking is a
+  // layout change only — no route change, exactly like a mode switch.
+  //
+  // The guard is what makes a restored selection survive its own restore. The
+  // mount effect restores mode, tab and row together, which makes this effect
+  // fire again with the restored deps and clear the row that was just put back —
+  // invisibly, and with every existing assertion still green. So the restore
+  // records the signature of the layout it restored INTO, and this returns
+  // without clearing until that signature arrives. Every later change behaves
+  // exactly as it did before.
+  useEffect(() => {
+    const pending = restoreSignatureRef.current;
+    if (pending !== null) {
+      if (pending === layoutSignature(mode, currentWikiId, treeTab)) {
+        restoreSignatureRef.current = null;
+      }
+      return;
+    }
+    setSelection(null);
+  }, [mode, currentWikiId, treeTab]);
+
+  // The pick outlives the SESSION — not the tab, the mode or the Wiki: the reset
+  // effect above clears the selection whenever any of those change, and this
+  // then clears the key with it. What survives a reload is the row the owner was
+  // still on when they closed the tab, scoped to the Wiki they were in.
+  //
+  // …but only when the shell actually knows. A failed registry read leaves
+  // `currentWikiId` null, and a failed index or file read hands the trees down
+  // empty — in all three cases the restore above correctly declines, and writing
+  // that outcome down would record "we could not find out" as "the owner
+  // deselected" and forget the row permanently after one bad minute on the
+  // server. A genuine deselect with healthy reads still clears the key.
+  useEffect(() => {
+    if (!mounted) return;
+    if (currentWikiId === null || knowledgeUnavailable || filesUnavailable) return;
+    writeStoredSelection(currentWikiId, selection);
+  }, [mounted, currentWikiId, selection, knowledgeUnavailable, filesUnavailable]);
+
+  // A row can leave the tree without the owner touching anything: another
+  // actor, an agent or a CLI run deletes the page, the watcher re-runs the
+  // server render, and the refreshed trees simply no longer contain it (DW-53).
+  // Nothing noticed before this — the selection stayed alive, no visible row
+  // carried `aria-current`, and the Preview went on describing something the
+  // owner could not point at.
+  //
+  // A SEPARATE effect from the reset above, and deliberately so: the reset's
+  // deps are frozen at `[mode, currentWikiId, treeTab]` (Story 1.4), and adding
+  // the trees to them would clear the selection on every refresh rather than on
+  // the ones that lost the row. What is left is that both can fire in the same
+  // commit — the reset runs first and clears, and this one, reading a
+  // render-assigned ref, would still see the old pick and announce a REMOVAL
+  // for a layout change. `layoutMoved` is that guard, executed inside
+  // `selectionRefreshAction` rather than typed here.
+  //
+  // `signature` is in the dependency array for the reason its declaration
+  // gives: this effect owns the record, so it has to see every layout change or
+  // the record it compares against describes a layout two switches ago.
+  useEffect(() => {
+    if (!mounted) return;
+    const { selection: picked, docked } = liveRef.current;
+    const layoutMoved = reconciledSignatureRef.current !== signature;
+    reconciledSignatureRef.current = signature;
+    // Three answers, because clearing and SAYING SO are separate acts: a stale
+    // pick must never survive, but a sentence about a column that closed is a
+    // lie when no column was showing (Settings has the left column, and the
+    // selection outlives it). A failed read is not a deletion and neither is a
+    // truncated walk; which flag applies is the selection's own kind, which is
+    // why all four arrive separately rather than pre-`||`-ed into one boolean.
+    const action = selectionRefreshAction({
+      selection: picked,
+      knowledge,
+      files,
+      docked,
+      knowledgeUnavailable,
+      filesUnavailable,
+      filesTruncated,
+      layoutMoved,
+    });
+    if (action === "keep") return;
+    setSelection(null);
+    // Spoken only when there was something to see go: this is the one undock the
+    // owner did not ask for, and a column that simply vanished mid-read is
+    // indistinguishable from a bug.
+    if (action === "report") announce(PREVIEW_REMOVED_COPY);
+  }, [
+    announce,
+    mounted,
+    knowledge,
+    files,
+    knowledgeUnavailable,
+    filesUnavailable,
+    filesTruncated,
+    signature,
+  ]);
+
+  // The frame the clamp measures against. `getBoundingClientRect()` on the shell
+  // itself, never the viewport's own width: the shell is a grid child of
+  // `layout.tsx`'s <main>, so what the window reports is not what it gets. No
+  // `ResizeObserver` — a resize listener is the whole of what changes here, and
+  // the responsive breakpoints stay in CSS where they can't drift.
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const measure = () => setShellWidth(shell.getBoundingClientRect().width);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  // Mirrors `sheetOpen` for the callbacks below. A state updater must be pure,
+  // so "was it open?" is read from here rather than from inside `setSheetOpen`.
+  const sheetOpenRef = useRef(false);
+  useEffect(() => {
+    sheetOpenRef.current = sheetOpen;
+  }, [sheetOpen]);
+
+  const setSheetClosed = useCallback((restoreFocus: boolean) => {
+    // Only arm the restore if the sheet was actually open: `selectMode` calls
+    // this on every mode click, including at widths where no sheet exists.
+    if (sheetOpenRef.current && restoreFocus) restoreFocusRef.current = true;
+    setSheetOpen(false);
+  }, []);
+
+  /** Dismissals the owner performs — focus goes back where they left it. */
+  const closeSheet = useCallback(() => setSheetClosed(true), [setSheetClosed]);
+
+  /**
+   * Send the keyboard to `#wb-canvas` — the shell's ONE landing site — on the
+   * next commit (DW-413, DW-423, DW-425).
+   *
+   * A NONCE rather than a boolean the effect keys on. Keyed on `settingsOpen`,
+   * the move fired exactly once per transition into the surface: a second `g s`
+   * announced Settings and moved nothing, because the flag was already true and
+   * the effect had no change to observe; and Back OUT of Settings moved nothing
+   * either, because the effect only ran in one direction. A counter moves on
+   * every bump, so the same destination can be reached again and can be reached
+   * from both directions — while the paths that must NOT move focus (the rail
+   * control closing Settings, a traversal that only changes the mode, a pane
+   * pick) simply do not bump it. A traversal that MOVES the flag is the one
+   * conditional caller: it bumps only when the keyboard was inside the canvas
+   * being swapped (DW-513), which the handler samples before applying the
+   * surface — the decision cannot be made from here.
+   *
+   * `#wb-canvas` is the right target in both directions because `ModeCanvas` and
+   * `SettingsCanvas` hand the id and `tabIndex={-1}` back and forth: whichever
+   * section is on screen is the one answering to it.
+   */
+  const [canvasFocusNonce, setCanvasFocusNonce] = useState(0);
+  const bumpCanvasFocus = useCallback(() => setCanvasFocusNonce((n) => n + 1), []);
+
+  /**
+   * Everything a SURFACE change does to this shell, with nothing said about the
+   * URL — the mode AND whether Settings is open over it, because since DW-167
+   * both are in the URL and a traversal can move either or both.
+   *
+   * Split out of `selectMode` so a `popstate` — which arrives with the URL
+   * ALREADY moved — can reuse it without writing a second history entry for the
+   * traversal that just happened.
+   */
+  const applySurface = useCallback(
+    (next: WorkbenchModeId, settings: boolean, category: SettingsCategoryId) => {
+      setModeState(next);
+      // Storage is written on this path too, including from `popstate`: what is
+      // on screen and what a param-less reload would restore must not diverge.
+      // Outside any state updater, the rule `toggleCollapsed` already follows —
+      // React invokes updaters twice under StrictMode. The MODE only: Settings
+      // is deliberately not a stored preference (see its declaration above).
+      writeStoredMode(next);
+      // An `if`/`else`, never a ternary inside one `announce(…)` call: a
+      // traversal INTO Settings has to say the Settings sentence and one OUT of
+      // it the mode's, and `workbench-chrome.test.ts` pins
+      // `announce(workbenchMode(next).label)` as a literal — a conditional
+      // argument would defeat that pin while changing nothing else.
+      if (settings) {
+        // The pane comes in as an ARGUMENT rather than off
+        // `settingsCategoryIdRef`: a traversal has already moved the URL, so the
+        // sentence has to name the pane it LANDS on while the ref still holds
+        // the one it left (DW-514). Passing it also keeps this callback's
+        // identity stable — reading the state instead would rebuild the
+        // `popstate` listener on every category pick.
+        announce(settingsAnnouncement(settingsCategory(category).label));
+      } else {
+        announce(workbenchMode(next).label);
+      }
+      // Leaving Settings is what DISCARDS the draft: `SettingsCanvas` owns it,
+      // so unmounting the surface is the whole of "unsaved edits are discarded
+      // on leave". No diff, no prompt, nothing sent.
+      setSettingsOpen(settings);
+      // Callers closing the surface pass the pane they are LEAVING, so this is a
+      // no-op on that path: the URL drops the param, and reopening Settings in
+      // this session still lands on the pane the owner was last reading. The
+      // param is the whole of the pane's persistence across a RELOAD, exactly as
+      // it is for the flag — nothing is written to storage here.
+      setSettingsCategoryId(category);
+      closeSheet();
+    },
+    [announce, closeSheet],
+  );
+
+  /**
+   * Picking a MODE is picking a surface with Settings closed — the wrapper the
+   * rail's mode controls and `openResearch` use, so neither has to restate the
+   * flag.
+   */
+  const applyMode = useCallback(
+    (next: WorkbenchModeId) => {
+      // The pane is carried through unchanged — `surfaceHref` deletes the param
+      // for a closed surface anyway, and resetting the state here would mean a
+      // mode pick silently sent the owner's next Settings visit back to General.
+      applySurface(next, false, settingsCategoryIdRef.current);
+    },
+    [applySurface],
+  );
+
+  /**
+   * The ONE place a history entry is written for a surface the owner picked.
+   *
+   * Compared against the URL, not against the state this is about to change:
+   * re-clicking the mode already showing, or pressing `g s` with Settings
+   * already open, adds no entry for Back to swallow before it reaches the
+   * surface the owner came from. The comparison is only sound because
+   * `surfaceHref` is idempotent on its own normalized output — see its header.
+   *
+   * All three params move together because one builder writes all three: there
+   * is never a moment where the URL names half a surface, or names a pane of a
+   * surface it has already closed.
+   */
+  const pushSurface = useCallback(
+    (next: WorkbenchModeId, settings: boolean, category: SettingsCategoryId) => {
+      try {
+        const href = surfaceHref(window.location, next, settings, category);
+        if (href !== locationHref(window.location)) {
+          window.history.pushState(null, "", href);
+        }
+      } catch {
+        // Same degrade as the mount seed, and the reason every caller applies
+        // the surface BEFORE calling this rather than wrapping the pair: the
+        // surface has already changed and been written down, so a history
+        // failure costs the owner a linkable URL and nothing else. Rethrowing
+        // would take the surface change — and the focus move that follows it —
+        // with it.
+      }
+    },
+    [],
+  );
+
+  const selectMode = useCallback(
+    (next: WorkbenchModeId) => {
+      applyMode(next);
+      pushSurface(next, false, settingsCategoryIdRef.current);
+    },
+    [applyMode, pushSurface],
+  );
+
+  const openResearch = useCallback(
+    (projectId: string) => {
+      writeStoredResearchFill(projectId);
+      setResearchFillId(projectId);
+      selectMode("research");
+    },
+    [selectMode],
+  );
+
+  // Back and Forward. The entry the browser moved to is the only input — the
+  // same `initialMode` rule the mount effect uses, so load and traversal cannot
+  // drift — and a traversal that MOVES the mode is a change the owner made, so
+  // unlike the restore on load it announces the surface it lands on
+  // (EXPERIENCE.md:175).
+  useEffect(() => {
+    const onPopState = () => {
+      const search = window.location.search;
+      const next = initialMode(search, readStoredMode());
+      const settings = readSettingsFromSearch(search);
+      // The pane the entry names, and only while it names the surface as open:
+      // on a closed entry there is no param to read, so the pane the shell is
+      // already holding IS the answer — which is what keeps the triple below
+      // collapsing back to the DW-167 pair on every traversal that does not
+      // involve Settings. An open entry with no `category` is the default pane,
+      // the same value a link that named none would have opened.
+      const category = settings
+        ? (readSettingsCategoryFromSearch(search) ?? DEFAULT_SETTINGS_CATEGORY)
+        : settingsCategoryIdRef.current;
+      // Not every entry in this session is one the shell wrote. The skip link
+      // in `SiteChrome` is an `<a href="#wb-canvas">`, and following it pushes a
+      // fragment entry carrying the SAME query — so Back from there is a
+      // traversal with no surface change in it. Handing that to `applySurface`
+      // would close Settings (discarding the draft `SettingsCanvas` holds),
+      // rewrite storage and announce a surface switch that never happened.
+      //
+      // The guard compares the TRIPLE (DW-167, widened by DW-514). Back out of
+      // Settings moves the flag and nothing else — the mode underneath is
+      // exactly the mode the previous entry named — so a guard that looked at
+      // the mode alone would swallow the headline case of this entry with the
+      // very check that protects the fragment entry. A pane pick pushes its own
+      // entry for the same reason a rail click does, so Back off one moves
+      // NEITHER the mode nor the flag: left at the pair, that traversal would be
+      // swallowed too and the URL and the surface would part company.
+      // `modeRef`/`settingsOpenRef`/`settingsCategoryIdRef` rather than the
+      // state, so this listener is registered once and not rebuilt on every
+      // surface change.
+      if (
+        next === modeRef.current &&
+        settings === settingsOpenRef.current &&
+        category === settingsCategoryIdRef.current
+      ) {
+        return;
+      }
+      // Both read BEFORE `applySurface`, which is what moves the ref and swaps
+      // the canvas on the next render.
+      //
+      // The SURFACE swap is what can strand the keyboard: the section the owner
+      // was standing in goes `display: none` in the same commit, so the landing
+      // site has to catch it (DW-423). A traversal that only changes the MODE
+      // moves nothing — the canvas is still the canvas on screen — and neither
+      // does one that moved the PANE alone: the detail column re-renders under
+      // whatever control the owner is standing in, so a bump would take them
+      // off it.
+      const movedSettings = settings !== settingsOpenRef.current;
+      // …but only when the keyboard was actually IN the canvas about to be
+      // swapped (DW-513). Back pressed with focus on the rail is a press the
+      // owner made on a control that outlives the swap, and yanking them to
+      // `#wb-canvas` for it is the same mistake `toggleSettings` deliberately
+      // avoids on the rail-close path — this is the traversal path being made
+      // symmetric with it. `contains` answers true for the node ITSELF, which is
+      // what keeps the common route green: `toggleSettings` and `g s` both land
+      // the keyboard on `#wb-canvas` on the way in, so a Back straight back out
+      // still bumps.
+      //
+      // The narrowing has a REAL COST, and it is deliberate rather than
+      // overlooked: focus sitting in a region this same commit withdraws, but
+      // which is not the canvas, is no longer rescued. `selectSettingsCategory`
+      // does not bump, so after a pane pick the keyboard is on a `SettingsNav`
+      // row — that nav renders in the LEFT COLUMN, outside `#wb-canvas`, and is
+      // unmounted by the commit that closes the surface — and a Back out of
+      // Settings from there now drops to `<body>`. The trees, `ActivityDock` and
+      // the Preview column have the same shape on a traversal that OPENS
+      // Settings. The guard is fixed at `#wb-canvas` by the recorded decision;
+      // widening it to "any region about to be withdrawn" is a separate change,
+      // and the surfaces beyond the canvas are explicitly out of scope here.
+      //
+      // Sampled in THIS handler rather than in `bumpCanvasFocus` or the nonce
+      // effect, both of which run after the swap — and that effect's own comment
+      // explains why it must not read `activeElement` at all.
+      const hadCanvas =
+        document.getElementById(CANVAS_ID)?.contains(document.activeElement) ?? false;
+      applySurface(next, settings, category);
+      if (movedSettings && hadCanvas) bumpCanvasFocus();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [applySurface, bumpCanvasFocus]);
+
+  // Opening Settings is `useState` on the ONE mounted shell, exactly as a mode
+  // switch is — never `router.push`, never a `<Link>`. The announcement names
+  // the surface the same way a mode change does (EXPERIENCE.md:175).
+  //
+  // It TOGGLES. The rail control renders `aria-current="page"` and the active
+  // wash while Settings is showing, which reads as a control that is on and can
+  // therefore be turned off; a press that only ever opened would leave the mode
+  // canvas reachable solely by picking a mode. Closing announces the surface the
+  // owner lands back on, exactly as `selectMode` does.
+  const toggleSettings = useCallback(() => {
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      announce(workbenchMode(mode).label);
+      // NOT bumped. This control is what closed the surface and already holds
+      // the keyboard; moving it would take the owner off the thing they pressed.
+    } else {
+      setSettingsOpen(true);
+      announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+      // The canvas the owner was standing in goes `display: none` in this same
+      // commit, so the keyboard has to be caught (DW-413).
+      bumpCanvasFocus();
+    }
+    // One entry per press, both ways — the surface has an address now, so Back
+    // undoes the press that opened it and Forward redoes it. AFTER the state
+    // change, like every other caller, so a `SecurityError` costs the linkable
+    // URL and nothing else.
+    pushSurface(mode, !settingsOpen, settingsCategoryId);
+    closeSheet();
+  }, [
+    announce,
+    bumpCanvasFocus,
+    closeSheet,
+    mode,
+    pushSurface,
+    settingsCategoryId,
+    settingsOpen,
+  ]);
+
+  /**
+   * The keyboard's way in, and it OPENS rather than toggles (DW-62).
+   *
+   * `g s` reads "go to Settings" — that is its own description in `SHORTCUTS`
+   * and in the help overlay — so a second press must leave the owner where the
+   * first one took them. The rail control is the one that toggles, because it
+   * renders `aria-current="page"` and an active wash while Settings is showing
+   * and therefore reads as a control that can be turned back off; a key that
+   * names a destination carries no such state.
+   *
+   * Everything else is the rail path verbatim — the same announcement, through
+   * the same `announce`, and the same sheet dismissal — because two spellings
+   * of "open Settings" is how the two would start describing themselves
+   * differently.
+   *
+   * WHAT THIS SAVES is the route change, and only that. The shortcut used to
+   * push the router at `/settings`, which unmounts the whole shell — rail, left
+   * column, Knowledge and Files trees, Preview, canvas — and leaves the owner
+   * on a flat page holding none of them, to reach a surface that was already
+   * available in place. `useState` on the ONE mounted shell keeps every one of
+   * those. (Spelled without the call token on purpose: `workbench-chrome.test.ts`
+   * bans that literal from this file, and a ban worth having must not be
+   * defeated by a paragraph explaining it.)
+   *
+   * WHAT IT ALSO SAVES is every column the visit used to take down (DW-373,
+   * DW-412). `settingsOpen` used to swap `ModeCanvas` out for `SettingsCanvas`
+   * below, so opening Settings unmounted the Wiki subtree — an open Create Wiki
+   * dialog, the name typed into it and the error it was showing — and closing
+   * Settings rebuilt an empty card; it also gated `PreviewColumn` off, taking
+   * the editor's unsaved markdown with it (DW-412 proper), and swapped
+   * `TreePanel` out for `SettingsNav`, taking the group and directory
+   * disclosures the owner had collapsed (that entry's sibling, from the same
+   * bundle). All three now render with `hidden` instead, which keeps the
+   * subtree mounted and withdraws it from the pixels, the accessibility tree
+   * and the tab order in one attribute. Nothing about that is this callback's
+   * doing: it is the render below, so the rail control and this key preserve
+   * exactly the same thing.
+   *
+   * WHAT IT DOES OWN, together with `toggleSettings`, is the announcement — and
+   * the focus move is the effect further down rather than a `.focus()` here,
+   * for the same reason: two spellings of "open Settings" would be two places
+   * for the keyboard to land.
+   *
+   * The SETTINGS draft is still discarded on leave, and that discard is exactly
+   * this surface's unmount when `settingsOpen` goes false.
+   */
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+    announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+    // Bumped on EVERY press, including one with the surface already open: the
+    // announcement said "Settings" and the keyboard has to be where the
+    // announcement says it is (DW-425). `modeRef`, so this callback's identity
+    // does not move with the mode — `useShortcutAction` re-registers on it.
+    bumpCanvasFocus();
+    // …and no entry when the surface is already open: `pushSurface` compares the
+    // href it would write, and `g s` on open Settings would write the same one.
+    pushSurface(modeRef.current, true, settingsCategoryId);
+    closeSheet();
+  }, [announce, bumpCanvasFocus, closeSheet, pushSurface, settingsCategoryId]);
+
+  // Claimed for as long as this shell is mounted, and released when it is not —
+  // so `g s` on a page with no Workbench still navigates to `/settings`, which
+  // stays a real route (DW-61). A no-op when no `KeyboardShortcutsProvider` is
+  // above this shell.
+  useShortcutAction("open-settings", openSettings);
+
+  /**
+   * Picking a PANE, which since DW-514 is a move the URL records.
+   *
+   * `pushState`, not `replaceState`: the shell's rule is one entry per press the
+   * owner made, and a pane pick is such a press — the same reason a rail click
+   * pushes and the reason the `popstate` guard above compares the triple. The
+   * NEW pane is what goes in the entry, so Back lands on the previous one and
+   * announces it.
+   *
+   * The write comes AFTER the state change and inside `pushSurface`'s own
+   * `catch {}`, like every other caller: a history failure costs the linkable
+   * URL and never the pane the owner just asked for. `modeRef` rather than
+   * `mode`, so this callback's identity does not move with the mode underneath
+   * the surface — `SettingsNav` takes it as a prop.
+   */
+  const selectSettingsCategory = useCallback(
+    (next: SettingsCategoryId) => {
+      setSettingsCategoryId(next);
+      announce(settingsAnnouncement(settingsCategory(next).label));
+      // No focus move: the canvas did not swap, and the control the owner
+      // pressed is still on screen holding the keyboard.
+      pushSurface(modeRef.current, true, next);
+    },
+    [announce, pushSurface],
+  );
+
+  // The storage write is deliberately OUTSIDE the updater: an updater must be
+  // pure, and React invokes it twice under StrictMode. Same rule `setSheetClosed`
+  // follows for its focus-restore flag.
+  const toggleCollapsed = useCallback(() => {
+    const next = !collapsed;
+    setCollapsed(next);
+    writeStoredCollapsed(next);
+  }, [collapsed]);
+
+  // Same rule as the collapse toggle: the storage write is outside any state
+  // updater, because React invokes updaters twice under StrictMode.
+  const selectTreeTab = useCallback((next: TreeTabId) => {
+    setTreeTab(next);
+    writeStoredTreeTab(next);
+  }, []);
+
+  // Picking the row that is already picked deselects it. Without this the only
+  // ways to undock the Preview are leaving Wiki mode, switching tabs, or
+  // switching Wikis — none of which the owner would reach for to close a panel.
+  //
+  // Both outcomes are ANNOUNCED (DW-34). Docking and undocking are layout
+  // changes with no focus move and no route change, so to a screen-reader user
+  // a click on a tree row otherwise produces nothing at all: a panel appeared
+  // somewhere below, or the one they were reading stopped existing.
+  //
+  // Everything a pick DOES, with nothing said about whether it may happen. Split
+  // out of `selectRow` (DW-36) so the guard below can hold a pick without
+  // touching any of it, and so the discard confirm can hand the very same pick
+  // through unchanged — a second copy of this body is how the held path would
+  // start announcing something different from the direct one.
+  const applySelection = useCallback((next: TreeSelection) => {
+    // Outside the state updater, the rule `toggleCollapsed` already follows —
+    // React invokes updaters twice under StrictMode, and an announcement made
+    // in there would be written twice and, worse, made by a function that is
+    // required to be pure. The live pick comes from the render-assigned ref, so
+    // this callback still takes no dependency on it.
+    const { knowledge: groups, files: nodes } = latestRef.current;
+    // The owner is picking, so a dock from here on is a change they made — see
+    // the reveal effect below, which stays out of the mount restore.
+    ownerPickedRef.current = true;
+    announce(
+      isSameSelection(liveRef.current.selection, next)
+        ? PREVIEW_CLOSED_COPY
+        : previewDockAnnouncement(selectionName(next, groups, nodes)),
+    );
+    setSelection((current) => (isSameSelection(current, next) ? null : next));
+  }, [announce]);
+
+  // …and WHETHER it may happen. The Preview's fetch effect closes the editor on
+  // every new pick, so before DW-36 one stray click on a tree row silently
+  // destroyed unsaved markdown. The pick is HELD instead: nothing is announced,
+  // nothing is written, the selection does not move, and the row the owner was
+  // on keeps `aria-current` — so Cancel is genuinely a no-op rather than an undo.
+  //
+  // Re-picking the SHOWN row is held too. It would deselect, which unmounts the
+  // editor — the same loss by a different route, and the one case a guard
+  // written as "is this a different row?" would let through.
+  //
+  // Only the tree-selection path is gated. A mode switch, a Wiki switch and a
+  // tab switch all still discard silently: the ledger defers those to whichever
+  // story gives the editor a lifecycle, and gating them here would put this
+  // dialog in front of navigation it was not designed for. Settings is no
+  // longer on that list — it withdraws the column rather than unmounting it
+  // (DW-412), so there is nothing to discard and nothing to gate.
+  const selectRow = useCallback(
+    (next: TreeSelection) => {
+      if (previewDirtyRef.current) {
+        setPendingSelection(next);
+        return;
+      }
+      applySelection(next);
+    },
+    [applySelection],
+  );
+
+  /** The column's one report, parked in a ref. Stable, because it is read from an effect. */
+  const reportPreviewDirty = useCallback((dirty: boolean) => {
+    previewDirtyRef.current = dirty;
+  }, []);
+
+  // Discard: the held pick applies exactly as it would have. The editor closes
+  // because the column's own fetch effect resets on a new row — the shell says
+  // nothing about the editor, which is the whole reason the report travels up as
+  // a boolean and the state stays down there.
+  const applyArtifactNavigation = useCallback((file: EditableArtifactFile) => {
+    const next: TreeSelection = { kind: "file", path: file };
+    // Apply the whole destination together: Settings closes, Wiki/Files becomes
+    // the visible tree, and Preview points at the artifact. Re-selecting the
+    // same target preserves the mounted editor and its draft.
+    applySurface("wiki", false, settingsCategoryIdRef.current);
+    pushSurface("wiki", false, settingsCategoryIdRef.current);
+    if (treeTab !== "files") {
+      // The layout reset effect clears selections whenever the visible tree
+      // changes. This navigation intentionally changes the tab and installs a
+      // row in the same transaction, so arm the same one-commit exemption the
+      // mount restore uses; otherwise the Files commit immediately erases the
+      // Purpose/Schema selection it just received.
+      restoreSignatureRef.current = layoutSignature("wiki", currentWikiId, "files");
+    }
+    setTreeTab("files");
+    writeStoredTreeTab("files");
+    ownerPickedRef.current = true;
+    if (!isSameSelection(liveRef.current.selection, next)) {
+      const { knowledge: groups, files: nodes } = latestRef.current;
+      announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      setSelection(next);
+    }
+    bumpCanvasFocus();
+  }, [announce, applySurface, bumpCanvasFocus, currentWikiId, pushSurface, treeTab]);
+
+  const openSettingsArtifact = useCallback((file: EditableArtifactFile) => {
+    const next: TreeSelection = { kind: "file", path: file };
+    if (previewDirtyRef.current && !isSameSelection(liveRef.current.selection, next)) {
+      setPendingArtifactNavigation(file);
+      return;
+    }
+    applyArtifactNavigation(file);
+  }, [applyArtifactNavigation]);
+
+  const confirmDiscard = useCallback(() => {
+    const next = pendingSelection;
+    const artifact = pendingArtifactNavigation;
+    setPendingSelection(null);
+    setPendingArtifactNavigation(null);
+    if (artifact) {
+      applyArtifactNavigation(artifact);
+      return;
+    }
+    if (next) applySelection(next);
+  }, [applyArtifactNavigation, applySelection, pendingArtifactNavigation, pendingSelection]);
+
+  /** Keep editing — Cancel, Esc and the backdrop all land here. The pick is dropped. */
+  const cancelDiscard = useCallback(() => {
+    setPendingSelection(null);
+    setPendingArtifactNavigation(null);
+  }, []);
+
+  // Following a `[[wikilink]]` in the Preview. Deliberately NOT `selectRow`:
+  // that one toggles, so a link pointing at the page already showing would
+  // undock the column instead of staying on it. Which row it lands on depends on
+  // the tab, which is `wikilinkSelection`'s whole job — and it never changes the
+  // tab itself, because the reset effect above would clear the selection this
+  // just made. No route change: the shell owns selection, and always has.
+  //
+  // Deliberately NOT gated on the dirty check (DW-36), and not because the loss
+  // would be acceptable: this path cannot fire while the editor is open at all.
+  // The editor REPLACES the rendered body in `PreviewColumn`, so there is no
+  // wikilink on screen to follow — the one control that calls this is unmounted
+  // for exactly as long as a draft exists. A guard here would be dead code
+  // asserting a condition nothing can reach.
+  const openPage = useCallback(
+    (slug: string) => {
+      const next = wikilinkSelection(treeTab, files, slug);
+      // Following a link is a pick too, for the reveal effect's purposes.
+      ownerPickedRef.current = true;
+      // Announced only when the column actually MOVES. A link pointing at the
+      // page already showing makes React bail out below, so there is no dock to
+      // report — and `Preview, Alpha` spoken over an unchanged Alpha would tell
+      // the owner something happened when nothing did. Computed here, outside
+      // the updater, for the same StrictMode reason `selectRow` gives.
+      if (!isSameSelection(liveRef.current.selection, next)) {
+        const { knowledge: groups, files: nodes } = latestRef.current;
+        announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      }
+      setSelection((current) => {
+        // Returning the SAME object makes React bail out. Without this, a link
+        // pointing at the row already showing hands the Preview a new object,
+        // and its fetch effect is keyed on selection IDENTITY — so the body it
+        // already has is torn down, `Loading…` flashes, and the same bytes are
+        // fetched again. `isSameSelection` is the shell's one equality rule.
+        return isSameSelection(current, next) ? current : next;
+      });
+    },
+    [announce, treeTab, files],
+  );
+
+  /**
+   * The FILE twin of `openPage` (Story 7.7): dock a Source by display path.
+   *
+   * Non-toggling for the same reason `openPage` is — its one caller is the
+   * Preview lightbox's jump-to-source, and an image is most often reached from
+   * the very Source it belongs to, so a toggle would answer that control by
+   * UNDOCKING the column it was asked to dock.
+   *
+   * Not gated on the dirty check, and for the same reason `openPage` is not:
+   * the editor REPLACES the rendered body, so no image and no lightbox exists
+   * on screen while a draft does.
+   */
+  const openFile = useCallback(
+    (path: string) => {
+      const next: TreeSelection = { kind: "file", path };
+      ownerPickedRef.current = true;
+      if (!isSameSelection(liveRef.current.selection, next)) {
+        const { knowledge: groups, files: nodes } = latestRef.current;
+        announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      }
+      // The identity bail-out `openPage` documents: a jump to the row already
+      // showing must not tear down the body it is already displaying.
+      setSelection((current) => (isSameSelection(current, next) ? current : next));
+    },
+    [announce],
+  );
+
+  /**
+   * What the owner is told after a batch, and the tree refresh it earns.
+   *
+   * The sentence itself is `intakeReport`'s, in `workbench-intake-client.ts`,
+   * where the node suite executes it — a mixed batch has to name both halves,
+   * and that rule composed inline here could only be grepped for.
+   *
+   * ANNOUNCED as well as rendered: an arrival changes a tree somewhere below
+   * with no focus move and no route change, so to a screen-reader user a pick
+   * that stores four Sources otherwise produces nothing at all. Same live
+   * region, same `announce`, as a mode switch and a Preview dock.
+   *
+   * The refresh is `requestDataVersionCheck`, and the shell re-renders nothing
+   * itself: it states no opinion about whether the write landed, it asks the
+   * watcher to poll, and the server's own integer decides. (Spelled without the
+   * router call token on purpose — `workbench-data-version.test.ts` bans that
+   * literal from this file, and a paragraph explaining the ban must not be what
+   * defeats it.) An unconfirmed outcome nudges too — see `intakeShouldRefresh`.
+   */
+  const reportIntake = useCallback(
+    (outcomes: readonly IntakeOutcome[]) => {
+      const sentence = intakeReport(outcomes);
+      setIntakeStatus(sentence);
+      if (sentence) announce(sentence);
+      if (intakeShouldRefresh(outcomes)) requestDataVersionCheck();
+    },
+    [announce],
+  );
+
+  /**
+   * Store and queue picked or dropped files — one request each (FR-41).
+   *
+   * Not `async`: this is reached from a change handler and a drop handler, and
+   * an async event handler is a floating promise React cannot see. The `finally`
+   * is what guarantees the in-flight flag clears — `submitIntakeFiles` resolves
+   * with per-item outcomes rather than throwing, so the only way to strand the
+   * controls would be to clear the flag on the success path alone.
+   */
+  const runIntakeFiles = useCallback(
+    (picked: readonly File[], origin?: "plaud") => {
+      // A deployment that will refuse before staging: no request.
+      if (readOnly) return;
+      // The Folder action expanded to nothing. A silent return here is
+      // indistinguishable from losing the pick; the drop of an empty file list
+      // still uses `INTAKE_FILE_REQUIRED_COPY` above this helper.
+      if (picked.length === 0) {
+        reportIntake([emptyFolderOutcome()]);
+        return;
+      }
+      // A batch is already in flight. The controls are disabled, but a DROP has
+      // no disabled state and the platform delivers it anyway — and two batches
+      // sharing one flag race their own `finally` if that flag is only React
+      // state: two first-tick events both read false, the first to resolve
+      // clears it while the second is still posting, and the second's report
+      // overwrites the first's sentence. The ref is the gate; state is the
+      // chrome. One at a time, and the owner keeps the sentence they are reading.
+      if (intakeBusyRef.current) return;
+      intakeBusyRef.current = true;
+      setIntakeBusy(true);
+      // The previous batch's sentence goes as this one starts. Leaving it up
+      // would put a stale "Stored 3 sources" beside a control reading "Storing…".
+      setIntakeStatus("");
+      void submitIntakeFiles(picked, origin ? { origin } : undefined)
+        .then(reportIntake)
+        .finally(() => {
+          intakeBusyRef.current = false;
+          setIntakeBusy(false);
+        });
+    },
+    [readOnly, reportIntake],
+  );
+
+  /** The same, for the in-app URL field. One URL, one Source, one queue item. */
+  const runIntakeUrl = useCallback(
+    (url: string) => {
+      // Same single-flight rule as the file door, and the same flag: a URL
+      // submitted while a drop is still posting would race its `finally` too.
+      if (readOnly || intakeBusyRef.current) return;
+      intakeBusyRef.current = true;
+      setIntakeBusy(true);
+      setIntakeStatus("");
+      void submitIntakeUrl(url)
+        .then((outcome) => reportIntake([outcome]))
+        .finally(() => {
+          intakeBusyRef.current = false;
+          setIntakeBusy(false);
+        });
+    },
+    [readOnly, reportIntake],
+  );
+
+  /**
+   * The shell is the drop target, in every mode (Story 2.1).
+   *
+   * `preventDefault` on `dragover` is what makes an element a drop target at
+   * all — without it the browser navigates to the dropped file and the whole
+   * shell is replaced by a text document. It is conditional on the drag actually
+   * carrying FILES: a selection dragged out of the Preview or a link dragged
+   * from another tab also passes over this element, and claiming those drops
+   * would swallow behaviour the shell has nothing to do with. `intakeDragHasFiles`
+   * is that rule, in `workbench-intake.ts` where the suite runs it.
+   */
+  const onShellDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+    event.preventDefault();
+    // The cursor the platform shows. `copy` because Intake stores a copy of the
+    // bytes and never moves or links the owner's file.
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const onShellDragEnter = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      // Not lit on a read-only deployment: the overlay INVITES the drop ("Drop
+      // Markdown, text, or HTML files to store them"), and inviting a drop that
+      // is about to be refused is worse than showing nothing. The drop itself is
+      // still claimed and still answered with the read-only sentence — the
+      // affordance is what is withheld, not the explanation.
+      if (!readOnly && !intakeBusyRef.current) setDropActive(true);
+    },
+    [readOnly],
+  );
+
+  const onShellDragLeave = useCallback(() => {
+    // Unconditional on the types, unlike its enter: a drag whose enter was
+    // ignored never incremented, so the guard is the depth itself. Clamped at
+    // zero because a drag that began INSIDE the shell can emit a leave with no
+    // matching enter, and a negative depth would leave the affordance stuck on.
+    if (dragDepthRef.current === 0) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current === 0) setDropActive(false);
+  }, []);
+
+  /**
+   * Clear the drop overlay. Shared by the shell handlers and the window
+   * listeners: an OS file drag's `dragend` fires on the desktop, not on this
+   * element, so the target-only handler is not enough.
+   */
+  const resetDropAffordance = useCallback(() => {
+    dragDepthRef.current = 0;
+    setDropActive(false);
+  }, []);
+
+  useEffect(() => {
+    const onWindowDragEnd = () => resetDropAffordance();
+    const onWindowDragLeave = (event: DragEvent) => {
+      // Left the viewport. `relatedTarget` is null when the pointer exits the
+      // document; some browsers also omit it while still inside, so the
+      // coordinates have to agree that we are outside before we reset —
+      // otherwise a leave between two children would kill the overlay mid-drag.
+      if (event.relatedTarget !== null) return;
+      const root = document.documentElement;
+      if (
+        event.clientX > 0 &&
+        event.clientY > 0 &&
+        event.clientX < root.clientWidth &&
+        event.clientY < root.clientHeight
+      ) {
+        return;
+      }
+      resetDropAffordance();
+    };
+    window.addEventListener("dragend", onWindowDragEnd);
+    window.addEventListener("dragleave", onWindowDragLeave);
+    return () => {
+      window.removeEventListener("dragend", onWindowDragEnd);
+      window.removeEventListener("dragleave", onWindowDragLeave);
+    };
+  }, [resetDropAffordance]);
+
+  /**
+   * The drag ENDED — cancelled with Esc, or released outside the window.
+   *
+   * Neither of those fires `drop`, and a cancel outside the shell need not fire
+   * a matching `dragleave` either, so without this the counter keeps whatever
+   * depth the abandoned drag left and the overlay stays lit over a Workbench
+   * nobody is dragging anything onto. Reset rather than decremented, for the
+   * same reason the drop resets it. Window listeners above cover OS file drags,
+   * whose `dragend` never reaches this element.
+   */
+  const onShellDragEnd = resetDropAffordance;
+
+  const onShellDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!intakeDragHasFiles(Array.from(event.dataTransfer?.types ?? []))) return;
+      event.preventDefault();
+      // A drop fires no `dragleave`, so the counter is reset rather than
+      // decremented — otherwise the affordance stays lit for the rest of the
+      // session over the depth the drag left behind.
+      resetDropAffordance();
+      if (readOnly) {
+        // The controls are dimmed, but a DROP has no disabled state to respect
+        // — the platform delivers it either way. Refusing silently would be
+        // indistinguishable from losing the file.
+        setIntakeStatus(INTAKE_READ_ONLY_COPY);
+        announce(INTAKE_READ_ONLY_COPY);
+        return;
+      }
+      if (intakeBusyRef.current) {
+        // Same reasoning as the read-only branch: the drop cannot be queued
+        // behind the batch in flight (one busy flag, one set of outcomes), so
+        // it is refused OUT LOUD rather than dropped on the floor.
+        setIntakeStatus(INTAKE_IN_FLIGHT_COPY);
+        announce(INTAKE_IN_FLIGHT_COPY);
+        return;
+      }
+      const files = Array.from(event.dataTransfer.files);
+      // The types list claimed Files, but the file list can still be empty
+      // (a cancelled OS drag, or a types-only claim). Silent return here is
+      // indistinguishable from losing the file.
+      if (files.length === 0) {
+        setIntakeStatus(INTAKE_FILE_REQUIRED_COPY);
+        announce(INTAKE_FILE_REQUIRED_COPY);
+        return;
+      }
+      runIntakeFiles(files);
+    },
+    [announce, readOnly, resetDropAffordance, runIntakeFiles],
+  );
+
+  /**
+   * Intake's controls plus the batch sentence, composed ONCE and rendered into
+   * whichever left column is on screen — the tree panel's header in Wiki mode,
+   * the Sources column's own block otherwise.
+   *
+   * One node rather than two call sites: the two surfaces must offer the same
+   * affordance with the same state, and a second `<IntakeControls>` spelled out
+   * below is how they would start diverging (one passing `busy`, the other
+   * forgetting `readOnly`). The URL field is the one difference, and it is a
+   * prop — the Sources column is where UX-DR5 puts it.
+   *
+   * The batch SENTENCE is not part of this node. It used to be, and that put it
+   * on screen only where a left column was rendering one: the drop target is the
+   * whole shell in every mode, so a drop in Chat or Lint was announced and then
+   * had nowhere to appear. It lives on the shell now — one paragraph, rendered
+   * once, in every mode.
+   */
+  const intakePanel = (
+    <IntakeControls
+      onFiles={runIntakeFiles}
+      onUrl={runIntakeUrl}
+      busy={intakeBusy}
+      readOnly={readOnly}
+      url={mode === "sources"}
+    />
+  );
+
+  // Esc closes the sheet — on the BUBBLE phase, deliberately. `useDialogA11y`
+  // takes Esc on capture and stops propagation, so an open ConfirmDialog wins
+  // first and exactly one layer closes per press. The sheet is navigation, not
+  // a modal, so it must not reuse that hook (which also owns body overflow).
+  //
+  // Tab is handled here too. The open sheet sits over a backdrop that makes the
+  // canvas unclickable, so letting Tab walk out of the rail would strand a
+  // keyboard user on controls they can neither see nor operate. Focus cycles
+  // within the rail instead; Esc, the backdrop and a mode choice all still
+  // close it, so this is a loop, not a trap the owner cannot leave.
+  useEffect(() => {
+    if (!sheetOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeSheet();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const rail = railRef.current;
+      if (!rail) return;
+      // VISIBLE controls only. The collapse chevron is the last child of the
+      // rail and is `display: none` below 900px — which is the only width where
+      // the sheet exists at all. Taken raw, the list makes that hidden button
+      // the wrap point: Shift+Tab off the first mode calls `focus()` on a
+      // `display: none` element (a silent no-op) and dead-ends, while forward
+      // Tab off the Settings control never matches `last`, so it is not prevented
+      // and focus walks straight out of the rail onto the canvas the backdrop
+      // has made unclickable. `getClientRects()` is empty for a `display: none`
+      // element; `offsetParent` is not used here because the rail itself is
+      // `position: fixed` at this breakpoint.
+      const items = Array.from(
+        rail.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]"),
+      ).filter((item) => item.getClientRects().length > 0);
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      const inside = active instanceof Node && rail.contains(active);
+      if (event.shiftKey && (!inside || active === first)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (!inside || active === last)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sheetOpen, closeSheet]);
+
+  // Widening past the breakpoint puts the rail back in the layout, so a sheet
+  // left open would sit over a rail that is already visible.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(SPLIT_WIDE_QUERY);
+    const onChange = () => {
+      // No focus restore on this path: the trigger is `display: none` above the
+      // breakpoint, so focusing it would drop the keyboard user on <body>.
+      // Widening puts the rail back into the layout at the position focus is
+      // already in, which is where it should stay.
+      if (query.matches) setSheetClosed(false);
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [setSheetClosed]);
+
+  // Opening the sheet moves focus into it; closing returns it to the trigger,
+  // so a keyboard user is never dropped on <body>.
+  useEffect(() => {
+    if (sheetOpen) {
+      railRef.current?.querySelector<HTMLElement>("button, a")?.focus();
+    } else if (restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      // `offsetParent` is null for a `display: none` element. Focusing one is a
+      // silent no-op that leaves the document focused on <body>; leaving focus
+      // untouched is strictly better.
+      const trigger = sheetTriggerRef.current;
+      if (trigger?.offsetParent) trigger.focus();
+    }
+  }, [sheetOpen]);
+
+  /**
+   * Swapping the canvas takes the keyboard to it (DW-413, DW-423, DW-425).
+   *
+   * Before this, opening Settings moved focus NOWHERE: the mode canvas the
+   * owner was standing in goes `display: none` in the same commit, so a browser
+   * blurs whatever held focus inside it and drops the keyboard on `<body>` —
+   * with the whole shell to Tab back through, past a rail and a nav, to reach
+   * the surface they just asked for. `#wb-canvas` is whichever section is on
+   * screen: it carries `CANVAS_ID` and `tabIndex={-1}` because the hidden one
+   * gives both up, which is exactly what makes it able to receive this — and
+   * what makes it the right destination when Settings CLOSES on a traversal too,
+   * where the surface goes away with no control holding the keyboard.
+   *
+   * Read from the DOCUMENT rather than through a ref, because the two sections
+   * hand that id back and forth — a ref would have to be threaded into
+   * `SettingsCanvas` and would then name the node whether or not it is the one
+   * currently answering to `#wb-canvas`.
+   *
+   * Keyed on the NONCE, not on `settingsOpen`. The boolean could only report a
+   * change of state, so a second `g s` over an open surface announced Settings
+   * and moved nothing (DW-425) and a Back that took the surface away moved
+   * nothing either (DW-423). The bump SITES are the whole policy — both openers
+   * unconditionally, and a traversal that MOVES the flag only when the keyboard
+   * was inside the canvas being swapped (DW-513) — and the paths that must leave
+   * the keyboard alone (the rail control closing Settings, a traversal that only
+   * changes the mode, a pane pick) are exactly the ones that do not bump. This
+   * effect asks none of that: by the time it runs the canvas has already been
+   * swapped, so the condition is sampled in the `popstate` handler instead.
+   *
+   * Guarding on the initial value keeps the MOUNT silent, which is what lets a
+   * `?settings=1` deep link restore the surface without stealing focus from
+   * whatever the visitor was doing: a restore is not a change the owner made.
+   *
+   * If the revealed surface has a dialog open on it, `useDialogA11y` re-arms as
+   * the canvas comes back and focuses the dialog container — DW-26's designed
+   * behaviour, and the reason a Create Wiki draft survives a Settings visit with
+   * the keyboard back inside it. Nothing here competes with that: this effect
+   * runs only when something bumped the nonce.
+   *
+   * Declared AFTER the sheet's restore above, so that below the breakpoint —
+   * where picking Settings from the sheet closes the sheet in the same commit —
+   * the keyboard lands on the surface the owner asked for rather than back on
+   * the trigger they used to ask for it.
+   */
+  useEffect(() => {
+    if (canvasFocusNonce === 0) return;
+    // …unless the canvas being revealed holds a LIVE modal dialog.
+    //
+    // Back out of Settings and the rail's own close are the same commit as far
+    // as the mode canvas is concerned: `hidden` comes off, `SurfaceVisibility`
+    // goes true, and `useDialogA11y` re-arms and focuses the dialog container.
+    // That is a CHILD effect, so it has already run by the time this one does —
+    // and moving focus to `#wb-canvas` behind it would leave the keyboard
+    // OUTSIDE an `aria-modal` dialog whose Tab trap is armed, which is the one
+    // place a keyboard user must never be. The rail close never reaches here
+    // (it does not bump); the traversal does, so the guard is what makes the two
+    // paths agree.
+    //
+    // "Live" is the distinction, not "present": a dialog stood down under the
+    // withdrawn canvas is still in the DOCUMENT — that is DW-373's whole design
+    // — so a bare `[role="dialog"][aria-modal="true"]` query would find the
+    // Create Wiki dialog on the way INTO Settings and refuse the move this
+    // effect exists for. A modal inside a `[hidden]` subtree is withdrawn along
+    // with its surface and holds nothing.
+    //
+    // Deliberately NOT keyed on `document.activeElement`: jsdom does not blur
+    // through an ancestor `hidden` the way a browser does, so "is focus already
+    // in the dialog?" answers differently in the two environments and the guard
+    // would be pinned to the wrong one.
+    const modals = document.querySelectorAll<HTMLElement>(
+      '[role="dialog"][aria-modal="true"]',
+    );
+    for (const modal of modals) {
+      if (modal.closest("[hidden]") === null) return;
+    }
+    // `preventScroll`, because this effect is PASSIVE and the mode canvas's
+    // scroll restore is a LAYOUT effect (DW-523): React runs every layout
+    // effect before any passive one, so a plain `focus()` here lands after the
+    // restore has already put the offset back. Where the DOCUMENT is the
+    // scroller — below the stacking breakpoint with a Preview docked, the one
+    // case DW-523 exists for — focusing `#wb-canvas` scrolls it into view and
+    // undoes exactly that, one frame later. Nothing is lost by suppressing it:
+    // the canvas is being revealed at the offset the owner left, which is
+    // already where they should be looking. jsdom cannot see this — its
+    // `focus()` does not scroll — so the guard is a source-scanned claim in
+    // `workbench-chrome.test.ts`.
+    document.getElementById(CANVAS_ID)?.focus({ preventScroll: true });
+  }, [canvasFocusNonce]);
+
+  // Where inside the grab strip the press landed, in width space (DW-44).
+  // Measured ONCE on `pointerdown` and replayed into every `pointermove`, so the
+  // boundary tracks the pointer's displacement instead of jumping to it — which
+  // a 24px strip offset entirely to one side of the boundary would otherwise do
+  // by up to its own full width on the first move.
+  const grabRef = useRef(0);
+
+  // The press begins; the shell suppresses text selection for its duration, and
+  // records the grab. The shell owns the rect, so it owns the measurement; WHAT
+  // the measurement means — and the clamp that keeps a press reported from
+  // outside the strip from offsetting the drag arbitrarily — is
+  // `workbench-split`'s answer.
+  const beginResize = useCallback((id: SplitId, clientX: number, current: number) => {
+    const shell = shellRef.current;
+    const rect = shell?.getBoundingClientRect();
+    grabRef.current = rect
+      ? splitGrabOffset(id, clientX, rect.left, rect.width, current)
+      : 0;
+    setResizing(true);
+  }, []);
+
+  // …and ends. The preference is written ONCE, here, rather than on every
+  // pointermove: a drag is ~60 events a second, and localStorage is synchronous.
+  const endResize = useCallback(() => {
+    setResizing(false);
+    writeStoredSplitWidths(latestRef.current.widths);
+  }, []);
+
+  // The only geometry the shell touches is the rect it measures. Where the
+  // pointer lands and what the range is are both `workbench-split`'s answers.
+  const dragTo = useCallback((id: SplitId, clientX: number, bounds: SplitBounds) => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    const raw = splitWidthFromPointer(id, clientX, rect.left, rect.width, grabRef.current);
+    setWidths((current) => withSplitWidth(current, id, clampSplitWidth(raw, bounds)));
+  }, []);
+
+  // Returns whether the divider claimed the key, so the control knows whether to
+  // prevent the default — Tab and Escape must still work from a focused handle.
+  const pressResizeKey = useCallback(
+    (id: SplitId, key: string, current: number, bounds: SplitBounds) => {
+      const next = nextSplitWidthFromKey(id, key, current, bounds);
+      if (next === null) return false;
+      const updated = withSplitWidth(latestRef.current.widths, id, next);
+      setWidths(updated);
+      writeStoredSplitWidths(updated);
+      return true;
+    },
+    [],
+  );
+
+  // Below 900px the Preview is not a column beside the canvas — it is a stacked
+  // fourth ROW, past the fold of a shell that is `100dvh; overflow: hidden`.
+  // Docking one there looked like a tap that did nothing (DW-34). The CSS
+  // releases the shell's clamp while a Preview is docked so there is somewhere
+  // to scroll TO; this brings the column into view once there is.
+  //
+  // Keyed on the ROW as well as on the dock. At this width the column is below
+  // the fold whether or not one was already open, so picking a second row while
+  // the first is showing changes content the owner cannot see — the identical
+  // "a tap appeared to do nothing" symptom, and the common case once a Preview
+  // is in use at all. `selection` is the shell's stable identity for a pick:
+  // `openPage` returns the SAME object when a wikilink points at the row
+  // already showing, so a link that changes nothing scrolls nothing either.
+  //
+  // No focus move, on this path or any other: the announcement is the whole of
+  // the report, and pulling focus off the tree row the owner just clicked would
+  // cost a keyboard user their place in the tree.
+  //
+  // …and never for a RESTORE. The mount effect docks a stored pick, which makes
+  // `previewOpen` true on a commit the owner did nothing to cause — this would
+  // then open every page load below 900px already scrolled past the tree and
+  // the canvas to the bottom row. It is the same rule the restore already
+  // follows for the live region (announce nothing), applied to the other half
+  // of the report: a reveal answers a pick, and a restore is not one.
+  useEffect(() => {
+    if (!previewOpen) return;
+    if (!ownerPickedRef.current) return;
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    // The WIDE layout already has the column on screen; scrolling there would
+    // move a shell that does not scroll and, in a browser that honours it, jump
+    // the canvas for no reason.
+    if (window.matchMedia(SPLIT_WIDE_QUERY).matches) return;
+    // An optional CALL, not a feature test: jsdom ships no `scrollIntoView` and
+    // neither do a few embedded webviews, and a dock that throws is strictly
+    // worse than a dock the owner has to scroll to themselves.
+    previewRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [previewOpen, selection]);
+
+  // Everything below is `workbench-split`'s: the widths the grid gets, the range
+  // each divider enforces AND announces, whether a divider exists at all, and
+  // the two inline custom properties. Not one of them is spelled here.
+  const layout: SplitLayout = { shellWidth, previewOpen, collapsed };
+  const applied = clampSplitWidths(widths, layout);
+  const treeBounds = splitBounds("tree", applied, layout);
+  const previewBounds = splitBounds("preview", applied, layout);
+
+  return (
+    <div
+      className="wb-shell"
+      ref={shellRef}
+      style={splitStyleVars(applied, mounted, layout) as CSSProperties | undefined}
+      data-collapsed={collapsed ? "true" : "false"}
+      // Settings puts its own nav in the left column, so a collapsed column
+      // would leave no category reachable at all — and `collapsed` is durable,
+      // so that state would survive every reload. CSS force-shows the column
+      // while this is true; the owner's stored preference is not rewritten, and
+      // it takes effect again the moment Settings closes.
+      data-settings={settingsOpen ? "true" : "false"}
+      data-sheet-open={sheetOpen ? "true" : "false"}
+      data-mounted={mounted ? "true" : "false"}
+      data-preview={previewOpen ? "true" : "false"}
+      data-resizing={resizing ? "true" : "false"}
+      // A file drag is over the shell. CSS draws the affordance from this
+      // attribute, the same way every other shell state above is drawn.
+      data-drop={dropActive ? "true" : "false"}
+      // Intake's drop target is the WHOLE shell, in every mode (Story 2.1) —
+      // not a bordered rectangle the owner has to aim at. The handlers claim
+      // only drags that carry files; see `onShellDragOver`.
+      onDragOver={onShellDragOver}
+      onDragEnter={onShellDragEnter}
+      onDragLeave={onShellDragLeave}
+      onDragEnd={onShellDragEnd}
+      onDrop={onShellDrop}
+    >
+      <button
+        type="button"
+        ref={sheetTriggerRef}
+        className="wb-sheet-trigger"
+        aria-expanded={sheetOpen}
+        aria-controls={RAIL_ID}
+        onClick={() => setSheetOpen((open) => !open)}
+      >
+        Modes
+      </button>
+
+      <IconRail
+        ref={railRef}
+        id={RAIL_ID}
+        leftColumnId={LEFT_ID}
+        mode={mode}
+        onSelect={selectMode}
+        onToggleSettings={toggleSettings}
+        settingsActive={settingsOpen}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        sidecar={sidecar}
+        // The rail dot's `down` sentence is origin-sensitive (DW-750): the same
+        // probe means "nothing is listening" on a loopback page and "may be
+        // running and refusing" anywhere else. Read here, after mount, and
+        // handed down — the rail decides nothing about it.
+        pageOrigin={pageOrigin}
+        todoCount={todoCount}
+        reviewCount={reviewCount}
+      />
+
+      {sheetOpen && (
+        <div className="wb-backdrop" onClick={closeSheet} aria-hidden="true" />
+      )}
+
+      {/* The drop affordance. `aria-hidden`, and deliberately: it exists for as
+          long as a pointer is holding files over the shell, which is a state no
+          keyboard or screen-reader user can be in — the picker is their path,
+          and the batch sentence is what either path reports. It is also
+          `pointer-events: none` in CSS, so it cannot become the drag's target
+          and fire a `dragleave` for the shell it covers. */}
+      {dropActive && (
+        <div className="wb-drop-overlay" aria-hidden="true">
+          <p className="wb-drop-note">{INTAKE_DROP_COPY}</p>
+        </div>
+      )}
+
+      {/* Intake's batch sentence, rendered ONCE and in every mode. The drop
+          target is the whole shell, so a drop in Chat or Lint — where no left
+          column shows an Intake control — must still be able to say what
+          happened; while it lived inside the two left columns it was announced
+          into the live region and then had nowhere to appear.
+
+          Not a live region itself. The announcement goes through the shell's
+          one `aria-live` paragraph at the bottom, and a second region holding
+          the same words would speak them twice. */}
+      {intakeStatus && <p className="wb-intake-status">{intakeStatus}</p>}
+
+      {/* Header (product title, Wiki switcher, New Wiki), then the tabs and the
+          tree — but the trees describe the Wiki surface, so every other mode
+          keeps the muted label it has had since Story 1.3 rather than showing a
+          Knowledge tree next to, say, the Lint canvas. */}
+      <aside
+        className="wb-left"
+        id={LEFT_ID}
+        aria-label={`${settingsOpen ? SETTINGS_LABEL : surface.label} panel`}
+      >
+        <div className="wb-left-head">
+          <h1 className="wb-title">{APP_NAME}</h1>
+          <WikiSwitcher
+            wikis={wikis}
+            currentWikiId={currentWikiId}
+            unavailable={registryUnavailable}
+            readOnly={readOnly}
+          />
+        </div>
+        {/* The tree panel stays MOUNTED while Settings is open and goes behind
+            `hidden`, exactly as the mode canvas does one column over: which
+            groups and directories the owner has collapsed lives in
+            `TreePanel`'s own `closed` state, so rendering `SettingsNav`
+            INSTEAD of this panel re-opened the whole tree on every visit.
+
+            The SIBLING of DW-412's loss rather than that entry itself — same
+            bundle, same mechanism, a different column. DW-412 is about the
+            Preview's unsaved markdown, which is the gate further down.
+
+            The non-Wiki stub IS dropped rather than hidden — it is one label
+            with nothing behind it, and it holds no state to lose. */}
+        {mode === "wiki" ? (
+          <TreePanel
+            // Import / Upload above the tabs (UX-DR5). The shell composes it,
+            // because the shell owns the intake state — see `intakePanel`.
+            header={intakePanel}
+            tab={treeTab}
+            onTabChange={selectTreeTab}
+            knowledge={knowledge}
+            files={files}
+            truncated={filesTruncated}
+            hasWiki={currentWikiId !== null}
+            unavailable={registryUnavailable}
+            knowledgeUnavailable={knowledgeUnavailable}
+            filesUnavailable={filesUnavailable}
+            selection={selection}
+            onSelect={selectRow}
+            collapsed={collapsed}
+            hidden={settingsOpen}
+          />
+        ) : settingsOpen ? null : (
+          <div className="wb-left-surface">
+            <p className="wb-left-surface-label">{surface.label}</p>
+            {/* Sources gets the picker AND the in-app URL field; every other
+                unbuilt mode keeps the muted label alone it has had since Story
+                1.3. Putting the URL field under, say, Lint would offer an
+                arrival on a surface that has nothing to do with one. */}
+            {mode === "sources" && intakePanel}
+            {mode === "sources" && (
+              <SourcesTree
+                files={files}
+                truncated={filesTruncated}
+                filesUnavailable={filesUnavailable}
+                hasWiki={currentWikiId !== null}
+                selection={selection}
+                readOnly={readOnly}
+                onSelect={selectRow}
+                onDelete={
+                  readOnly
+                    ? undefined
+                    : (path) => {
+                        setSourceDeleteError(null);
+                        setSourceDeletePath(path);
+                      }
+                }
+              />
+            )}
+          </div>
+        )}
+        {(mode === "wiki" || mode === "sources") && !settingsOpen && (
+          <ActivityDock readOnly={readOnly} wikiId={currentWikiId} />
+        )}
+        {/* Settings' own nav takes the column the trees usually have (UX-DR14).
+            AFTER the withdrawn panel, so the reading and tab order of the
+            column is head → whatever is on screen, with nothing to step over. */}
+        {settingsOpen && (
+          <SettingsNav
+            category={settingsCategoryId}
+            onSelect={selectSettingsCategory}
+          />
+        )}
+      </aside>
+
+      {/* A collapsed column is `display: none`, which takes the h1 above out of
+          the accessibility tree along with it — leaving the document with no
+          top-level heading at all. This restates it for exactly that state.
+          Which one is live is decided in CSS, by the same rules that decide
+          whether the column is showing, so the two can never both be exposed
+          (below 900px the column is force-shown and this one withdraws). */}
+      <h1 className="wb-sr-only wb-title-fallback">{APP_NAME}</h1>
+
+      {/* Each divider follows the column it moves, so the tab order reads
+          rail → left column → divider → canvas → divider → Preview. Rendered
+          only once mounted AND measured: a handle in the SSR markup would be a
+          hydration mismatch, and one rendered before the shell has a width would
+          announce the floors as its whole range. Below 1200px they are hidden by
+          a media query, never by a width comparison here. */}
+      {showSplitHandle("tree", mounted, layout) && (
+        <SplitHandle
+          id="tree"
+          label={splitLabel("tree")}
+          value={applied.tree}
+          min={treeBounds.min}
+          max={treeBounds.max}
+          controls={LEFT_ID}
+          onStart={(clientX) => beginResize("tree", clientX, applied.tree)}
+          onMove={(clientX) => dragTo("tree", clientX, treeBounds)}
+          onEnd={endResize}
+          onKey={(key) => pressResizeKey("tree", key, applied.tree, treeBounds)}
+        />
+      )}
+
+      {/* The mode canvas stays MOUNTED while Settings is open (DW-373) and goes
+          behind `hidden`, so an open Create Wiki dialog and the name typed into
+          it survive the visit — the same withdrawal DW-26 already performs one
+          level down, for the same reason. `SettingsCanvas` takes `CANVAS_ID`,
+          `tabIndex={-1}` and `headingId` because the hidden one gives all three
+          up, so the skip link keeps exactly one target and both ids stay unique.
+
+          `SettingsCanvas` still mounts on open and UNMOUNTS on close — that
+          unmount IS the Settings draft's discard, and keeping it mounted would
+          quietly turn "unsaved edits are discarded on leave" into a second
+          durable store.
+
+          Order matters for the tab order this shell documents (rail → left
+          column → canvas → Preview): the mode canvas renders first and is
+          `display: none` while hidden, so Settings occupies `grid-column: 3`
+          alone and reads in the same place. */}
+      <ModeCanvas
+        mode={mode}
+        sidecar={sidecar}
+        headingId={headingId}
+        hidden={settingsOpen}
+        // The two conditions under which the stylesheet moves the scroll from
+        // `.wb-canvas` to the document without `hidden` moving (DW-719). Passed
+        // as re-probe triggers, not as facts the canvas reads.
+        previewOpen={previewOpen}
+        narrow={narrow}
+        wikiId={currentWikiId}
+        readOnly={readOnly}
+        onDockPreview={selectRow}
+        onTodoCountChange={setTodoCount}
+        onReviewCountChange={handleReviewCountChange}
+        onOpenResearch={openResearch}
+        dataVersion={dataVersion}
+        researchFillId={researchFillId}
+      >
+        {children}
+      </ModeCanvas>
+      {settingsOpen && (
+        <SettingsCanvas
+          category={settingsCategoryId}
+          headingId={headingId}
+          hasWiki={currentWikiId !== null}
+          onOpenArtifact={openSettingsArtifact}
+        />
+      )}
+
+      {showSplitHandle("preview", mounted, layout) && (
+        <SplitHandle
+          id="preview"
+          label={splitLabel("preview")}
+          value={applied.preview}
+          min={previewBounds.min}
+          max={previewBounds.max}
+          controls={PREVIEW_ID}
+          onStart={(clientX) => beginResize("preview", clientX, applied.preview)}
+          onMove={(clientX) => dragTo("preview", clientX, previewBounds)}
+          onEnd={endResize}
+          onKey={(key) => pressResizeKey("preview", key, applied.preview, previewBounds)}
+        />
+      )}
+
+      {/* After the canvas in the DOM, so the tab order stays rail → left column
+          → canvas → Preview without a single `tabindex` (EXPERIENCE.md:165).
+
+          MOUNTED on the dock rule alone and withdrawn with `hidden` while
+          Settings shows (DW-412) — the same move the mode canvas makes, for the
+          same reason: this column's editor can be holding unsaved markdown, and
+          the gate that used to read `previewOpen` here destroyed it on the way
+          into Settings. `previewOpen` still decides what is ON SCREEN, which is
+          all the layout, the divider and `data-preview` ever meant by it. */}
+      {/* An Agent output (Story 8.8) gets its own read-only column — see
+          `WorkspacePreview`. The pick is a THIRD selection kind because the bytes
+          are on the sidecar's disk rather than in the kernel, and the column
+          below would fetch it from `/api/workbench/preview` and 404. */}
+      {previewDocked && selection?.kind === "workspace" && (
+        <WorkspacePreview
+          id={PREVIEW_ID}
+          selection={selection}
+          hidden={!previewOpen}
+        />
+      )}
+
+      {previewDocked && isKernelSelection(selection) && (
+        <PreviewColumn
+          // The id the Preview separator's `aria-controls` names (DW-45).
+          id={PREVIEW_ID}
+          selection={selection}
+          knowledge={knowledge}
+          files={files}
+          onOpenPage={openPage}
+          // The lightbox's jump-to-source, for a media Source (Story 7.7).
+          onOpenFile={openFile}
+          // The trees come from the server render, which the watcher re-runs;
+          // the Preview's bytes come from a client read keyed on the
+          // selection, so a refreshed page changes nothing about them. This is
+          // the Preview's half of the same signal — the shell is where context
+          // becomes props, and it stays router-free.
+          dataVersion={dataVersion}
+          // One boolean UP, never the draft (DW-36): the shell decides whether a
+          // pick may be applied, which needs one bit, and a shell that could
+          // read the text would be a second owner of the editor's state.
+          onDirtyChange={reportPreviewDirty}
+          // The deployment flag the shell already holds, threaded down the same
+          // way `WikiSwitcher` receives it — no route and no client fetch for a
+          // fact the server render carried in. The Preview's History panel must
+          // withhold Revert BEFORE its confirm (DW-149), not after the route's
+          // 403.
+          readOnly={readOnly}
+          // Off screen, not closed. `previewOpen` is the on-screen boolean, so
+          // the column is withdrawn for exactly as long as Settings is showing
+          // and comes back holding whatever it held.
+          hidden={!previewOpen}
+          // …and the shell keeps the geometry. Below 900px the column is a
+          // stacked row the shell has to scroll to; the column itself never
+          // reads the viewport.
+          ref={previewRef}
+        />
+      )}
+
+      {/* The held pick's discard gate (DW-36). The SAME `ConfirmDialog` the
+          Preview's edit gate uses — one dialog implementation, one overlay level
+          (UX-DR17) — and the two can never coexist: this one opens only while
+          the editor is open, and the column's edit-confirm is reachable only
+          from an `Edit` button that renders `canEdit && !editing`.
+
+          No `fallbackFocusRef`: the opener is the tree row the owner clicked,
+          which is still mounted on both outcomes, so `useDialogA11y`'s own
+          restore puts focus back where they left it either way. */}
+      <ConfirmDialog
+        open={pendingSelection !== null || pendingArtifactNavigation !== null}
+        title={PREVIEW_DISCARD_CONFIRM_TITLE}
+        body={PREVIEW_DISCARD_CONFIRM_BODY}
+        confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}
+        cancelLabel={PREVIEW_KEEP_EDITING_COPY}
+        onConfirm={confirmDiscard}
+        onCancel={cancelDiscard}
+      />
+
+      <ConfirmDialog
+        open={sourceDeletePath !== null}
+        title={SOURCE_DELETE_TITLE}
+        body={SOURCE_DELETE_BODY}
+        confirmLabel={SOURCE_DELETE_CONFIRM}
+        cancelLabel={SOURCE_DELETE_CANCEL}
+        busy={sourceDeleteBusy}
+        error={sourceDeleteError}
+        onCancel={() => {
+          if (!sourceDeleteBusy) setSourceDeletePath(null);
+        }}
+        onConfirm={() => {
+          if (!sourceDeletePath || sourceDeleteBusy) return;
+          setSourceDeleteBusy(true);
+          setSourceDeleteError(null);
+          void send(SOURCE_ROUTE, {
+            method: "DELETE",
+            body: JSON.stringify({ path: sourceDeletePath }),
+          })
+            .then(() => {
+              setSourceDeletePath(null);
+              requestDataVersionCheck();
+            })
+            .catch((cause: unknown) => {
+              setSourceDeleteError(
+                cause instanceof Error ? cause.message : "Delete failed.",
+              );
+            })
+            .finally(() => setSourceDeleteBusy(false));
+        }}
+      />
+
+      {/* Announces the surface the rail just switched to (accessibility floor).
+          Polite, so it never interrupts an in-progress announcement — and empty
+          until the owner actually switches, so a restored mode is not reported
+          as a change on every page load. */}
+      <p className="wb-sr-only" aria-live="polite">
+        {announcement}
+      </p>
+    </div>
+  );
+}

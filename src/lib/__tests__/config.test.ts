@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import {
+  CONFIG_UNREADABLE_COPY,
+  UNSTAMPED_CONFIG_VERSION,
   loadConfig,
+  readConfig,
+  newConfigVersion,
   saveConfig,
   loadConfigSync,
   isValidProvider,
@@ -12,14 +16,31 @@ import {
   getEffectiveSettings,
   getStructuredKnowledgeModelSettings,
   getResolvedCredentials,
+  apiKeyForProvider,
+  getCustomBaseUrl,
+  getChatModelSettings,
+  getIngestModelSettings,
   getWikiDir,
   getRawDir,
+  getWorkbenchSettings,
+  getFirecrawlSettings,
+  getResearchSettings,
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
+  envOllamaBaseUrlAnswer,
+  resolveOllamaBaseUrl,
+  providerIsConfigured,
+  providerIsUsable,
+  detectEnvProvider,
+  DEFAULT_MODELS,
+  applyWorkbenchSettings,
   _resetConfigCache,
+  _resetConfigWarnings,
   type AppConfig,
 } from "../config";
 import { _resetStorage } from "../storage";
+import { logger } from "../logger";
+import { WRITE_CONFLICT_COPY } from "../write-precondition";
 
 // ---------------------------------------------------------------------------
 // Helpers — use a temp dir so tests don't touch the real project root
@@ -45,6 +66,11 @@ const ENV_KEYS = [
   "EMBEDDING_PROVIDER",
   "YOPEDIA_READONLY",
   "STORAGE_PROVIDER",
+  // The `custom` provider's two halves. They may live in the STORE, so a
+  // variable left set in the ambient environment would silently satisfy
+  // `providerIsConfigured("custom")` for cases that mean to control both.
+  "LLM_CUSTOM_API_KEY",
+  "LLM_CUSTOM_BASE_URL",
 ];
 
 beforeEach(async () => {
@@ -66,12 +92,15 @@ beforeEach(async () => {
   delete process.env.OLLAMA_MODEL;
   delete process.env.LLM_MODEL;
   delete process.env.EMBEDDING_PROVIDER;
+  delete process.env.LLM_CUSTOM_API_KEY;
+  delete process.env.LLM_CUSTOM_BASE_URL;
 
   // Point config store at the temp dir
   process.env.DATA_DIR = tmpDir;
 
   // Always start with a fresh cache and storage singleton
   _resetConfigCache();
+  _resetConfigWarnings();
   _resetStorage();
 });
 
@@ -93,6 +122,34 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+/**
+ * Run `body` with `logger.warn` captured, and hand back this module's lines.
+ *
+ * ONE helper for every warn-once suite in this file. Three identical copies
+ * lived inside three `describe` blocks, which is three things to keep in step
+ * about how a warning is even observed — and the filter on `"config"` is what
+ * makes these assertions counts of THIS module's lines rather than of every
+ * line the process emitted.
+ *
+ * Synchronous on purpose: every body here reads a resolver, and awaiting the
+ * spy's own scope would let a line emitted after `finally` escape the capture.
+ * Cases that need `saveConfig`/`loadConfig` first do that OUTSIDE the spy,
+ * where those writes are not the thing being measured.
+ */
+function withWarnSpy<T>(body: () => T): { result: T; warnings: string[] } {
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    return {
+      result: body(),
+      warnings: warn.mock.calls
+        .filter((call) => call[0] === "config")
+        .map((call) => String(call[1])),
+    };
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // loadConfig
 // ---------------------------------------------------------------------------
@@ -110,6 +167,516 @@ describe("loadConfig", () => {
     const cfg = await loadConfig();
     expect(cfg.provider).toBe("openai");
     expect(cfg.model).toBe("gpt-4o");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readConfig — the honest read (DW-192) and the opaque stamp (DW-197)
+// ---------------------------------------------------------------------------
+
+const CONFIG_FILE = ".llm-wiki-config.json";
+
+/**
+ * The file the RETIRED two-file scheme kept the token in (DW-272).
+ *
+ * Named here only so the migration case can leave one lying around: a store
+ * written by that scheme has a config with no embedded token and a stale sibling
+ * beside it, and nothing may read the sibling ever again.
+ */
+const LEGACY_VERSION_FILE = ".llm-wiki-config.version";
+
+/** The reserved key the token now rides under, INSIDE the config object. */
+const VERSION_KEY = "__settingsVersion";
+
+/**
+ * The reserved key BINDING the token to the bytes it was stamped for (DW-372).
+ *
+ * Never recomputed here — the algorithm is `config.ts`'s and a second copy of it
+ * in the suite would only ever agree with itself. The cases below either match
+ * its SHAPE, or carry the digest the store already holds forward by hand.
+ */
+const DIGEST_KEY = "__settingsDigest";
+
+/** What a stored digest looks like: SHA-256, lowercase hex. */
+const A_DIGEST = expect.stringMatching(/^[0-9a-f]{64}$/) as unknown as string;
+
+/** Read the stored object as it is on disk, both reserved keys and all. */
+async function readRawStore(): Promise<Record<string, unknown>> {
+  return JSON.parse(await fs.readFile(path.join(tmpDir, CONFIG_FILE), "utf-8"));
+}
+
+/**
+ * The digest the store currently holds, for a hand edit that carries it forward.
+ *
+ * CHECKED before it is handed back. Unchecked, a regression that stopped writing
+ * the digest would return `undefined`, every "carries the digest forward" case
+ * below would hand-write `undefined`, and the store would read unstamped — which
+ * is what several of those cases assert ANYWAY, for a completely different
+ * reason. The assertion here is what keeps them from agreeing with a bug.
+ */
+async function heldDigest(): Promise<string> {
+  const digest = (await readRawStore())[DIGEST_KEY];
+  expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  return digest as string;
+}
+
+/** Write the config object BY HAND, behind the API, exactly as given. */
+async function handWriteStore(object: Record<string, unknown>): Promise<void> {
+  await fs.writeFile(
+    path.join(tmpDir, CONFIG_FILE),
+    JSON.stringify(object, null, 2) + "\n",
+    "utf-8",
+  );
+  _resetConfigCache();
+}
+
+/** `saveConfig`'s token, for a save the test expects to land. */
+async function stamp(config: AppConfig, ifMatch?: string | null): Promise<string> {
+  const save = await saveConfig(config, ifMatch);
+  if (save.status !== "ok") throw new Error(`expected the save to land, got ${save.status}`);
+  return save.version;
+}
+
+describe("readConfig", () => {
+  it("answers `ok` with `{}` and the sentinel for a store with no config", async () => {
+    // ABSENT is not broken: an empty config is the documented default, and a
+    // first save has to be able to land against it. No object means no etag —
+    // there are no bytes to compare a write against.
+    const read = await readConfig();
+    expect(read).toEqual({
+      status: "ok",
+      config: {},
+      version: UNSTAMPED_CONFIG_VERSION,
+      etag: null,
+    });
+  });
+
+  it("answers `ok` with the config and the STORED token after a save", async () => {
+    const stamped = await stamp({ provider: "openai" });
+    const read = await readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      config: { provider: "openai" },
+      version: stamped,
+    });
+    // …and an etag to write against, which an existing object always has.
+    expect(read.status === "ok" && read.etag).toBeTruthy();
+  });
+
+  it("answers the SENTINEL for a config with no embedded token", async () => {
+    // Hand-written, restored from a backup, or written by the two-file scheme.
+    await fs.writeFile(
+      path.join(tmpDir, CONFIG_FILE),
+      JSON.stringify({ provider: "openai" }, null, 2) + "\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai" },
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+  });
+
+  it("MIGRATES a two-file store: reads it, then saves ONE object carrying a token", async () => {
+    // What every deployment written by the previous scheme looks like on disk:
+    // a config with no token key, and a stale sibling holding the stamp. The
+    // read must succeed against it — refusing would strand the owner — and the
+    // save that follows must leave one object behind.
+    await fs.writeFile(
+      path.join(tmpDir, CONFIG_FILE),
+      JSON.stringify({ provider: "openai", firecrawlApiKey: "fc-one" }, null, 2) + "\n",
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(tmpDir, LEGACY_VERSION_FILE),
+      "s1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "utf-8",
+    );
+    _resetConfigCache();
+
+    const read = await readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      config: { provider: "openai", firecrawlApiKey: "fc-one" },
+      // The sibling is NOT read: a migrated store is unstamped until its next
+      // save, and the token it used to hold is not this scheme's to honour.
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+
+    const healed = await stamp(
+      { provider: "openai", firecrawlApiKey: "fc-one" },
+      read.status === "ok" ? read.etag : null,
+    );
+    expect(healed).toMatch(/^s1:[0-9a-f]{32}$/);
+    expect(await readRawStore()).toEqual({
+      provider: "openai",
+      firecrawlApiKey: "fc-one",
+      [VERSION_KEY]: healed,
+      [DIGEST_KEY]: A_DIGEST,
+    });
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
+
+    // The orphan sibling is NOT swept. `config.ts` promises this — deleting a
+    // file the owner did not ask about is not that module's business, and an
+    // unread file costs nothing — so a future `deleteFile` cleanup should break
+    // a test rather than a promise.
+    expect(
+      await fs.readFile(path.join(tmpDir, LEGACY_VERSION_FILE), "utf-8"),
+    ).toContain("s1:aaaaaaaa");
+  });
+
+  it("treats a MALFORMED embedded token as unstamped rather than locking the owner out", async () => {
+    // The token travels in `If-Match`, which carries one quoted value with no
+    // embedded quote. A stamp holding a quote or a newline could never be sent
+    // back, so honouring it verbatim would answer every save 428 forever with
+    // no path out from any surface the owner can see.
+    for (const corrupt of ['s1:"quoted"', "s1:not-hex", "w1:2-0000000000000000", "garbage\nlines", "", 42, null]) {
+      await fs.writeFile(
+        path.join(tmpDir, CONFIG_FILE),
+        JSON.stringify({ provider: "openai", [VERSION_KEY]: corrupt }, null, 2) + "\n",
+        "utf-8",
+      );
+      _resetConfigCache();
+      expect(await readConfig()).toMatchObject({
+        status: "ok",
+        config: { provider: "openai" },
+        version: UNSTAMPED_CONFIG_VERSION,
+      });
+    }
+
+    // …and the next save HEALS it rather than leaving it broken.
+    const healed = await stamp({ provider: "openai" });
+    expect(healed).not.toBe(UNSTAMPED_CONFIG_VERSION);
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
+  });
+
+  it("answers `unreadable` for a config that is not valid JSON", async () => {
+    await fs.writeFile(path.join(tmpDir, CONFIG_FILE), "{ not json", "utf-8");
+    _resetConfigCache();
+    const read = await readConfig();
+    expect(read.status).toBe("unreadable");
+  });
+
+  it("answers `unreadable` for JSON that is not an object", async () => {
+    // `"x"`, `[]` and `null` are all valid JSON and none of them is a config;
+    // spreading one into a merge base loses the whole store just as surely as
+    // a read error does.
+    for (const body of ['"x"', "[1,2]", "null", "42"]) {
+      await fs.writeFile(path.join(tmpDir, CONFIG_FILE), body, "utf-8");
+      _resetConfigCache();
+      expect((await readConfig()).status).toBe("unreadable");
+    }
+  });
+
+  it("answers `unreadable` for a storage failure that is not 'not found'", async () => {
+    // A directory where the config file should be: the read fails with EISDIR,
+    // which is not ENOENT, so `{}` would be a lie about a store that exists.
+    await fs.mkdir(path.join(tmpDir, CONFIG_FILE));
+    _resetConfigCache();
+    expect((await readConfig()).status).toBe("unreadable");
+  });
+
+  it("keeps `loadConfig`'s lossy `{}` contract for the same broken store", async () => {
+    // ~50 call sites want defaults and cannot act on the difference. Only the
+    // settings route needs it, and it calls `readConfig`.
+    await fs.writeFile(path.join(tmpDir, CONFIG_FILE), "{ not json", "utf-8");
+    _resetConfigCache();
+    expect(await loadConfig()).toEqual({});
+  });
+
+  it("owns the unreadable sentence in ONE module, typed at no route site", async () => {
+    // One wording for one fact, beside the read that produces it. A route that
+    // typed its own would drift the moment a second door needed the same
+    // refusal, and it is deliberately NOT the write-conflict wording: nothing
+    // is known to have changed here.
+    expect(typeof CONFIG_UNREADABLE_COPY).toBe("string");
+    expect(CONFIG_UNREADABLE_COPY.length).toBeGreaterThan(0);
+    expect(CONFIG_UNREADABLE_COPY).not.toBe(WRITE_CONFLICT_COPY);
+    const route = await fs.readFile(
+      path.join(process.cwd(), "src/app/api/settings/route.ts"),
+      "utf-8",
+    );
+    expect(route).toContain("CONFIG_UNREADABLE_COPY");
+    // The SENTENCE itself is nowhere in the route — only the constant's name.
+    expect(route).not.toContain(CONFIG_UNREADABLE_COPY.slice(0, 40));
+  });
+});
+
+describe("the settings precondition token", () => {
+  it("ROTATES on every save, and is what the store then holds", async () => {
+    const first = await stamp({ provider: "openai" });
+    const read = await readConfig();
+    const second = await stamp(
+      { provider: "openai" },
+      read.status === "ok" ? read.etag : null,
+    );
+    // Same config, different token: nothing about the content produces it.
+    expect(second).not.toBe(first);
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: second });
+  });
+
+  it("is derived from NOTHING in the config", async () => {
+    // THE INVARIANT AD-23 ACTUALLY ASKS FOR: no stored value appears in, or can
+    // be recovered from, the token — because no field feeds `newConfigVersion`.
+    // A content-derived version could not say this, and that is the leak.
+    //
+    // This test used to prove it by hand-writing a DIFFERENT secret under a
+    // standing token and asserting the token stood. That demonstration is gone
+    // (DW-372): the token is now bound to the bytes, so changed content under a
+    // standing stamp reads as unstamped — see the DW-372 cases below. What it
+    // was pinning survives without it.
+    const first = await stamp({ firecrawlApiKey: "fc-one" });
+    expect(first).not.toContain("fc-one");
+    expect(first).toMatch(/^s1:[0-9a-f]{32}$/);
+
+    // Two stores differing ONLY in a stored API key produce tokens with no
+    // relationship to either key — the same store re-saved produces a different
+    // one, and a different secret produces nothing predictable from it.
+    const read = await readConfig();
+    const second = await stamp(
+      { firecrawlApiKey: "fc-two" },
+      read.status === "ok" ? read.etag : null,
+    );
+    expect(second).not.toContain("fc-two");
+    expect(second).not.toBe(first);
+
+    expect(newConfigVersion()).not.toBe(newConfigVersion());
+    expect(newConfigVersion().startsWith("s1:")).toBe(true);
+  });
+
+  it("HONOURS a stored token for a store re-serialized in another key order", async () => {
+    // The benign hand edit (DW-372). `.llm-wiki-config.json` is hand-editable,
+    // and an editor that re-serialized it changed nothing an owner would call a
+    // change — so the digest is canonical over SORTED keys and the token stands.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      model: "gpt-4o",
+      provider: "openai",
+      [DIGEST_KEY]: digest,
+      [VERSION_KEY]: stamped,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai", model: "gpt-4o" },
+      version: stamped,
+    });
+  });
+
+  it("sorts NESTED objects too, not just the top level", async () => {
+    // The canonical serializer is RECURSIVE, and nothing else in this suite can
+    // see that: every other hand-edit case re-orders top-level keys only, so a
+    // top-level-only sort would leave them all green. `skillEnablement` is the
+    // one nested map a real store holds (`Record<string, boolean>`), so this is
+    // the shape an editor actually re-serializes.
+    const stamped = await stamp({
+      provider: "openai",
+      skillEnablement: { alpha: true, beta: false },
+    });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      skillEnablement: { beta: false, alpha: true },
+      provider: "openai",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai", skillEnablement: { alpha: true, beta: false } },
+      version: stamped,
+    });
+  });
+
+  it("REFUSES a stored token whose config changed underneath it (DW-372)", async () => {
+    // The rollback shape: a pre-DW-272 build round-trips `__settingsVersion`
+    // verbatim, so a save through it moved the bytes and left the stamp frozen —
+    // and a draft seeded before that save still matched and landed over it. A
+    // hand edit is the same shape. The digest no longer matches, so the read
+    // answers the sentinel rather than a token that is not true of these bytes.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "anthropic", model: "claude" },
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+
+    // A stamp with NO digest beside it — every store the rollback build itself
+    // wrote — is the same answer, for the same reason.
+    await handWriteStore({ provider: "anthropic", [VERSION_KEY]: stamped });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+
+    // …and it is RECOVERABLE: the next save re-stamps, and the read after it
+    // honours the fresh token.
+    const read = await readConfig();
+    const healed = await stamp(
+      { provider: "anthropic" },
+      read.status === "ok" ? read.etag : null,
+    );
+    expect(healed).not.toBe(stamped);
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
+  });
+
+  it("WARNS ONCE that a store went unstamped underneath its token (DW-372)", async () => {
+    // The read degrades silently as far as any caller can tell — `loadConfig`
+    // answers the same config either way — so this line is the operator's only
+    // signal that the guard is off until the next save. It has to be emitted,
+    // and it has to be emitted ONCE: the state is standing, not an event, and it
+    // holds on every cache-miss read until someone saves. Every store that
+    // predates this change is in exactly that state, so a per-read line would
+    // repeat forever on an install that has not saved yet.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+    await handWriteStore({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+
+    // Spied around the READS only — `saveConfig`/`handWriteStore` above are set-up,
+    // not the thing being measured. Directly rather than through `withWarnSpy`,
+    // which is synchronous by design and cannot wrap an awaited read.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await readConfig()).toMatchObject({
+        status: "ok",
+        version: UNSTAMPED_CONFIG_VERSION,
+      });
+      _resetConfigCache();
+      await readConfig();
+      _resetConfigCache();
+      await readConfig();
+
+      const lines = warn.mock.calls
+        .filter((call) => call[0] === "config")
+        .map((call) => String(call[1]));
+      expect(lines).toEqual([
+        "config changed underneath its version stamp; treating as unstamped",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("lives INSIDE the config object, and is STRIPPED on the way out", async () => {
+    // One object, one read — no pairing for a backend to get wrong (DW-272).
+    // But `AppConfig` is spread into `getWorkbenchSettings`, exported in
+    // backups and diffed field-by-field by the suite, so what a caller gets
+    // back is exactly the fields it stored and nothing else.
+    const stamped = await stamp({ provider: "openai" });
+    expect(await readRawStore()).toEqual({
+      provider: "openai",
+      [VERSION_KEY]: stamped,
+      // Its BINDING rides in the same object for the same reason (DW-372), and
+      // is stripped by the same door.
+      [DIGEST_KEY]: A_DIGEST,
+    });
+    expect(stamped).toMatch(/^s1:[0-9a-f]{32}$/);
+
+    _resetConfigCache();
+    expect(await loadConfig()).toEqual({ provider: "openai" });
+    expect(loadConfigSync()).toEqual({ provider: "openai" });
+    const read = await readConfig();
+    expect(read.status === "ok" && read.config).toEqual({ provider: "openai" });
+  });
+
+  it("REFUSES a save whose compare-and-set lost, and writes nothing", async () => {
+    // The window the route's `If-Match` check cannot see: this request read its
+    // merge base, another writer landed, and this request is now about to write
+    // values seeded before that save. `writeFileIfMatch` refuses instead.
+    await stamp({ provider: "openai" });
+    const read = await readConfig();
+    expect(read.status).toBe("ok");
+    const etag = read.status === "ok" ? read.etag : null;
+
+    // The other writer lands between this request's read and its write.
+    const other = await stamp({ provider: "google" });
+
+    const lost = await saveConfig({ provider: "anthropic" }, etag);
+    expect(lost).toEqual({ status: "conflict" });
+
+    // The store still holds the OTHER writer's value, untouched.
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "google" },
+      version: other,
+    });
+  });
+
+  it("writes UNCONDITIONALLY with no etag, which is the FIRST save only", async () => {
+    // `readConfig` answers `etag: null` exactly when there was no object to
+    // read. The storage interface exposes no if-none-match, so two concurrent
+    // first writes both land and the last wins — one save, on a store that has
+    // never been written. It is written down rather than pretended away.
+    const read = await readConfig();
+    expect(read).toMatchObject({ status: "ok", etag: null });
+    const version = await stamp({ provider: "openai" }, read.status === "ok" ? read.etag : null);
+    expect(await readRawStore()).toEqual({
+      provider: "openai",
+      [VERSION_KEY]: version,
+      [DIGEST_KEY]: A_DIGEST,
+    });
+  });
+
+  it("STRIPS BOTH reserved keys the caller handed in, from the store AND the cache", async () => {
+    // `readStoredConfig` strips them, so no ordinary caller carries one — but a
+    // `PUT` body naming either key reaches the merge. Whatever it says, the pair
+    // written is the freshly computed one, and the cache is primed with the same
+    // object a re-read produces rather than one carrying keys a re-read removes.
+    //
+    // The digest half matters as much as the token half (DW-372): a body that
+    // could plant a digest could bind a token of its choosing to bytes of its
+    // choosing, which is the guard's own state.
+    const version = await stamp({
+      provider: "openai",
+      [VERSION_KEY]: "s1:cccccccccccccccccccccccccccccccc",
+      [DIGEST_KEY]: "c".repeat(64),
+    } as AppConfig);
+
+    expect(version).not.toBe("s1:cccccccccccccccccccccccccccccccc");
+    const raw = await readRawStore();
+    expect(raw).toEqual({
+      provider: "openai",
+      [VERSION_KEY]: version,
+      [DIGEST_KEY]: A_DIGEST,
+    });
+    expect(raw[DIGEST_KEY]).not.toBe("c".repeat(64));
+    expect(loadConfigSync()).toEqual({ provider: "openai" });
+    _resetConfigCache();
+    expect(await loadConfig()).toEqual({ provider: "openai" });
+    // …and the freshly written pair is self-consistent, so the token is honoured.
+    expect(await readConfig()).toMatchObject({ status: "ok", version });
+  });
+
+  it("PRIMES the sync cache with what it wrote", async () => {
+    // It used to null the cache, which left `loadConfigSync` answering `{}` for
+    // the whole 5 s TTL after every save — i.e. env-detected providers
+    // immediately after the owner selected one.
+    await saveConfig({ provider: "openai", model: "gpt-4o" });
+    expect(loadConfigSync()).toMatchObject({ provider: "openai", model: "gpt-4o" });
+    // …and NOT with either reserved key, so a sync reader sees the same shape an
+    // async one does.
+    expect(loadConfigSync()).not.toHaveProperty(VERSION_KEY);
+    expect(loadConfigSync()).not.toHaveProperty(DIGEST_KEY);
   });
 });
 
@@ -165,11 +732,10 @@ describe("loadConfigSync", () => {
     const first = loadConfigSync();
     expect(first.provider).toBe("openai");
 
-    // Write a different value directly (bypassing cache invalidation)
+    // Write a different value. `saveConfig` now PRIMES the cache with what it
+    // wrote rather than nulling it, so the sync read would already see
+    // "google" here — reset explicitly to exercise the cold-cache path below.
     await saveConfig({ provider: "google" });
-    // Don't call loadConfig — cache should still return old value
-    // because saveConfig invalidates cache, but loadConfigSync refills
-    // with {} (cold cache). Let's test the real flow instead:
     _resetConfigCache();
 
     // Cache is cold, so loadConfigSync returns {}
@@ -229,6 +795,38 @@ describe("getEffectiveProvider — merge priority", () => {
     expect(info.configured).toBe(false);
     expect(info.provider).toBe("openai");
     expect(info.model).toBe("gpt-4o-mini");
+  });
+
+  it("reports embeddingSupport, resolved against the same config it reports the provider from", async () => {
+    // No test in this suite read `embeddingSupport` at all before, on the one
+    // `ProviderInfo` object `/api/status`, `POST /api/settings/test` and the
+    // `effective` field of `PUT /api/settings` all serve.
+    //
+    // It also has to be resolved from the `cfg` this function already read
+    // rather than from a second `loadConfigSync()` (DW-313): `loadConfigSync`
+    // is a 5 s-TTL cache, so re-entering it would let "which provider is
+    // active" and "can it embed?" describe two different snapshots on one
+    // object.
+    await saveConfig({ provider: "openai", model: "gpt-4o-mini" });
+    await loadConfig();
+    process.env.OPENAI_API_KEY = "sk-openai-env-key";
+
+    expect(getEffectiveProvider()).toMatchObject({
+      provider: "openai",
+      configured: true,
+      // openai can embed, and with the key present the resolver reaches a model.
+      embeddingSupport: true,
+    });
+
+    // Take the credential away and the SAME object reports both halves of the
+    // new answer: still the owner's selection, no longer able to embed.
+    delete process.env.OPENAI_API_KEY;
+    _resetConfigCache();
+    await loadConfig();
+    expect(getEffectiveProvider()).toMatchObject({
+      provider: "openai",
+      embeddingSupport: false,
+    });
   });
 
   it("saved provider selection wins when another provider key also exists", async () => {
@@ -331,6 +929,59 @@ describe("getEffectiveSettings", () => {
     expect(settings.configured).toBe(false);
   });
 
+  it("reports the ollama endpoint and its source from the ONE ladder (DW-326)", async () => {
+    // The badge beside this value on `/settings` is the whole point: it has to
+    // say where the endpoint that is ACTUALLY in effect came from.
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://stored:11434" });
+    await loadConfig();
+    expect(getEffectiveSettings()).toMatchObject({
+      ollamaBaseUrl: "http://stored:11434",
+      ollamaBaseUrlSource: "config",
+    });
+
+    process.env.OLLAMA_BASE_URL = "http://from-env:11434";
+    expect(getEffectiveSettings()).toMatchObject({
+      ollamaBaseUrl: "http://from-env:11434",
+      ollamaBaseUrlSource: "env",
+    });
+  });
+
+  it("does NOT report an unusable OLLAMA_BASE_URL as the endpoint in effect", async () => {
+    // `ProviderForm` renders this value beside an env/config badge. Reporting a
+    // variable the runtime discards told the owner their deployment talks to an
+    // endpoint nothing talks to — the same surface/runtime disagreement DW-71
+    // closes for the Custom endpoint on the other Settings screen.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://stored:11434" });
+      await loadConfig();
+      process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+      // The stored endpoint is what applies, and the badge says so.
+      expect(getEffectiveSettings()).toMatchObject({
+        ollamaBaseUrl: "http://stored:11434",
+        ollamaBaseUrlSource: "config",
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reports 'none' when the STORED ollama endpoint is unusable too", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await saveConfig({ provider: "ollama", ollamaBaseUrl: "file:///etc/passwd" });
+      await loadConfig();
+
+      expect(getEffectiveSettings()).toMatchObject({
+        ollamaBaseUrl: null,
+        ollamaBaseUrlSource: "none",
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("reports model source as 'default' when using defaults", async () => {
     await saveConfig({ provider: "anthropic" });
     await loadConfig();
@@ -338,6 +989,165 @@ describe("getEffectiveSettings", () => {
     const settings = getEffectiveSettings();
     expect(settings.modelSource).toBe("default");
     expect(settings.model).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("reports an env-set embedding model as 'env'", () => {
+    process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelSource).toBe("env");
+  });
+
+  it("does NOT report a whitespace-only EMBEDDING_MODEL as env-sourced (DW-227)", () => {
+    // Reporting `"   "` as the env-sourced model told the owner a model name
+    // that nothing would ever embed with, on a surface whose whole job is to
+    // say where the effective value came from.
+    process.env.EMBEDDING_MODEL = "   ";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModelSource).not.toBe("env");
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModel).toBeNull();
+  });
+
+  it("does NOT report a whitespace-only STORED embedding model as config-sourced", async () => {
+    // The config leg of the same DW-227 split. A blank stored value is reachable
+    // from a pre-change flat write or a hand-edited config, and reporting it as
+    // the config-sourced model contradicts `resolveEmbeddingModelName`, which
+    // trims it away and embeds with the provider default.
+    await saveConfig({ embeddingModel: "   " });
+    await loadConfig();
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModelSource).not.toBe("config");
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModel).toBeNull();
+  });
+
+  it("lets the STORED embedding model win over a blank env override", async () => {
+    await saveConfig({ embeddingModel: "nomic-embed-text" });
+    await loadConfig();
+    process.env.EMBEDDING_MODEL = " ";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("nomic-embed-text");
+    expect(settings.embeddingModelSource).toBe("config");
+  });
+
+  // -------------------------------------------------------------------------
+  // What is SET vs what is IN EFFECT (DW-274)
+  //
+  // `resolveEmbeddingModelName` applies `embeddingModelMatchesProvider` before
+  // honouring a model name, so the model this page reports as "set" is not
+  // always the model that embeds. These rows pin the second half of the answer.
+  //
+  // The Workers AI direction of the predicate is unreachable from this file —
+  // nothing here mocks `@opennextjs/cloudflare`, so `getWorkersAiBinding()`
+  // always returns null. The literal DW-274 scenario lives in
+  // `settings-runtime-wiring.test.ts`, which does mock it; every row here uses
+  // the other direction (a `@cf/` id under a non-Workers provider).
+  // -------------------------------------------------------------------------
+
+  it("names the model actually embedding when a STORED model is substituted", async () => {
+    // Ollama cannot serve a `@cf/` id, so the resolver drops it for the ollama
+    // default — while the box, and the source badge beside it, go on truthfully
+    // saying what the owner stored.
+    delete process.env.EMBEDDING_MODEL;
+    await saveConfig({
+      embeddingProvider: "ollama",
+      embeddingModel: "@cf/baai/bge-m3",
+    });
+    await loadConfig();
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("@cf/baai/bge-m3");
+    expect(settings.embeddingModelSource).toBe("config");
+    expect(settings.embeddingModelInEffect).toBe("nomic-embed-text");
+    expect(settings.embeddingModelOverridden).toBe(true);
+    expect(settings.embeddingSupport).toBe(true);
+  });
+
+  it("reports no override when the set model IS the one embedding", async () => {
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-env-key";
+    process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelSource).toBe("env");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-large");
+    expect(settings.embeddingModelOverridden).toBe(false);
+  });
+
+  it("names the provider default in effect when no model is set at all", () => {
+    // Nothing is SET, so there is nothing to override — but something IS
+    // embedding, and this is the field that says what.
+    delete process.env.EMBEDDING_MODEL;
+    process.env.OPENAI_API_KEY = "sk-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBeNull();
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelOverridden).toBe(false);
+  });
+
+  it("does NOT call a model an override when nothing embeds at all", () => {
+    // No key, no binding, no stored provider: `getEmbeddingModelName()` is
+    // null. That is the `embeddingSupport: false` story — "your model is being
+    // substituted" would be a different and untrue sentence.
+    process.env.EMBEDDING_MODEL = "text-embedding-3-small";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelSource).toBe("env");
+    expect(settings.embeddingModelInEffect).toBeNull();
+    expect(settings.embeddingModelOverridden).toBe(false);
+    expect(settings.embeddingSupport).toBe(false);
+  });
+
+  it("reads BOTH halves off the same env-over-config winner", async () => {
+    // Env and store hold DIFFERENT model names, and the env one is the
+    // mismatch. Every other row sets one leg or the other, so none of them can
+    // catch the two halves disagreeing about which value they are describing:
+    // a reported pair built from the env leg beside an in-effect value compared
+    // against the stored leg would render "nomic-embed-text is not in effect"
+    // — about a value nothing is currently using — while the box shows the env
+    // name. The precedence is `getEmbeddingModelOverride()` first for the
+    // report and `nonEmpty(env) ?? nonEmpty(cfg)` for the resolver, and this is
+    // what pins them to the same answer.
+    await saveConfig({
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+    });
+    await loadConfig();
+    process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+
+    const settings = getEffectiveSettings();
+    // The env value wins the report, as it always did…
+    expect(settings.embeddingModel).toBe("@cf/baai/bge-m3");
+    expect(settings.embeddingModelSource).toBe("env");
+    // …and the override the resolver weighed is that SAME env value, which
+    // ollama cannot serve — so the substitution reported is the env one's, not
+    // the stored one's (which ollama serves perfectly well).
+    expect(settings.embeddingModelInEffect).toBe("nomic-embed-text");
+    expect(settings.embeddingModelOverridden).toBe(true);
+  });
+
+  it("leaves the DW-227 whitespace answers exactly as they were", () => {
+    // A blank override is "not set", on BOTH halves of the answer: the
+    // resolver trims it away and embeds with the provider default, so there is
+    // no substitution to report either.
+    process.env.EMBEDDING_MODEL = "   ";
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-env-key";
+
+    const settings = getEffectiveSettings();
+    expect(settings.embeddingModel).toBeNull();
+    expect(settings.embeddingModelSource).toBe("none");
+    expect(settings.embeddingModelInEffect).toBe("text-embedding-3-small");
+    expect(settings.embeddingModelOverridden).toBe(false);
   });
 });
 
@@ -529,6 +1339,26 @@ describe("getEmbeddingModelOverride", () => {
     process.env.EMBEDDING_MODEL = "text-embedding-ada-002";
     expect(getEmbeddingModelOverride()).toBe("text-embedding-ada-002");
   });
+
+  it("treats an EMPTY EMBEDDING_MODEL as unset (DW-227)", () => {
+    // `EMBEDDING_MODEL=` in a compose file is a variable someone declared and
+    // left blank, not a model called "". The vector gate has always read it
+    // this way; the resolver used to hand the blank string to the provider.
+    process.env.EMBEDDING_MODEL = "";
+    expect(getEmbeddingModelOverride()).toBeUndefined();
+  });
+
+  it("treats a WHITESPACE-ONLY EMBEDDING_MODEL as unset", () => {
+    process.env.EMBEDDING_MODEL = "   ";
+    expect(getEmbeddingModelOverride()).toBeUndefined();
+  });
+
+  it("TRIMS a padded value, so the gate and the resolver see one string", () => {
+    // DW-221: the gate trims, so a padded value used to be accepted there and
+    // dropped by the resolver, which compared the raw string.
+    process.env.EMBEDDING_MODEL = "  @cf/baai/bge-m3  ";
+    expect(getEmbeddingModelOverride()).toBe("@cf/baai/bge-m3");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -557,6 +1387,231 @@ describe("getOllamaBaseUrl", () => {
     await loadConfig();
     process.env.OLLAMA_BASE_URL = "http://env-host:11434";
     expect(getOllamaBaseUrl()).toBe("http://env-host:11434");
+  });
+
+  it("resolves against a `cfg` handed in, not the cache", async () => {
+    // The DW-313 shape `getEmbeddingModelName(cfg)` uses: a caller that has
+    // already read the config resolves against the object it is holding, so
+    // `getResolvedCredentials` cannot answer from one config and this from
+    // another read a moment later.
+    expect(getOllamaBaseUrl({ ollamaBaseUrl: "http://handed-in:11434" })).toBe(
+      "http://handed-in:11434",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOllamaBaseUrl — the endpoint is CHECKED before it reaches an SDK (DW-326)
+// ---------------------------------------------------------------------------
+
+describe("getOllamaBaseUrl validation", () => {
+  it("falls THROUGH a bad stored endpoint to nothing, and warns once", async () => {
+    // DW-304 made the write door refuse this; it does nothing about a value
+    // stored before that rule, hand-edited in, or restored from a backup. The
+    // SDK gets its own default, which is the honest reading of "unusable".
+    await saveConfig({ ollamaBaseUrl: "file:///etc/passwd" });
+    await loadConfig();
+
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
+
+    expect(result).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("file:///etc/passwd");
+  });
+
+  it("falls through a bad ENV endpoint to the STORED one", async () => {
+    // The env value is the one no route ever validates, and it wins at runtime.
+    // Refusing it must not also throw away a stored endpoint that works.
+    await saveConfig({ ollamaBaseUrl: "http://ollama.internal:11434" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
+
+    expect(result).toBe("http://ollama.internal:11434");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL");
+  });
+
+  it("answers `undefined` when BOTH are unusable, warning once for each", async () => {
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
+
+    expect(result).toBeUndefined();
+    expect(warnings).toHaveLength(2);
+  });
+
+  it("warns for the ENV and the STORE separately when they hold the same bad value", async () => {
+    // The key is the source AND the value, not the value alone: the same string
+    // in `OLLAMA_BASE_URL` and in the config are two different things to fix,
+    // and an owner who only ever hears about one of them cannot fix the other.
+    await saveConfig({ ollamaBaseUrl: "localhost:11434" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
+
+    expect(result).toBeUndefined();
+    expect(warnings).toHaveLength(2);
+    // One names the variable; the other names the store.
+    expect(warnings.filter((line) => line.includes("OLLAMA_BASE_URL"))).toHaveLength(1);
+    expect(warnings.filter((line) => line.includes("stored"))).toHaveLength(1);
+  });
+
+  it("warns EXACTLY ONCE however many times the same bad value is read", async () => {
+    // Standing state, not an event: it holds until someone edits the store, and
+    // this accessor is read on every embed and every generation.
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+
+    const { warnings } = withWarnSpy(() => {
+      for (let i = 0; i < 25; i += 1) getOllamaBaseUrl();
+    });
+
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("treats a BLANK value as unset rather than invalid — no warning", async () => {
+    // `OLLAMA_BASE_URL=` and a whitespace-only stored value mean "not
+    // configured" here exactly as `EMBEDDING_MODEL=` does (DW-227). The `??`
+    // chain this replaced handed `""` straight to the SDK.
+    await saveConfig({ ollamaBaseUrl: "   " });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "  ";
+
+    const { result, warnings } = withWarnSpy(() => getOllamaBaseUrl());
+
+    expect(result).toBeUndefined();
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("refuses every non-http(s) shape and accepts both http and https", async () => {
+    for (const bad of ["not-a-url", "/api", "localhost:11434", "file:///etc/passwd", "ftp://host/x"]) {
+      expect(getOllamaBaseUrl({ ollamaBaseUrl: bad })).toBeUndefined();
+    }
+    for (const good of ["http://localhost:11434", "https://ollama.internal/api"]) {
+      expect(getOllamaBaseUrl({ ollamaBaseUrl: good })).toBe(good);
+    }
+  });
+
+  it("is the ONE ladder `getResolvedCredentials` reaches the SDK through", async () => {
+    // A second copy of the ladder lived here, and it is the copy `llm.ts` hands
+    // to `createOllama` — so an unchecked value bypassed every check on its way
+    // to a provider.
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "file:///etc/passwd" });
+    await loadConfig();
+
+    withWarnSpy(() => {
+      expect(getResolvedCredentials().ollamaBaseUrl).toBeNull();
+    });
+
+    // …and a usable stored endpoint still reaches it.
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://myhost:11434/api" });
+    await loadConfig();
+    expect(getResolvedCredentials().ollamaBaseUrl).toBe("http://myhost:11434/api");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEnvProvider — a provider is selected only when the env can REACH it
+// (DW-370)
+// ---------------------------------------------------------------------------
+
+describe("detectEnvProvider — the ollama branch", () => {
+  it("selects ollama from a USABLE endpoint", () => {
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: "ollama", apiKey: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("selects NOTHING from an endpoint `getOllamaBaseUrl` refuses", () => {
+    // The DW-370 bug: presence alone used to select `ollama` while resolution
+    // ignored the same string, so the calls went to the SDK's own localhost
+    // default rather than the address the owner typed.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: null, apiKey: null });
+    // The endpoint is still DESCRIBED — the same sentence, from the same
+    // warn-once key `getOllamaBaseUrl` uses.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL");
+    expect(warnings[0]).toContain("localhost:11434");
+  });
+
+  it("still selects ollama when OLLAMA_MODEL is set beside an unusable endpoint", () => {
+    // Only the endpoint's FALSE signal is removed. A model name is usable on
+    // its own, and the SDK's default endpoint is then the honest resolution.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_MODEL = "llama3.2";
+
+    const { result } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: "ollama", apiKey: null });
+    // …and the endpoint really did resolve to nothing.
+    expect(withWarnSpy(() => getOllamaBaseUrl({})).result).toBeUndefined();
+  });
+
+  it("selects ollama from OLLAMA_MODEL alone", () => {
+    process.env.OLLAMA_MODEL = "llama3.2";
+    expect(detectEnvProvider()).toEqual({ provider: "ollama", apiKey: null });
+  });
+
+  it("treats a BLANK endpoint as unset: selects nothing, warns about nothing", () => {
+    process.env.OLLAMA_BASE_URL = "   ";
+
+    const { result, warnings } = withWarnSpy(() => detectEnvProvider());
+
+    expect(result).toEqual({ provider: null, apiKey: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("treats a BLANK OLLAMA_MODEL as unset too", () => {
+    process.env.OLLAMA_MODEL = "  ";
+    expect(detectEnvProvider()).toEqual({ provider: null, apiKey: null });
+  });
+
+  it("does not let a blank OLLAMA_MODEL become the reported model", () => {
+    // `getEffectiveProvider`'s model ladder reads the same variable, and it
+    // must read it the same way: with detection calling `"  "` unset, a ladder
+    // on bare truthiness would report the literal string `"  "` as the active
+    // model to `/api/status` and to every workload resolver.
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+    process.env.OLLAMA_MODEL = "  ";
+
+    const effective = getEffectiveProvider();
+
+    expect(effective.provider).toBe("ollama");
+    expect(effective.model).toBe(DEFAULT_MODELS.ollama);
+  });
+
+  it("leaves a keyed provider alone beside an unusable endpoint", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    expect(detectEnvProvider()).toEqual({
+      provider: "anthropic",
+      apiKey: "sk-ant-test",
+    });
+  });
+
+  it("does NOT consult the stored endpoint", async () => {
+    // Detection answers "what do the env vars alone select". Widening it to the
+    // store would make a saved endpoint select a provider the owner never
+    // saved — a different question from the one DW-370 asks, and the reason
+    // this branch calls `envOllamaBaseUrl()` rather than `getOllamaBaseUrl()`.
+    await saveConfig({ ollamaBaseUrl: "http://stored-host:11434" });
+    await loadConfig();
+
+    expect(getOllamaBaseUrl()).toBe("http://stored-host:11434");
+    expect(detectEnvProvider()).toEqual({ provider: null, apiKey: null });
   });
 });
 
@@ -608,5 +1663,816 @@ describe("getEffectiveSettings readOnly", () => {
     process.env.YOPEDIA_READONLY = "1";
     const s = getEffectiveSettings();
     expect(s.readOnly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyWorkbenchSettings — clear the embedding pair on a vendor switch
+// (DW-69/DW-72)
+// ---------------------------------------------------------------------------
+
+describe("applyWorkbenchSettings — embedding provider secret isolation", () => {
+  /** A store holding OpenAI's endpoint and OpenAI's key. */
+  const openaiStore: AppConfig = {
+    chatModel: "gpt-4o",
+    vectorSearchEnabled: true,
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    embeddingApiKey: "sk-o",
+  };
+
+  it("drops the key AND the endpoint when the vendor moves", () => {
+    // The bug: one stored pair served whichever vendor was selected, so this
+    // save used to hand Google OpenAI's secret and point it at OpenAI's URL.
+    const saved = applyWorkbenchSettings(openaiStore, { embeddingProvider: "google" });
+    expect(saved.embeddingProvider).toBe("google");
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+    // The model is NOT a credential and is not cleared — nor is the switch, nor
+    // any non-embedding secret.
+    expect(saved.embeddingModel).toBe("text-embedding-3-small");
+    expect(saved.vectorSearchEnabled).toBe(true);
+    expect(saved.chatModel).toBe("gpt-4o");
+  });
+
+  it("lets a credential supplied in the SAME request win over the clear", () => {
+    // Clear, then apply. The delete drops what the STORE held; the patch then
+    // writes what this request carried — which is what lets one save both
+    // switch vendor and land the new vendor's pair.
+    const saved = applyWorkbenchSettings(openaiStore, {
+      embeddingProvider: "google",
+      embeddingApiKey: "g-key",
+      embeddingBaseUrl: "https://g/v1",
+    });
+    expect(saved.embeddingApiKey).toBe("g-key");
+    expect(saved.embeddingBaseUrl).toBe("https://g/v1");
+  });
+
+  it("leaves both fields byte-identical when the same provider is re-sent", () => {
+    // `settingsSaveBody` sends `embeddingProvider` on EVERY save, so this is the
+    // ordinary case, not an edge one. A presence test here would delete the
+    // owner's key on a timeout edit.
+    const saved = applyWorkbenchSettings(openaiStore, {
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://o/v1",
+    });
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("leaves them alone for a patch that does not mention the provider", () => {
+    // ABSENT means "leave it alone", which is not a move.
+    const saved = applyWorkbenchSettings(openaiStore, { llmTimeoutSeconds: 30 });
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("clears on the way to auto-detect", () => {
+    // The effective vendor may now resolve elsewhere entirely, so the stored
+    // pair is no more trustworthy than it was for a named switch.
+    const saved = applyWorkbenchSettings(openaiStore, { embeddingProvider: null });
+    expect("embeddingProvider" in saved).toBe(false);
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+  });
+
+  it("clears when a provider is chosen where the store had none", () => {
+    const saved = applyWorkbenchSettings(
+      { embeddingBaseUrl: "https://somewhere/v1", embeddingApiKey: "sk-?" },
+      { embeddingProvider: "openai" },
+    );
+    expect("embeddingApiKey" in saved).toBe(false);
+    expect("embeddingBaseUrl" in saved).toBe(false);
+  });
+
+  it("reads a padded stored provider as the same vendor", () => {
+    // Trim-normalised on both sides: a stray space in the store must not read as
+    // a vendor switch and delete a key nobody touched.
+    const saved = applyWorkbenchSettings(
+      { ...openaiStore, embeddingProvider: " openai " as AppConfig["embeddingProvider"] },
+      { embeddingProvider: "openai" },
+    );
+    expect(saved.embeddingApiKey).toBe("sk-o");
+    expect(saved.embeddingBaseUrl).toBe("https://o/v1");
+  });
+
+  it("does not mutate the config it was handed", () => {
+    const existing: AppConfig = { ...openaiStore };
+    applyWorkbenchSettings(existing, { embeddingProvider: "google" });
+    expect(existing.embeddingApiKey).toBe("sk-o");
+    expect(existing.embeddingBaseUrl).toBe("https://o/v1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The refusal is a VALUE, not a log line only (DW-402)
+// ---------------------------------------------------------------------------
+
+describe("the Ollama endpoint ladder reports WHY it refused a value", () => {
+  it("reports the ENV refusal on both accessors, and says the SAME thing the log did", () => {
+    // The whole point of the shared copy: the sentence a server operator finds
+    // in the log and the sentence the owner reads on the screen are one string,
+    // so they cannot drift into two explanations of one fact.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => ({
+      env: envOllamaBaseUrlAnswer(),
+      full: resolveOllamaBaseUrl({}),
+    }));
+
+    // The URL half is untouched: still `undefined`, still no throw.
+    expect(result.env.url).toBeUndefined();
+    expect(result.full.url).toBeUndefined();
+    expect(getOllamaBaseUrl({})).toBeUndefined();
+
+    for (const issue of [result.env.issue, result.full.issue]) {
+      expect(issue).toContain("OLLAMA_BASE_URL");
+      expect(issue).toContain("localhost:11434");
+      // …and what to set instead, which is the only actionable half. The full
+      // path, matching the endpoint box's own placeholder — a remedy showing a
+      // different shape from the field beneath it is two answers, not one.
+      expect(issue).toContain("http://localhost:11434/api");
+    }
+    expect(result.full.issue).toBe(result.env.issue);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(result.env.issue);
+  });
+
+  it("keeps the ENV reason when the STORE supplies the usable endpoint", async () => {
+    // The env value is the one that WOULD have won, so it is the one worth
+    // explaining — the owner set it and it is not the address in use.
+    await saveConfig({ ollamaBaseUrl: "http://ollama.internal:11434" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBe("http://ollama.internal:11434");
+    expect(result.issue).toContain("OLLAMA_BASE_URL");
+  });
+
+  it("reports NOTHING when the env value is usable — the store is never walked", async () => {
+    // A leg that never ran contributes no reason. The stored value here is
+    // unusable and must stay unmentioned: nothing read it, so complaining about
+    // it would describe a value that had no bearing on the answer.
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "http://host:11434";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result).toEqual({ url: "http://host:11434", issue: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("names the STORE, not the variable, when only the stored endpoint is refused", async () => {
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBeUndefined();
+    expect(result.issue).toContain("stored");
+    expect(result.issue).toContain("not-a-url");
+    expect(result.issue).not.toContain("OLLAMA_BASE_URL");
+    // …and the remedy names the shape the endpoint box itself prompts for.
+    expect(result.issue).toContain("http://localhost:11434/api");
+    // THE SAME STRING the log got — the half most likely to drift, because the
+    // store's reason is only ever REPORTED when the env leg has none, so a
+    // second wording here could sit unnoticed behind every env-refused case.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(result.issue);
+    // The env leg refused nothing, so IT reports nothing.
+    expect(envOllamaBaseUrlAnswer().issue).toBeNull();
+  });
+
+  it("treats BLANK as unset: no warning and no reason", async () => {
+    await saveConfig({ ollamaBaseUrl: "   " });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "  ";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result).toEqual({ url: undefined, issue: null });
+    expect(envOllamaBaseUrlAnswer()).toEqual({ url: undefined, issue: null });
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("still warns for BOTH legs when both are refused, reporting the env one", async () => {
+    // Reporting one reason to the screen must not silence the other in the log:
+    // the two are different things to fix and the operator needs both.
+    await saveConfig({ ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = withWarnSpy(() => resolveOllamaBaseUrl());
+
+    expect(result.url).toBeUndefined();
+    expect(result.issue).toContain("OLLAMA_BASE_URL");
+    expect(warnings).toHaveLength(2);
+    expect(warnings.filter((line) => line.includes("OLLAMA_BASE_URL"))).toHaveLength(1);
+    expect(warnings.filter((line) => line.includes("stored"))).toHaveLength(1);
+  });
+
+  it("carries the ENV reason on `/api/status`'s object", () => {
+    // The DW-402 deployment: the only Ollama signal is a refused variable, so
+    // no provider is selected at all and `configured: false` was the whole of
+    // what this object said about it.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => getEffectiveProvider());
+
+    expect(result.provider).toBeNull();
+    expect(result.configured).toBe(false);
+    expect(result.ollamaBaseUrlIssue).toContain("OLLAMA_BASE_URL");
+    expect(result.ollamaBaseUrlIssue).toContain("localhost:11434");
+  });
+
+  it("keeps `ProviderInfo`'s reason ENV-ONLY, even when the store is what was refused", async () => {
+    // `detectEnvProvider` does not consult the store (DW-370), so this object
+    // must not answer a question it does not ask. The stored complaint has its
+    // own home on `EffectiveSettings`.
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "not-a-url" });
+    await loadConfig();
+
+    const { result } = withWarnSpy(() => getEffectiveProvider());
+
+    expect(result.ollamaBaseUrlIssue).toBeNull();
+    expect(withWarnSpy(() => getEffectiveSettings()).result.ollamaBaseUrlIssue).toContain(
+      "stored",
+    );
+  });
+
+  it("carries the FULL ladder's reason on the settings payload", async () => {
+    await saveConfig({ provider: "ollama" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result } = withWarnSpy(() => getEffectiveSettings());
+
+    // The box is empty and the badge says `none` — and now the payload says why.
+    expect(result.ollamaBaseUrl).toBeNull();
+    expect(result.ollamaBaseUrlSource).toBe("none");
+    expect(result.ollamaBaseUrlIssue).toContain("OLLAMA_BASE_URL");
+    expect(result.ollamaBaseUrlIssue).toContain("localhost:11434");
+  });
+
+  it("reports NO reason for Ollama Cloud, whose endpoint is not the ladder's", async () => {
+    // The cloud branch returns before the ladder is walked, so a refused
+    // variable had no bearing on the endpoint reported beside it.
+    await saveConfig({ provider: "ollama-cloud" });
+    await loadConfig();
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_API_KEY = "ollama-key";
+
+    const { result } = withWarnSpy(() => getEffectiveSettings());
+
+    expect(result.ollamaBaseUrl).toBe("https://ollama.com/api");
+    expect(result.ollamaBaseUrlSource).toBe("default");
+    expect(result.ollamaBaseUrlIssue).toBeNull();
+  });
+
+  it("reports no reason at all when nothing was refused", async () => {
+    await saveConfig({ provider: "ollama", ollamaBaseUrl: "http://ollama.internal:11434" });
+    await loadConfig();
+
+    expect(getEffectiveSettings().ollamaBaseUrlIssue).toBeNull();
+    expect(getEffectiveProvider().ollamaBaseUrlIssue).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Readiness needs a MODEL, not just a credential (DW-403)
+// ---------------------------------------------------------------------------
+
+describe("a provider with no default model is only ready once it is handed one", () => {
+  /** Both credential halves for `custom`, in the store where they may live. */
+  const CUSTOM_CREDENTIALS = {
+    provider: "custom",
+    customApiKey: "sk-custom",
+    customBaseUrl: "https://api.example/v1",
+  } as const;
+
+  it("refuses `custom` with both credential halves and no model anywhere", async () => {
+    // `providerIsConfigured` says yes — the credential question is satisfied —
+    // and `extractStructuredKnowledge` still refuses on `!selection.model`. The
+    // extraction badge read "Credential ready" for a configuration extraction
+    // will not run.
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+
+    expect(providerIsConfigured("custom")).toBe(true);
+    expect(getEffectiveProvider().configured).toBe(false);
+    expect(getEffectiveSettings().configured).toBe(false);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(false);
+  });
+
+  it("accepts `custom` once a model is stored", async () => {
+    await saveConfig({ ...CUSTOM_CREDENTIALS, model: "my-model" });
+    await loadConfig();
+
+    expect(getEffectiveProvider().configured).toBe(true);
+    expect(getEffectiveSettings().configured).toBe(true);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+  });
+
+  it("accepts `custom` from a WORKLOAD model, on the workload site only", async () => {
+    await saveConfig({
+      ...CUSTOM_CREDENTIALS,
+      structuredKnowledgeProvider: "custom",
+      structuredKnowledgeModel: "extraction-model",
+    });
+    await loadConfig();
+
+    // The workload resolved its own model, so extraction is ready…
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+    // …while the primary, which resolved none, is not. Each site judges the
+    // model IT resolved.
+    expect(getEffectiveProvider().configured).toBe(false);
+  });
+
+  it("accepts `custom` from LLM_MODEL", async () => {
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+    process.env.LLM_MODEL = "env-model";
+
+    expect(getEffectiveProvider().configured).toBe(true);
+    expect(getEffectiveSettings().configured).toBe(true);
+  });
+
+  it("refuses a WHITESPACE-ONLY model, which `llm.ts` trims away to nothing", async () => {
+    await saveConfig({ ...CUSTOM_CREDENTIALS, model: "   " });
+    await loadConfig();
+
+    expect(getEffectiveProvider().configured).toBe(false);
+    expect(getEffectiveSettings().configured).toBe(false);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(false);
+  });
+
+  it("leaves a provider that CARRIES a default model reporting exactly as before", async () => {
+    // The rule is keyed off `DEFAULT_MODELS`, not off the literal "custom", and
+    // every provider with an entry falls back to it — so no keyed deployment's
+    // readiness moves.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    await saveConfig({ provider: "anthropic" });
+    await loadConfig();
+
+    expect(getEffectiveProvider()).toMatchObject({ model: DEFAULT_MODELS.anthropic, configured: true });
+    expect(getEffectiveSettings().configured).toBe(true);
+    expect(getStructuredKnowledgeModelSettings().configured).toBe(true);
+
+    // …including `ollama`, whose credential is "none required".
+    await saveConfig({ provider: "ollama" });
+    _resetConfigCache();
+    await loadConfig();
+    expect(getEffectiveProvider().configured).toBe(true);
+  });
+
+  it("does not mistake an inherited Object member for a default model", async () => {
+    // `DEFAULT_MODELS` is a `Record<string, string>`, so a BARE index lookup
+    // walks the prototype: these names all resolve to a function and would tell
+    // the predicate "this provider carries a default, it needs no model" —
+    // readiness granted with no model anywhere. `cfg.provider` comes off disk,
+    // and this predicate is exported and asked at three sites, so the lookup
+    // must ask about the map's OWN keys.
+    for (const inherited of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      // The hole is real: the bare lookup IS defined for every one of these…
+      expect((DEFAULT_MODELS as Record<string, unknown>)[inherited]).toBeDefined();
+      // …and the own-key question, which is the one the predicate asks, is not.
+      expect(Object.hasOwn(DEFAULT_MODELS, inherited)).toBe(false);
+      expect(providerIsUsable(inherited, null)).toBe(false);
+    }
+    // Every real provider still answers the own-key question the same way.
+    for (const real of Object.keys(DEFAULT_MODELS)) {
+      expect(Object.hasOwn(DEFAULT_MODELS, real)).toBe(true);
+    }
+  });
+
+  it("keeps `providerIsConfigured`'s own contract untouched", async () => {
+    // `llm.ts`'s `hasCustomProvider` gate asks the CREDENTIAL question and must
+    // keep getting the credential answer: a stored `custom` with no model is
+    // still a provider whose two halves are present. The new predicate is a
+    // composition over it, not a redefinition of it.
+    await saveConfig(CUSTOM_CREDENTIALS);
+    await loadConfig();
+
+    expect(providerIsConfigured("custom")).toBe(true);
+    expect(providerIsUsable("custom", null)).toBe(false);
+    expect(providerIsUsable("custom", "any-model")).toBe(true);
+    // A model cannot rescue a provider with no credential, in either direction.
+    expect(providerIsUsable(null, "a-model")).toBe(false);
+    expect(providerIsUsable("anthropic", "a-model")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One read per resolution (DW-334)
+// ---------------------------------------------------------------------------
+
+describe("single-read resolution", () => {
+  const CUSTOM_GENERATION = {
+    provider: "custom",
+    customApiKey: "sk-generation-a",
+    customBaseUrl: "https://generation-a.example/v1",
+    model: "generation-a-model",
+  } as const;
+
+  /**
+   * Count `Date.now()` calls made inside `body` — WITHOUT adding production
+   * instrumentation.
+   *
+   * The helper counts CLOCK READS, which is not the same thing as
+   * `loadConfigSync` entries; the two are equal only because of a property of
+   * today's call paths, not of this helper. `loadConfigSync`'s first statement
+   * is a `Date.now()` (the TTL check), it is the only clock read on any
+   * resolution path measured here, and neither `embeddings.ts` nor `paths.ts`
+   * reads a clock at all. So `clockReads` is named for what it measures, and
+   * every assertion below says why that number answers the cache question.
+   *
+   * The alternative was exporting a counter from module state, which would put
+   * a test-only field on a hot production path.
+   *
+   * `now` is a function of the call index so a case can make the clock JUMP
+   * between reads, which is how the straddle cases below manufacture two config
+   * generations without waiting five real seconds.
+   */
+  function withClockSpy<T>(now: (call: number) => number, body: () => T): {
+    result: T;
+    clockReads: number;
+  } {
+    let calls = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now(calls++));
+    try {
+      const result = body();
+      return { result, clockReads: calls };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /** A clock that never moves — every read lands inside the TTL. */
+  function frozen(): (call: number) => number {
+    const t = Date.now();
+    return () => t;
+  }
+
+  /**
+   * A clock whose FIRST read lands inside the TTL and whose every later read
+   * lands far past it, so a second `loadConfigSync` entry would fall to the
+   * cold-cache `{}` — the empty-config answer, and a visibly different
+   * generation.
+   */
+  function jumpsAfterFirstRead(): (call: number) => number {
+    const t0 = Date.now();
+    return (call) => (call === 0 ? t0 : t0 + 10 * 60 * 1000);
+  }
+
+  describe("read counts — one config-cache entry per resolution", () => {
+    // Each of these is `1` because `loadConfigSync`'s TTL check is the only
+    // clock read on the path: one clock read IS one config-cache entry.
+
+    it("getEffectiveSettings enters loadConfigSync exactly once", async () => {
+      // The bug this pins: only the EMBEDDING half of this answer was resolved
+      // from the `cfg` read at the top (DW-313). The credential leg
+      // (`apiKeyForProvider`), the readiness leg (`providerIsUsable` →
+      // `providerIsConfigured` → `getCustomBaseUrl`) and the extraction leg
+      // (`getStructuredKnowledgeModelSettings` → `workloadModelSettings` →
+      // `getEffectiveProvider`) each re-entered the 5 s-TTL cache themselves —
+      // five entries in all.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getEffectiveSettings()).clockReads).toBe(1);
+    });
+
+    it("getResolvedCredentials enters loadConfigSync exactly once", async () => {
+      // The same shape, on the object `getModel()` builds a client out of: the
+      // key, the model and the endpoint must be three halves of one generation.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getResolvedCredentials()).clockReads).toBe(1);
+    });
+
+    it("getEffectiveProvider enters loadConfigSync exactly once", async () => {
+      // The resolver `/api/status` and `POST /api/settings/test` serve, and the
+      // one `loadConfigSync`'s own docblock cites as the reason each surface
+      // warms the cache per request. Its `providerIsUsable` call used to walk
+      // back into the cache for both `custom` credential halves.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getEffectiveProvider()).clockReads).toBe(1);
+    });
+
+    it("getStructuredKnowledgeModelSettings enters loadConfigSync exactly once", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(
+        withClockSpy(frozen(), () => getStructuredKnowledgeModelSettings()).clockReads,
+      ).toBe(1);
+    });
+
+    it("getChatModelSettings enters loadConfigSync exactly once", async () => {
+      // Chat and Ingest route through the same `workloadModelSettings` ladder as
+      // extraction, so they inherit the same hop — and without a count here,
+      // dropping the `cfg` argument at either call site leaves every other test
+      // in this file green.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getChatModelSettings()).clockReads).toBe(1);
+    });
+
+    it("getIngestModelSettings enters loadConfigSync exactly once", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getIngestModelSettings()).clockReads).toBe(1);
+    });
+
+    it("getWorkbenchSettings enters loadConfigSync exactly once", async () => {
+      // The `workbench` half of `GET /api/settings` (DW-620). It used to make
+      // THREE entries: its own, plus one each inside `getFirecrawlSettings` and
+      // `getResearchSettings` — and the route then made a fourth for
+      // `getEffectiveSettings` beside it. One response, up to three config
+      // generations across the panes it renders.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(
+        withClockSpy(frozen(), () => getWorkbenchSettings(false)).clockReads,
+      ).toBe(1);
+    });
+
+    it("getFirecrawlSettings and getResearchSettings each enter it once", async () => {
+      // Standalone, they still read the cache themselves — the parameter is
+      // OPTIONAL and trailing, so every existing caller is untouched.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getFirecrawlSettings()).clockReads).toBe(1);
+      expect(withClockSpy(frozen(), () => getResearchSettings()).clockReads).toBe(1);
+    });
+  });
+
+  describe("generation straddle — one snapshot answers the whole call", () => {
+    it("getEffectiveSettings answers from ONE generation when the cache expires mid-call", async () => {
+      // Before this change `hasApiKey`, `apiKeySource` and the whole
+      // structured-knowledge block came from a second, empty generation.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getEffectiveSettings(),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        provider: "custom",
+        providerSource: "config",
+        model: "generation-a-model",
+        hasApiKey: true,
+        // `config`, not `env`: the key came from the store, which is exactly the
+        // leg a second read would have emptied.
+        apiKeySource: "config",
+        structuredKnowledgeProvider: "custom",
+        structuredKnowledgeModel: "generation-a-model",
+      });
+    });
+
+    it("getResolvedCredentials answers from ONE generation when the cache expires mid-call", async () => {
+      // The concrete harm, asserted as one object: a key from generation A
+      // beside an endpoint from an empty generation B is a client built out of
+      // two configs — `createOpenAI({ apiKey, baseURL })` is handed both.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getResolvedCredentials(),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        provider: "custom",
+        apiKey: "sk-generation-a",
+        model: "generation-a-model",
+        customBaseUrl: "https://generation-a.example/v1",
+      });
+    });
+
+    it("getWorkbenchSettings answers from ONE generation when the cache expires mid-call", async () => {
+      // The concrete harm on the Settings surface: the Capture pane's Firecrawl
+      // rows and the Deep Research pane's rows came from later generations than
+      // the Model pane above them, so one response could show a key as stored
+      // in one pane and absent in another. Under this clock the second and
+      // third entries would have fallen to the cold-cache `{}`.
+      await saveConfig({
+        ...CUSTOM_GENERATION,
+        firecrawlApiKey: "fc-generation-a",
+        firecrawlBaseUrl: "https://firecrawl-a.example",
+        researchProvider: "tavily",
+        tavilyApiKey: "tvly-generation-a",
+      });
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getWorkbenchSettings(false),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        // The legs that always came from the first read…
+        chatProvider: null,
+        hasCustomApiKey: true,
+        customBaseUrl: "https://generation-a.example/v1",
+        // …and the three that used to come from a second and a third.
+        hasFirecrawlApiKey: true,
+        firecrawlBaseUrl: "https://firecrawl-a.example",
+        researchProvider: "tavily",
+        hasTavilyApiKey: true,
+      });
+    });
+  });
+
+  describe("the cfg parameter", () => {
+    it("honours an explicitly passed cfg over the live cache", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      // The point of the parameter: resolve against THIS snapshot, not against
+      // whatever the cache holds now.
+      expect(apiKeyForProvider("custom", { customApiKey: "sk-a" })).toBe("sk-a");
+      expect(getCustomBaseUrl({ customBaseUrl: "https://explicit.example/v1" })).toBe(
+        "https://explicit.example/v1",
+      );
+      expect(providerIsConfigured("custom", {})).toBe(false);
+      expect(
+        getStructuredKnowledgeModelSettings({
+          structuredKnowledgeProvider: "openai",
+          structuredKnowledgeModel: "gpt-4o",
+        }),
+      ).toMatchObject({ provider: "openai", model: "gpt-4o" });
+    });
+
+    it("threads an explicit cfg through every resolver that takes one", async () => {
+      // Each of these would keep passing on the LIVE cache if its `cfg` thread
+      // were dropped, because the cache holds a usable `custom` too. The passed
+      // snapshot names a DIFFERENT provider with different credentials, so a
+      // dropped thread shows up as the cached answer rather than this one.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+      process.env.OPENAI_API_KEY = "sk-openai-env";
+
+      const snapshot: AppConfig = { provider: "openai", model: "gpt-4o" };
+
+      expect(getEffectiveProvider(snapshot)).toMatchObject({
+        provider: "openai",
+        model: "gpt-4o",
+        configured: true,
+      });
+      // `providerIsUsable` → `providerIsConfigured` → both credential doors: an
+      // empty snapshot has no stored `custom` key, so the cached one must not
+      // rescue it.
+      expect(providerIsUsable("custom", "any-model", {})).toBe(false);
+      expect(providerIsUsable("custom", "any-model", CUSTOM_GENERATION)).toBe(true);
+      // The workload ladder forwards `cfg` into the PRIMARY resolver too, so an
+      // inheriting workload reports the snapshot's provider, not the cache's.
+      expect(getChatModelSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        model: "gpt-4o",
+        usesPrimary: true,
+      });
+      expect(getIngestModelSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        usesPrimary: true,
+      });
+    });
+
+    it("resolves the whole settings payload from an explicitly passed cfg", async () => {
+      // The route's case (DW-620): it holds the config it just read or just
+      // wrote, and every field of the response has to describe THAT one. The
+      // cache below names a different provider with different credentials, so a
+      // dropped argument at any of the four call sites shows up as the cached
+      // answer rather than this one.
+      await saveConfig({
+        ...CUSTOM_GENERATION,
+        firecrawlApiKey: "fc-cached",
+        researchProvider: "tavily",
+      });
+      await loadConfig();
+
+      const snapshot: AppConfig = {
+        provider: "openai",
+        chatProvider: "openai",
+        chatModel: "gpt-4o",
+        firecrawlBaseUrl: "https://snapshot-firecrawl.example",
+        researchProvider: "searxng",
+        searxngBaseUrl: "https://snapshot-searxng.example",
+      };
+
+      expect(getEffectiveSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        providerSource: "config",
+      });
+      expect(getWorkbenchSettings(false, undefined, snapshot)).toMatchObject({
+        chatProvider: "openai",
+        chatModel: "gpt-4o",
+        // Threaded INTO the two nested resolvers, not just used for the fields
+        // this function reads itself: an untouched `getFirecrawlSettings()`
+        // would answer `hasFirecrawlApiKey: true` off the cache.
+        hasFirecrawlApiKey: false,
+        firecrawlBaseUrl: "https://snapshot-firecrawl.example",
+        researchProvider: "searxng",
+        searxngBaseUrl: "https://snapshot-searxng.example",
+      });
+      // …and the two resolvers answer the snapshot when called directly too.
+      expect(getFirecrawlSettings(snapshot)).toMatchObject({
+        hasStoredKey: false,
+        baseUrl: "https://snapshot-firecrawl.example",
+      });
+      expect(getResearchSettings(snapshot)).toMatchObject({
+        provider: "searxng",
+        tavilyApiKey: null,
+      });
+    });
+
+    it("keeps env-over-store precedence even against an explicit cfg", async () => {
+      // The invariant this bundle promised not to disturb. A later
+      // "simplification" of `cfg ?? loadConfigSync()` into a leading read could
+      // invert this with every other test in the file still green, because no
+      // other case sets the variable AND passes a snapshot.
+      process.env.LLM_CUSTOM_API_KEY = "sk-env-wins";
+      process.env.LLM_CUSTOM_BASE_URL = "https://env-wins.example/v1";
+
+      expect(apiKeyForProvider("custom", { customApiKey: "sk-snapshot" })).toBe(
+        "sk-env-wins",
+      );
+      expect(getCustomBaseUrl({ customBaseUrl: "https://snapshot.example/v1" })).toBe(
+        "https://env-wins.example/v1",
+      );
+    });
+
+    it("answers exactly as before when no cfg is passed", async () => {
+      // Every caller outside `config.ts` passes nothing, so the trailing
+      // optional parameters must be invisible to them.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(apiKeyForProvider("custom")).toBe("sk-generation-a");
+      expect(getCustomBaseUrl()).toBe("https://generation-a.example/v1");
+      // The four resolvers this bundle widened, called the way `cli.ts` and
+      // `research-providers.ts` still call them.
+      expect(getEffectiveSettings().model).toBe("generation-a-model");
+      expect(getWorkbenchSettings(false).customBaseUrl).toBe(
+        "https://generation-a.example/v1",
+      );
+      expect(getFirecrawlSettings().hasStoredKey).toBe(false);
+      expect(getResearchSettings().provider).toBeNull();
+      expect(providerIsConfigured("custom")).toBe(true);
+      expect(providerIsUsable("custom", "generation-a-model")).toBe(true);
+      expect(getEffectiveProvider()).toMatchObject({
+        provider: "custom",
+        model: "generation-a-model",
+        configured: true,
+      });
+      expect(getStructuredKnowledgeModelSettings()).toMatchObject({
+        provider: "custom",
+        model: "generation-a-model",
+        usesPrimary: true,
+      });
+      expect(getChatModelSettings()).toMatchObject({ provider: "custom" });
+      expect(getIngestModelSettings()).toMatchObject({ provider: "custom" });
+    });
+
+    it("keeps the store read LAZY when the env answers first", () => {
+      // This is why `apiKeyForProvider` and `getCustomBaseUrl` take `cfg?` read
+      // at the point of use rather than a `cfg: AppConfig = loadConfigSync()`
+      // default: a default parameter is evaluated on EVERY call, so an
+      // `anthropic` resolution that never wants the store would make a cache
+      // write on its behalf, pinning the `{}` entry and its TTL earlier than
+      // that caller's own first store read would have.
+      _resetConfigCache();
+      process.env.ANTHROPIC_API_KEY = "sk-ant-env";
+      process.env.LLM_CUSTOM_BASE_URL = "https://env.example/v1";
+      process.env.LLM_CUSTOM_API_KEY = "sk-env";
+
+      // Zero clock reads is zero `loadConfigSync` entries: the TTL check is the
+      // function's first statement, so it cannot be entered without one.
+      const anthropic = withClockSpy(frozen(), () => apiKeyForProvider("anthropic"));
+      expect(anthropic.result).toBe("sk-ant-env");
+      expect(anthropic.clockReads).toBe(0);
+
+      const baseUrl = withClockSpy(frozen(), () => getCustomBaseUrl());
+      expect(baseUrl.result).toBe("https://env.example/v1");
+      expect(baseUrl.clockReads).toBe(0);
+
+      const customKey = withClockSpy(frozen(), () => apiKeyForProvider("custom"));
+      expect(customKey.result).toBe("sk-env");
+      expect(customKey.clockReads).toBe(0);
+    });
   });
 });

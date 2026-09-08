@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   handleSearchWiki,
   handleReadPage,
@@ -25,15 +27,8 @@ import {
   handleListAgents,
   handleUpdateAgent,
   handleDeleteAgent,
-  handlePublishToCommons,
   handleLintWiki,
   handleFixLintIssue,
-  handleListDiscussions,
-  handleReadDiscussion,
-  handleCreateDiscussion,
-  handleResolveDiscussion,
-  handleAddComment,
-  handleReconcilePage,
   handleReingest,
   handleIngestHistory,
   handleDataviewQuery,
@@ -50,13 +45,16 @@ import {
   handleWikiGraph,
   handleMaintenanceScan,
   createMcpServer,
+  STDIO_SERVICE_PRINCIPAL_ID,
 } from "../../mcp";
+import { isServicePrincipalId } from "../principal-id";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
-import { readWikiPageWithFrontmatter } from "../wiki";
-import { _resetStorage } from "../storage";
+import { readWikiPageWithFrontmatter, wikiRelPath } from "../wiki";
+import { _resetStorage, getStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
+import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "../write-denial";
 
 // ---------------------------------------------------------------------------
 // Mock fetchUrlContent, fetchImageBytes, and storeImageBytes so no test makes
@@ -104,16 +102,47 @@ vi.mock("../vision", () => ({
 
 // Mock callLLM so tests that reach the synthesis pipeline (e.g. reingest) do
 // not make real API calls.  hasLLMKey is kept real so no-key fallback tests work.
+//
+// `callLLMWithFinish` HAS TO BE LISTED, and the `...actual` spread is exactly
+// why (DW-662). Spreading the real module and overriding one name leaves every
+// OTHER export real — including the sibling `query()` now calls, which would
+// reach a live provider through the door this factory exists to close. The
+// spread is what makes that failure quiet: nothing throws "not a function", the
+// call simply escapes the double. Today the MCP rows that touch `query()` take
+// the no-key fallback and never get that far, but that is an accident of which
+// rows exist, not a property this factory guarantees.
+//
+// DELEGATING to the same `callLLM` double rather than being a second one, so
+// the existing assertions and its canned synthesis output keep covering both
+// entry points. `"stop"` is the clean ending — no notice, no behaviour change.
 vi.mock("../llm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../llm")>();
+  const callLLM = vi.fn(
+    async (
+      _system: string,
+      _user: string,
+      _options?: { maxOutputTokens?: number },
+    ) => "CONCEPT: Mock Page\nALIASES:\n\n# Mock Page\n\nMocked LLM synthesis.",
+  );
   return {
     ...actual,
-    callLLM: vi.fn(async () => "CONCEPT: Mock Page\nALIASES:\n\n# Mock Page\n\nMocked LLM synthesis."),
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
   };
 });
 
 import { fetchUrlContent } from "../fetch";
 import { fetchXPostContent } from "../x-post";
+import { AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
 const mockedFetchUrlContent = vi.mocked(fetchUrlContent);
 const mockedFetchXPostContent = vi.mocked(fetchXPostContent);
 
@@ -470,6 +499,35 @@ describe("MCP write tools", () => {
       expect(fileContent).toContain("Body text here.");
     });
 
+    it("rejects a new page that links to a same-owner slug claimed as a merged alias", async () => {
+      const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+      await writeWikiPageWithSideEffects({
+        slug: "create-survivor",
+        title: "Survivor",
+        content: "---\nowner: alice\naliases: [create-retired]\n---\n# Survivor\n\nCanonical Page.",
+        summary: "canonical",
+        logOp: "ingest",
+        crossRefSource: null,
+      });
+      await writeWikiPageWithSideEffects({
+        slug: "create-retired",
+        title: "Replacement",
+        content: "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+        summary: "replacement",
+        logOp: "ingest",
+        crossRefSource: null,
+      });
+
+      await expect(handleCreatePage({
+        slug: "mcp-create-linker",
+        content: "# Linker\n\nSee [the old Page](create-retired.md).",
+        author: "alice",
+        owner: "alice",
+      })).rejects.toThrow(/missing|replaced/i);
+      await expect(fs.stat(path.join(tmpDir, "wiki", "mcp-create-linker.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    });
+
     it("includes all yopedia schema fields in frontmatter", async () => {
       await handleCreatePage({
         slug: "schema-check",
@@ -511,6 +569,184 @@ describe("MCP write tools", () => {
           content: "# Duplicate\n\nSecond version.",
         }),
       ).rejects.toThrow("Page already exists: dup-page");
+    });
+
+    /**
+     * DW-496. The conflict guard above read `null` for a non-ENOENT storage
+     * failure as well as for a free slug, so a provider blip made the guard
+     * answer "this slug is free" for a Page that is stored.
+     *
+     * WHAT THE HARM ACTUALLY IS. The blip did not by itself overwrite the
+     * stored Page: the `createOnly` branch of the lifecycle pipeline
+     * (`src/lib/lifecycle.ts:487-497`) re-checks `storageFileExists(flatPath)`
+     * and throws `LifecyclePageConflictError`, so a Page that has a flat
+     * compatibility copy was still refused — but under an error naming a
+     * CONFLICT rather than the storage fault that actually happened, which
+     * sends the caller to fix a slug collision that does not exist. The sharper
+     * residual case is a Page stored only in another tenant's silo, where that
+     * flat check passes and the create does land. Either way the guard was
+     * ruling on a `null` it had no right to read as an absence.
+     *
+     * Under `{ fresh: true, strict: true }` the read rethrows instead, and the
+     * MCP caller is told the store failed. Classification, not wording, is what
+     * is pinned.
+     */
+    it("rejects with the STORAGE error — not `Page already exists` — when the conflict read blips", async () => {
+      // The Page the guard protects has to actually BE stored, or the row
+      // asserts nothing about the harm its comment names.
+      await handleCreatePage({
+        slug: "blip-page",
+        content: "# Blip\n\nThe stored bytes.",
+      });
+      const before = (await readWikiPageWithFrontmatter("blip-page"))!.content;
+
+      const storage = getStorage();
+      const originalRead = storage.readFile.bind(storage);
+      // ONE-SHOT, and deliberately so: a spy that failed EVERY read of
+      // `blip-page.md` would also break the `createOnly` re-check inside the
+      // write below, so the call would reject whether or not the guard
+      // rethrows — a green row that pins nothing. Failing only the guard read
+      // leaves the old behaviour rejecting with `Page already exists`.
+      let blipped = false;
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          // A non-ENOENT failure: the file is there, the provider is not.
+          if (!blipped && filePath.endsWith("blip-page.md")) {
+            blipped = true;
+            throw new Error("storage unavailable");
+          }
+          return originalRead(filePath);
+        });
+
+      let caught: unknown;
+      try {
+        await handleCreatePage({
+          slug: "blip-page",
+          content: "# Blip\n\nShould never land.",
+        });
+      } catch (err) {
+        caught = err;
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(blipped).toBe(true);
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toContain("storage unavailable");
+      // The half this row's title promises, and the half that was decorative
+      // before: the caller must not be told this is a slug conflict.
+      expect(message).not.toContain("already exists");
+
+      // And the stored Page is untouched, byte for byte.
+      expect((await readWikiPageWithFrontmatter("blip-page"))!.content).toBe(before);
+    });
+
+    /**
+     * The FRESH half (DW-195), which `strict` cannot pin: remove `fresh: true`
+     * from the guard read and every strict row above still passes. `pageCache`
+     * is module-global and ref-counted around bulk scans, so one can be holding
+     * a stale NEGATIVE entry — the guard's `null` — for a slug that IS stored.
+     * The guard then rules the slug free and hands the request to the write,
+     * where the `createOnly` re-check is the only thing left standing; it
+     * answers its own conflict sentence rather than this handler's.
+     */
+    it("checks the conflict guard against storage while a stale page cache is open", async () => {
+      const { beginPageCache, readWikiPage, serializeFrontmatter } = await import("../wiki");
+      const cleanup = beginPageCache();
+      try {
+        // A concurrent scan looks the slug up before it exists and caches the
+        // miss — `readWikiPage` seeds a negative entry on a true global miss.
+        expect(await readWikiPage("mcp-cached")).toBeNull();
+
+        // The page appears underneath it. Written DIRECTLY to the flat path,
+        // bypassing `writeWikiPage` — which invalidates — because a stale entry
+        // is exactly what this row is about.
+        const today = new Date().toISOString().slice(0, 10);
+        const storedBytes = serializeFrontmatter(
+          {
+            created: today,
+            confidence: 0.5,
+            authors: ["someone-else"],
+            owner: "someone-else",
+            visibility: "public",
+            contributors: [],
+            expiry: "2099-01-01",
+            sources: [],
+          },
+          "# mcp-cached\n\nAlready stored by someone else.",
+        );
+        const flatPath = path.join(process.env.WIKI_DIR!, "mcp-cached.md");
+        await fs.writeFile(flatPath, storedBytes, "utf-8");
+        // The cache is genuinely stale: a cached read still answers "no page".
+        expect(await readWikiPage("mcp-cached")).toBeNull();
+
+        // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. This exact sentence
+        // is the GUARD's. Off the cached entry the guard passes and the write's
+        // own re-check rejects instead, with `Page "mcp-cached" already exists`.
+        await expect(
+          handleCreatePage({
+            slug: "mcp-cached",
+            content: "# Mine\n\nShould never land.",
+          }),
+        ).rejects.toThrow("Page already exists: mcp-cached");
+
+        // And the other principal's bytes are intact, byte for byte.
+        expect(await fs.readFile(flatPath, "utf-8")).toBe(storedBytes);
+      } finally {
+        cleanup();
+      }
+    });
+
+    /**
+     * DW-740. A human ruled that a case VARIANT counts as the page already
+     * existing at the create door. This guard needs no change to honour that —
+     * it reads through `readWikiPage(slug, { fresh: true, strict: true })`,
+     * which has recovered a variant since DW-490 — but "no change needed" is a
+     * claim, and an unpinned one is what lets a later refactor of this guard
+     * quietly reopen the second-object bug the ruling closes.
+     *
+     * The store is SIMULATED: the dev host's volume folds case, so with
+     * `cased.MD` staged a real read of `cased.md` would RESOLVE it and this row
+     * would go green without touching the recovery it claims to pin.
+     */
+    it("rejects a slug held only by the case variant `cased.MD`", async () => {
+      const storage = getStorage();
+      const variantKey = wikiRelPath("cased.MD");
+      const variantBytes = "# cased\n\nThe variant object's bytes.\n";
+      await storage.writeFile(variantKey, variantBytes);
+
+      // Hide every OTHER `.md` spelling of this slug, under any root.
+      // Blacklisting only the canonical name would not be enough: the host
+      // folds case, so `cased.Md` and `cased.mD` would resolve the staged file
+      // too and the recovery would see three hits where a case-sensitive store
+      // presents one.
+      const originalRead = storage.readFile.bind(storage);
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          if (/(?:^|\/)cased\.md$/i.test(filePath) && filePath !== variantKey) {
+            throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), {
+              code: "ENOENT",
+            });
+          }
+          return originalRead(filePath);
+        });
+      try {
+        await expect(
+          handleCreatePage({
+            slug: "cased",
+            content: "# Cased\n\nShould never land.",
+          }),
+        ).rejects.toThrow("Page already exists: cased");
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      // The conflict REFUSED the create rather than merely reporting it.
+      expect(await storage.readFile(variantKey)).toBe(variantBytes);
+      expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
     });
 
     it("rejects invalid slug", async () => {
@@ -625,6 +861,34 @@ describe("MCP write tools", () => {
       expect(fileContent).toContain("New body content.");
     });
 
+    it("rejects a new link to a same-owner slug already claimed as a merged alias", async () => {
+      await writeTestPage(
+        "survivor",
+        "---\nowner: alice\naliases: [retired-target]\n---\n# Survivor\n\nCanonical Page.",
+      );
+      await writeTestPage(
+        "retired-target",
+        "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+      );
+      await writeTestPage(
+        "mcp-linker",
+        "---\nowner: alice\n---\n# MCP linker\n\nOriginal body.",
+      );
+      await writeIndex([
+        { title: "Survivor", slug: "survivor", summary: "canonical" },
+        { title: "Replacement", slug: "retired-target", summary: "replacement" },
+        { title: "MCP linker", slug: "mcp-linker", summary: "linker" },
+      ]);
+
+      await expect(handleUpdatePage({
+        slug: "mcp-linker",
+        content: "# MCP linker\n\nSee [the old Page](retired-target.md).",
+        author: "alice",
+      })).rejects.toThrow(/missing|replaced/i);
+      expect((await handleReadPage({ slug: "mcp-linker" })).content)
+        .not.toContain("retired-target.md");
+    });
+
     it("404 on missing page", async () => {
       await expect(
         handleUpdatePage({
@@ -632,6 +896,111 @@ describe("MCP write tools", () => {
           content: "# Ghost\n\nBody.",
         }),
       ).rejects.toThrow("Page not found: nonexistent-page");
+    });
+
+    /**
+     * The STRICT half. Without `strict: true` a non-ENOENT storage failure on
+     * the merge-base read flattens to `null`, and this handler's own null
+     * branch then tells the MCP caller `Page not found` — a deletion the store
+     * never made, off a Page that is sitting right there. Classification is
+     * what is pinned, not the provider's wording.
+     */
+    it("rejects with the STORAGE error — not `Page not found` — when the merge-base read blips", async () => {
+      await handleCreatePage({
+        slug: "blip-update",
+        content: "# Blip update\n\nThe stored bytes.",
+      });
+      const before = (await readWikiPageWithFrontmatter("blip-update"))!.content;
+
+      const storage = getStorage();
+      const originalRead = storage.readFile.bind(storage);
+      // ONE-SHOT, for the same reason as the create row above: a spy that
+      // failed EVERY read of `blip-update.md` would also break the write's own
+      // CAS re-read, so the call would reject whether or not the merge-base
+      // read rethrows — a green row that pins nothing.
+      let blipped = false;
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          if (!blipped && filePath.endsWith("blip-update.md")) {
+            blipped = true;
+            throw new Error("storage unavailable");
+          }
+          return originalRead(filePath);
+        });
+
+      let caught: unknown;
+      try {
+        await handleUpdatePage({
+          slug: "blip-update",
+          content: "# Blip update\n\nShould never land.",
+        });
+      } catch (err) {
+        caught = err;
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(blipped).toBe(true);
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toContain("storage unavailable");
+      expect(message).not.toContain("Page not found");
+
+      // And the stored Page is untouched, byte for byte.
+      expect((await readWikiPageWithFrontmatter("blip-update"))!.content).toBe(before);
+    });
+
+    /**
+     * The FRESH half, which `strict` cannot pin: drop `fresh: true` and the
+     * strict row above still passes. `pageCache` is module-global and
+     * ref-counted around bulk scans, so one can be holding a SUPERSEDED entry
+     * open. Those bytes are this update's merge base (`expectedContent`) and
+     * the frontmatter it merges into, so off the cached entry the merge base is
+     * a file that is no longer stored — the write's CAS then refuses it and a
+     * legitimate update fails as a spurious conflict for the duration of the
+     * unrelated scan. The CAS is the backstop; `fresh` is the fix.
+     */
+    it("takes the merge base from storage while a stale page cache is open", async () => {
+      const { beginPageCache, readWikiPage } = await import("../wiki");
+      const cachedBytes =
+        "---\ntitle: Stale Update\ncreated: '2025-01-15'\n---\n# Stale Update\n\nCached body.\n";
+      await writeTestPage("mcp-stale-update", cachedBytes);
+
+      const cleanup = beginPageCache();
+      try {
+        // A concurrent scan reads the Page and caches these bytes.
+        expect((await readWikiPage("mcp-stale-update"))!.content).toBe(cachedBytes);
+
+        // Newer bytes land underneath it. Written DIRECTLY to the flat path,
+        // bypassing `writeWikiPage` — which invalidates — because a stale
+        // entry is exactly what this row is about. `stored_marker` exists only
+        // in the stored bytes.
+        const storedBytes =
+          "---\ntitle: Stale Update\ncreated: '2025-01-15'\nstored_marker: only-in-stored\n---\n# Stale Update\n\nStored body.\n";
+        const flatPath = path.join(process.env.WIKI_DIR!, "mcp-stale-update.md");
+        await fs.writeFile(flatPath, storedBytes, "utf-8");
+        // The cache is genuinely stale: a cached read still answers the old bytes.
+        expect((await readWikiPage("mcp-stale-update"))!.content).toBe(cachedBytes);
+
+        // THE CALL THAT FAILS WITHOUT THE FRESH READ — and it fails HERE, not
+        // at the assertions below: off the cached entry the merge base is the
+        // superseded file, so the write's CAS rejects with
+        // `LifecyclePageConflictError: Page "mcp-stale-update" changed`.
+        await handleUpdatePage({
+          slug: "mcp-stale-update",
+          content: "# Stale Update\n\nBrand new body.",
+        });
+
+        // Reaching here at all is the load-bearing half; the marker then
+        // confirms the merge went into the STORED bytes rather than the cached
+        // ones.
+        const after = await fs.readFile(flatPath, "utf-8");
+        expect(after).toContain("stored_marker: only-in-stored");
+        expect(after).toContain("Brand new body.");
+      } finally {
+        cleanup();
+      }
     });
 
     it("preserves frontmatter", async () => {
@@ -734,6 +1103,132 @@ describe("MCP write tools", () => {
       const parsed = parseFrontmatter(fileContent);
       expect(parsed.data.tags).toEqual(["extra"]);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP write tools on a read-only deployment (DW-188)
+// ---------------------------------------------------------------------------
+//
+// THE CLAIM NO HTTP TEST CAN MAKE. The stdio MCP server calls the kernel
+// writers directly, so no route gate ever sees these calls — which is exactly
+// why `isReadOnly()` being enforced door-by-door at the HTTP layer left every
+// MCP write running on a read-only deployment. The gate now lives in
+// `writeWikiPageWithSideEffects`, `deleteWikiPage` and `patchMetadata`, and
+// these four handlers inherit it without a line of their own.
+
+describe("MCP write tools on a read-only deployment", () => {
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // Cleared rather than inherited: every other suite in this file writes
+    // pages through these same handlers, so an exported value would turn
+    // hundreds of assertions red on one machine and nowhere else.
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  /** Every byte under the temp wiki dir, keyed by filename. */
+  async function wikiFiles(): Promise<Record<string, string>> {
+    const dir = path.join(tmpDir, "wiki");
+    const names = await fs.readdir(dir);
+    const out: Record<string, string> = {};
+    for (const name of names) {
+      out[name] = await fs.readFile(path.join(dir, name), "utf-8");
+    }
+    return out;
+  }
+
+  /** A refusal names read-only — "forbidden" alone would misdirect the agent. */
+  async function expectReadOnlyRejection(op: () => Promise<unknown>) {
+    await expect(op()).rejects.toThrow(/read-only/);
+  }
+
+  it("create_page is rejected and writes no file", async () => {
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleCreatePage({ slug: "ro-mcp-create", content: "# RO\n\nBody." }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+  });
+
+  it("update_page is rejected and leaves the stored bytes alone", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-update",
+      content: "# RO Update\n\nOriginal body.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleUpdatePage({
+        slug: "ro-mcp-update",
+        content: "# RO Update\n\nRewritten body.",
+      }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+  });
+
+  it("update_metadata is rejected and leaves the frontmatter alone", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-meta",
+      content: "# RO Meta\n\nBody.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleUpdateMetadata({
+        slug: "ro-mcp-meta",
+        metadata: { confidence: 0.99 },
+      }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+    expect(
+      (await readWikiPageWithFrontmatter("ro-mcp-meta"))!.frontmatter.confidence,
+    ).not.toBe(0.99);
+  });
+
+  it("delete_page is rejected and the page survives", async () => {
+    await handleCreatePage({
+      slug: "ro-mcp-delete",
+      content: "# RO Delete\n\nBody.",
+    });
+    const before = await wikiFiles();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectReadOnlyRejection(() =>
+      handleDeletePage({ slug: "ro-mcp-delete" }),
+    );
+
+    expect(await wikiFiles()).toEqual(before);
+    expect(await readWikiPageWithFrontmatter("ro-mcp-delete")).not.toBeNull();
+  });
+
+  it("all four still work with the flag unset — the control case", async () => {
+    // Without this, every "rejected / unchanged" assertion above would also
+    // pass against handlers that had simply stopped working.
+    await handleCreatePage({ slug: "rw-mcp", content: "# RW\n\nBody." });
+    expect(
+      (await handleUpdatePage({ slug: "rw-mcp", content: "# RW\n\nEdited." }))
+        .updated,
+    ).toBe(true);
+    expect(
+      (await handleUpdateMetadata({ slug: "rw-mcp", metadata: { confidence: 0.9 } }))
+        .updated,
+    ).toBe(true);
+    expect((await handleDeletePage({ slug: "rw-mcp" })).slug).toBe("rw-mcp");
+    expect(await readWikiPageWithFrontmatter("rw-mcp")).toBeNull();
   });
 });
 
@@ -1351,13 +1846,13 @@ describe("delete_page", () => {
   it("strips backlinks from other pages when deleting", async () => {
     // Create two pages, one linking to the other
     await handleCreatePage({
+      slug: "target",
+      content: "# Target\n\nThis is the target page.",
+    });
+    await handleCreatePage({
       slug: "keeper",
       content:
         "# Keeper\n\nThis page links to [Target](target.md).\n\n**See also:** [Target](target.md)",
-    });
-    await handleCreatePage({
-      slug: "target",
-      content: "# Target\n\nThis is the target page.",
     });
 
     // Delete the target
@@ -2660,586 +3155,264 @@ describe("fix_lint_issue", () => {
     expect(result.success).toBe(true);
     expect(result.slug).toBe("source-page");
   });
-});
 
-// ---------------------------------------------------------------------------
-// list_discussions tests
-// ---------------------------------------------------------------------------
+  /**
+   * `missing-concept-page` with no slug at all (DW-457).
+   *
+   * It is the one auto-fixable type whose handler reads `message` ALONE —
+   * `FIX_HANDLERS["missing-concept-page"]` never destructures `slug`, and the
+   * concept name (hence the slug it writes) comes out of the message. So the
+   * handler's `slug` is optional, and an absent one reaches `fixLintIssue` as
+   * `""`, exactly as `POST /api/lint/fix` converts it.
+   */
+  it("creates the stub page for a slug-less missing-concept-page", async () => {
+    await writeIndex([]);
 
-describe("list_discussions", () => {
-  it("returns empty threads array for page with no discussions", async () => {
-    await writeTestPage(
-      "no-talk",
-      "---\ntags: [test]\n---\n# No Talk\n\nA page with no discussions.",
-    );
+    const result = await handleFixLintIssue({
+      type: "missing-concept-page",
+      message:
+        'Concept "Vector Search" is mentioned in ingest, retrieval but has no dedicated page. Both describe it at length.',
+    });
 
-    const result = await handleListDiscussions({ pageSlug: "no-talk" });
-    expect(result.pageSlug).toBe("no-talk");
-    expect(result.threads).toEqual([]);
+    expect(result.success).toBe(true);
+    // The slug is DERIVED from the message's concept name — proof that no
+    // caller-supplied slug was needed, or used.
+    expect(result.slug).toBe("vector-search");
+    const page = await readWikiPageWithFrontmatter("vector-search");
+    expect(page).not.toBeNull();
+    expect(page!.title).toBe("Vector Search");
   });
 
-  it("returns threads with status, author, and commentCount", async () => {
-    await writeTestPage(
-      "test-page",
-      "---\ntags: [test]\n---\n# Test Page\n\nContent.",
+  it("lets a slug-requiring type answer for its own missing slug", async () => {
+    // The other half of the optional-`slug` trade. `""` reaches the handler and
+    // its own message names the field AND the fact that this type needs it —
+    // more than a rejection over an absent property could say.
+    await expect(handleFixLintIssue({ type: "orphan-page" })).rejects.toThrow(
+      "Missing required field: slug",
     );
-
-    // Create a discussion first
-    await handleCreateDiscussion({
-      pageSlug: "test-page",
-      title: "Accuracy concern",
-      body: "The first paragraph seems inaccurate.",
-      author: "yoyo",
-    });
-
-    const result = await handleListDiscussions({ pageSlug: "test-page" });
-    expect(result.pageSlug).toBe("test-page");
-    expect(result.threads).toHaveLength(1);
-    expect(result.threads[0].index).toBe(0);
-    expect(result.threads[0].title).toBe("Accuracy concern");
-    expect(result.threads[0].status).toBe("open");
-    expect(result.threads[0].author).toBe("yoyo");
-    expect(result.threads[0].commentCount).toBe(1);
-    expect(result.threads[0].created).toBeDefined();
-    expect(result.threads[0].updated).toBeDefined();
   });
 
-  it("returns multiple threads with correct indices", async () => {
+  /**
+   * The stdio door records NO trigger, because it resolves no principal (DW-447).
+   *
+   * `author` is `"lint-fix"` at every door now, and the other three pass the
+   * handle they resolved as `triggeredBy` instead. This transport is
+   * unauthenticated and deployment-trusted — every handler here runs with a
+   * `null` principal — so there is no handle to pass, and the log line it writes
+   * must stay byte-identical to the one this fix wrote before `triggeredBy`
+   * existed. Asserted on the bytes in `wiki/log.md` rather than on the arguments
+   * `handleFixLintIssue` forwards, because "unchanged output" is the claim.
+   */
+  it("writes a log line with no trigger parenthetical — stdio resolves no principal", async () => {
     await writeTestPage(
-      "multi-talk",
-      "---\ntags: [test]\n---\n# Multi Talk\n\nContent.",
+      "orphan-untriggered",
+      "---\ntags: [test]\n---\n# Orphan Untriggered\n\nNo principal asked for this.",
     );
+    await writeIndex([]);
 
-    await handleCreateDiscussion({
-      pageSlug: "multi-talk",
-      title: "First thread",
-      body: "First body.",
-      author: "alice",
-    });
-    await handleCreateDiscussion({
-      pageSlug: "multi-talk",
-      title: "Second thread",
-      body: "Second body.",
-      author: "bob",
-    });
+    await handleFixLintIssue({ type: "orphan-page", slug: "orphan-untriggered" });
 
-    const result = await handleListDiscussions({ pageSlug: "multi-talk" });
-    expect(result.threads).toHaveLength(2);
-    expect(result.threads[0].index).toBe(0);
-    expect(result.threads[0].title).toBe("First thread");
-    expect(result.threads[0].author).toBe("alice");
-    expect(result.threads[1].index).toBe(1);
-    expect(result.threads[1].title).toBe("Second thread");
-    expect(result.threads[1].author).toBe("bob");
+    const log = await getStorage().readFile(wikiRelPath("log.md"));
+    expect(log).toContain("auto-fix: added orphan page to index\n");
+    expect(log).not.toContain("(triggered by");
   });
 });
 
-// ---------------------------------------------------------------------------
-// read_discussion tests
-// ---------------------------------------------------------------------------
-
-describe("read_discussion", () => {
-  it("returns full thread with comment bodies", async () => {
-    await writeTestPage(
-      "discuss-read",
-      "---\ntags: [test]\n---\n# Discuss Read\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "discuss-read",
-      title: "Thread to read",
-      body: "This is the opening comment body.",
-      author: "alice",
-    });
-
-    await handleAddComment({
-      pageSlug: "discuss-read",
-      threadIndex: 0,
-      content: "This is a reply.",
-      author: "bob",
-    });
-
-    const result = await handleReadDiscussion({
-      pageSlug: "discuss-read",
-      threadIndex: 0,
-    });
-
-    expect(result.pageSlug).toBe("discuss-read");
-    expect(result.threadIndex).toBe(0);
-    expect(result.title).toBe("Thread to read");
-    expect(result.status).toBe("open");
-    expect(result.created).toBeDefined();
-    expect(result.updated).toBeDefined();
-    expect(result.comments).toHaveLength(2);
-    expect(result.comments[0].author).toBe("alice");
-    expect(result.comments[0].body).toBe("This is the opening comment body.");
-    expect(result.comments[0].id).toBeDefined();
-    expect(result.comments[0].parentId).toBeNull();
-    expect(result.comments[1].author).toBe("bob");
-    expect(result.comments[1].body).toBe("This is a reply.");
+/**
+ * The id this door mints for its deployment-trusted system caller (DW-614).
+ *
+ * `handleUpdatePage`, `handleUpdateMetadata` and `handleDeletePage` fall back to
+ * this principal when no explicit one is passed, and it is now minted from
+ * `servicePrincipalId` instead of three raw literals. Nothing else observes the
+ * VALUE: `owner-gate-parity`, `owner-handle` and `patch-metadata` each write
+ * `"service:mcp"` out as a literal, but they build their own principals with it,
+ * so they pin what those readers expect and would stay green if this door
+ * started minting `service:mcp-stdio`. These two rows are the only thing
+ * standing between that refactor and a silent change of identity.
+ */
+describe("the stdio door's service principal id", () => {
+  it("is exactly `service:mcp`", () => {
+    // The literal the untouched suites spell from the outside. Written out here
+    // deliberately rather than recomputed from `servicePrincipalId` — a test
+    // that rebuilds the value the same way the source does cannot catch the
+    // source changing.
+    expect(STDIO_SERVICE_PRINCIPAL_ID).toBe("service:mcp");
   });
 
-  it("throws for nonexistent page (no discussions file)", async () => {
-    await expect(
-      handleReadDiscussion({ pageSlug: "no-such-page", threadIndex: 0 }),
-    ).rejects.toThrow("thread not found");
-  });
-
-  it("throws for out-of-bounds thread index", async () => {
-    await writeTestPage(
-      "oob-thread",
-      "---\ntags: [test]\n---\n# OOB\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "oob-thread",
-      title: "Only thread",
-      body: "Body.",
-      author: "alice",
-    });
-
-    await expect(
-      handleReadDiscussion({ pageSlug: "oob-thread", threadIndex: 99 }),
-    ).rejects.toThrow("thread not found: index 99 on page oob-thread");
+  it("is recognized as a SERVICE principal by the predicate that grants writes", () => {
+    // `authz.ts` spends `isServicePrincipalId` to let this caller write anything
+    // on a deployment-trusted path. An id that stopped matching would not fail
+    // loudly — the stdio door would quietly lose the grant it writes with.
+    expect(isServicePrincipalId(STDIO_SERVICE_PRINCIPAL_ID)).toBe(true);
   });
 });
 
-// ---------------------------------------------------------------------------
-// create_discussion tests
-// ---------------------------------------------------------------------------
+/**
+ * The stdio door's own `type` gate (DW-348).
+ *
+ * `handleFixLintIssue` keeps `type: string` — it is the handler both transports
+ * share, so the gate belongs at each door. This one is the SDK's: `type` is
+ * `z.enum(AUTO_FIXABLE_CHECK_TYPES)`, and `registerTool` validates the
+ * arguments against that schema before the callback is entered. The HTTP door
+ * has no such layer and carries its own gate; its rows live in
+ * `mcp-http.test.ts`, next to `dispatchMcp`.
+ *
+ * Both rows below are needed and neither implies the other: the enum is the
+ * SHAPE, the transport row is the ANSWER. A schema declared correctly but
+ * registered on the wrong tool, or an SDK that stopped validating, would leave
+ * the first green.
+ */
+describe("fix_lint_issue — the stdio door", () => {
+  it("narrows the registered input schema to the fixable set", () => {
+    // `_registeredTools` is private in TypeScript and readable at runtime — the
+    // same idiom `mcp-annotations.test.ts` and the `mcp.json` sync test use.
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.fix_lint_issue;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
 
-describe("create_discussion", () => {
-  it("creates a new thread and returns it", async () => {
-    await writeTestPage(
-      "new-topic",
-      "---\ntags: [test]\n---\n# New Topic\n\nContent.",
-    );
+    expect([...shape.type.options]).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+  });
 
-    const result = await handleCreateDiscussion({
-      pageSlug: "new-topic",
-      title: "Citation needed",
-      body: "The claim in paragraph 2 needs a source.",
-      author: "yoyo",
+  it("marks slug optional in the registered input schema", () => {
+    // DW-457. `missing-concept-page` reads `message` alone, so a REQUIRED slug
+    // made the one slug-less fix type uncallable here — the SDK would refuse
+    // the arguments before the handler could ever see them. Asked as "does the
+    // field accept an absent value", which is the property that matters,
+    // rather than by naming a zod wrapper class.
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.fix_lint_issue;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
+
+    expect(shape.slug.safeParse(undefined).success).toBe(true);
+    // Still a STRING when present — optional widened the presence, not the type.
+    expect(shape.slug.safeParse(7).success).toBe(false);
+  });
+
+  describe("over a real client transport", () => {
+    let client: Client;
+    let closeTransport: () => Promise<void>;
+
+    beforeAll(async () => {
+      const server = createMcpServer();
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      client = new Client({ name: "fix-lint-issue-test", version: "0.0.1" });
+      await client.connect(clientTransport);
+      closeTransport = async () => {
+        await client.close();
+        await server.close();
+      };
     });
 
-    expect(result.pageSlug).toBe("new-topic");
-    expect(result.title).toBe("Citation needed");
-    expect(result.status).toBe("open");
-    expect(result.comments).toHaveLength(1);
-    expect(result.comments[0].author).toBe("yoyo");
-    expect(result.comments[0].body).toBe(
-      "The claim in paragraph 2 needs a source.",
-    );
-    expect(result.created).toBeDefined();
-    expect(result.updated).toBeDefined();
-  });
-
-  it("throws when pageSlug is empty", async () => {
-    await expect(
-      handleCreateDiscussion({
-        pageSlug: "",
-        title: "Test",
-        body: "Test body",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("pageSlug is required");
-  });
-
-  it("throws when title is empty", async () => {
-    await expect(
-      handleCreateDiscussion({
-        pageSlug: "some-page",
-        title: "",
-        body: "Test body",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("title must be a non-empty string");
-  });
-
-  it("throws when body is empty", async () => {
-    await expect(
-      handleCreateDiscussion({
-        pageSlug: "some-page",
-        title: "Test",
-        body: "",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("body must be a non-empty string");
-  });
-
-  it("throws when author is empty", async () => {
-    await expect(
-      handleCreateDiscussion({
-        pageSlug: "some-page",
-        title: "Test",
-        body: "Test body",
-        author: "",
-      }),
-    ).rejects.toThrow("author must be a non-empty string");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolve_discussion tests
-// ---------------------------------------------------------------------------
-
-describe("resolve_discussion", () => {
-  it("resolves a thread as resolved", async () => {
-    await writeTestPage(
-      "resolve-test",
-      "---\ntags: [test]\n---\n# Resolve Test\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "resolve-test",
-      title: "Outdated info",
-      body: "This section is outdated.",
-      author: "yoyo",
+    afterAll(async () => {
+      await closeTransport();
     });
 
-    const result = await handleResolveDiscussion({
-      pageSlug: "resolve-test",
-      threadIndex: 0,
-      resolution: "resolved",
+    it("refuses a recognized-but-not-fixable type before the handler runs", async () => {
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "disputed-page", slug: "contested-page" },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      // WHICH refusal this is, is the whole assertion. `fixLintIssue` answers a
+      // non-fixable type with "… cannot be auto-fixed …", so that sentence
+      // appearing here would mean the request travelled all the way to the
+      // dispatcher and the schema gate did nothing. The SDK's own validation
+      // message is the proof it was stopped at the transport — and it names the
+      // field, which is what an agent needs to correct its call.
+      expect(text).not.toContain("cannot be auto-fixed");
+      expect(text.toLowerCase()).toContain("type");
     });
 
-    expect(result.status).toBe("resolved");
-    expect(result.title).toBe("Outdated info");
-  });
+    it("refuses an unknown type the same way", async () => {
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "made-up-type", slug: "p" },
+      });
 
-  it("resolves a thread as wontfix", async () => {
-    await writeTestPage(
-      "wontfix-test",
-      "---\ntags: [test]\n---\n# Wontfix Test\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "wontfix-test",
-      title: "Minor issue",
-      body: "Not worth fixing.",
-      author: "yoyo",
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).not.toContain("Auto-fix not supported for this issue type");
     });
 
-    const result = await handleResolveDiscussion({
-      pageSlug: "wontfix-test",
-      threadIndex: 0,
-      resolution: "wontfix",
+    it("still lets a fixable type through to the handler — the control", async () => {
+      // The gate refuses what it should and nothing else. The page is absent, so
+      // the dispatcher's own "Page not found" is the proof it ran: that error
+      // can only come from `fixOrphanPage`, past the schema.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "orphan-page", slug: "absent-from-this-wiki" },
+      });
+
+      expect(result.isError).toBe(true);
+      expect((result.content as { text: string }[])[0].text).toContain(
+        "Page not found: absent-from-this-wiki",
+      );
     });
 
-    expect(result.status).toBe("wontfix");
-  });
+    it("accepts a slug-less missing-concept-page past the schema", async () => {
+      // The DW-457 claim on this transport: the SDK's validation is what used
+      // to stop this call, and a schema error names `slug` without ever
+      // entering the callback. The message is deliberately UNPARSEABLE, so
+      // `fixMissingConceptPage` refuses at its OWN regex — an error only
+      // reachable from inside the handler, which is what makes it the proof
+      // that the request got past the schema.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "missing-concept-page", message: "no concept sentence here" },
+      });
 
-  it("throws for invalid threadIndex", async () => {
-    await writeTestPage(
-      "invalid-idx",
-      "---\ntags: [test]\n---\n# Invalid Index\n\nContent.",
-    );
-
-    await expect(
-      handleResolveDiscussion({
-        pageSlug: "invalid-idx",
-        threadIndex: 99,
-        resolution: "resolved",
-      }),
-    ).rejects.toThrow("thread index 99 not found");
-  });
-
-  it("throws for missing pageSlug", async () => {
-    await expect(
-      handleResolveDiscussion({
-        pageSlug: "",
-        threadIndex: 0,
-        resolution: "resolved",
-      }),
-    ).rejects.toThrow("pageSlug is required");
-  });
-
-  it("shows resolved status in list_discussions", async () => {
-    await writeTestPage(
-      "list-resolved",
-      "---\ntags: [test]\n---\n# List Resolved\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "list-resolved",
-      title: "Thread to resolve",
-      body: "Will be resolved.",
-      author: "yoyo",
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).toContain("Could not parse concept name");
     });
 
-    await handleResolveDiscussion({
-      pageSlug: "list-resolved",
-      threadIndex: 0,
-      resolution: "resolved",
+    it("lets a slug-requiring type answer for its own missing slug", async () => {
+      // The cost of the widening, and why it is worth paying: `orphan-page`
+      // with no slug now reaches the handler as `""` and gets a message naming
+      // the field and its own requirement, instead of the SDK's report about
+      // an absent property.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "orphan-page" },
+      });
+
+      expect(result.isError).toBe(true);
+      expect((result.content as { text: string }[])[0].text).toContain(
+        "Missing required field: slug",
+      );
     });
 
-    const list = await handleListDiscussions({ pageSlug: "list-resolved" });
-    expect(list.threads[0].status).toBe("resolved");
-  });
+    it("advertises slug as optional to a connected client", async () => {
+      // What the agent reads before composing the call. A `required` list still
+      // naming `slug` would keep the type unreachable in practice.
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
 
-  it("reopens a resolved thread via open status", async () => {
-    await writeTestPage(
-      "reopen-test",
-      "---\ntags: [test]\n---\n# Reopen Test\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "reopen-test",
-      title: "Premature resolution",
-      body: "Resolved too early.",
-      author: "yoyo",
+      expect(tool.inputSchema.required ?? []).not.toContain("slug");
+      expect(tool.inputSchema.required ?? []).toContain("type");
+      // Still ADVERTISED — optional is not absent; every other type needs it.
+      expect(tool.inputSchema.properties).toHaveProperty("slug");
     });
 
-    await handleResolveDiscussion({
-      pageSlug: "reopen-test",
-      threadIndex: 0,
-      resolution: "resolved",
+    it("advertises the fixable list to a connected client", async () => {
+      // What the agent actually reads before composing a call.
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
+      const type = (tool.inputSchema.properties as {
+        type: { enum?: string[] };
+      }).type;
+
+      expect(type.enum).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+      // The description must not still promise types the schema now refuses.
+      expect(tool.description).not.toContain("Not all issue types are auto-fixable");
+      expect(tool.description).toContain("suggestion");
     });
-
-    const result = await handleResolveDiscussion({
-      pageSlug: "reopen-test",
-      threadIndex: 0,
-      resolution: "open",
-    });
-
-    expect(result.status).toBe("open");
-
-    const list = await handleListDiscussions({ pageSlug: "reopen-test" });
-    expect(list.threads[0].status).toBe("open");
-  });
-
-  it("reopens a wontfix thread via open status", async () => {
-    await writeTestPage(
-      "reopen-wontfix-test",
-      "---\ntags: [test]\n---\n# Reopen Wontfix\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "reopen-wontfix-test",
-      title: "Dismissed too soon",
-      body: "This was dismissed but needs revisiting.",
-      author: "yoyo",
-    });
-
-    await handleResolveDiscussion({
-      pageSlug: "reopen-wontfix-test",
-      threadIndex: 0,
-      resolution: "wontfix",
-    });
-
-    const result = await handleResolveDiscussion({
-      pageSlug: "reopen-wontfix-test",
-      threadIndex: 0,
-      resolution: "open",
-    });
-
-    expect(result.status).toBe("open");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// add_comment tests
-// ---------------------------------------------------------------------------
-
-describe("add_comment", () => {
-  it("adds a comment to an existing thread", async () => {
-    await writeTestPage(
-      "comment-page",
-      "---\ntags: [test]\n---\n# Comment Page\n\nContent.",
-    );
-
-    // Create a thread first
-    await handleCreateDiscussion({
-      pageSlug: "comment-page",
-      title: "A discussion",
-      body: "Initial message",
-      author: "yoyo",
-    });
-
-    // Add a comment
-    const comment = await handleAddComment({
-      pageSlug: "comment-page",
-      threadIndex: 0,
-      content: "This is a reply",
-      author: "agent-2",
-    });
-
-    expect(comment.author).toBe("agent-2");
-    expect(comment.body).toBe("This is a reply");
-    expect(comment.id).toBeDefined();
-    expect(comment.parentId).toBeNull();
-
-    // Verify the comment appears in the thread listing
-    const list = await handleListDiscussions({ pageSlug: "comment-page" });
-    expect(list.threads[0].commentCount).toBe(2); // original + reply
-  });
-
-  it("adds a threaded reply with parentId", async () => {
-    await writeTestPage(
-      "threaded-reply",
-      "---\ntags: [test]\n---\n# Threaded Reply\n\nContent.",
-    );
-
-    const thread = await handleCreateDiscussion({
-      pageSlug: "threaded-reply",
-      title: "Thread for reply",
-      body: "Top-level message",
-      author: "yoyo",
-    });
-
-    const parentId = thread.comments[0].id;
-
-    const reply = await handleAddComment({
-      pageSlug: "threaded-reply",
-      threadIndex: 0,
-      content: "Nested reply",
-      author: "agent-3",
-      parentId,
-    });
-
-    expect(reply.parentId).toBe(parentId);
-    expect(reply.body).toBe("Nested reply");
-  });
-
-  it("throws when author is missing", async () => {
-    await writeTestPage(
-      "anon-comment",
-      "---\ntags: [test]\n---\n# Anon Comment\n\nContent.",
-    );
-
-    await handleCreateDiscussion({
-      pageSlug: "anon-comment",
-      title: "Thread",
-      body: "First message",
-      author: "yoyo",
-    });
-
-    await expect(
-      handleAddComment({
-        pageSlug: "anon-comment",
-        threadIndex: 0,
-        content: "Anonymous contribution",
-        author: "",
-      }),
-    ).rejects.toThrow("author must be a non-empty string");
-  });
-
-  it("throws for missing pageSlug", async () => {
-    await expect(
-      handleAddComment({
-        pageSlug: "",
-        threadIndex: 0,
-        content: "test",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("pageSlug is required");
-  });
-
-  it("throws for missing content", async () => {
-    await expect(
-      handleAddComment({
-        pageSlug: "some-page",
-        threadIndex: 0,
-        content: "",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("content must be a non-empty string");
-  });
-
-  it("throws for invalid threadIndex", async () => {
-    await writeTestPage(
-      "bad-idx-comment",
-      "---\ntags: [test]\n---\n# Bad Index\n\nContent.",
-    );
-
-    await expect(
-      handleAddComment({
-        pageSlug: "bad-idx-comment",
-        threadIndex: 99,
-        content: "test comment",
-        author: "yoyo",
-      }),
-    ).rejects.toThrow("thread index 99 not found");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// reconcile_page tests
-// ---------------------------------------------------------------------------
-
-describe("reconcile_page", () => {
-  it("throws for missing pageSlug", async () => {
-    await expect(
-      handleReconcilePage({ pageSlug: "", threadIndex: 0 }),
-    ).rejects.toThrow("pageSlug is required");
-  });
-
-  it("throws for missing threadIndex", async () => {
-    await expect(
-      handleReconcilePage({
-        pageSlug: "some-page",
-        threadIndex: undefined as unknown as number,
-      }),
-    ).rejects.toThrow("threadIndex is required");
-  });
-
-  it("throws for non-existent page", async () => {
-    await expect(
-      handleReconcilePage({ pageSlug: "nonexistent", threadIndex: 0 }),
-    ).rejects.toThrow('page "nonexistent" not found');
-  });
-
-  it("throws for non-existent thread", async () => {
-    await writeTestPage(
-      "reconcile-no-thread",
-      "---\ntags: [test]\n---\n# Reconcile No Thread\n\nContent.",
-    );
-    await expect(
-      handleReconcilePage({ pageSlug: "reconcile-no-thread", threadIndex: 99 }),
-    ).rejects.toThrow("thread 99 not found");
-  });
-
-  it("reconciles a page from a discussion thread", async () => {
-    await writeTestPage(
-      "reconcile-test",
-      "---\ntags: [test]\n---\n# Reconcile Test\n\nOriginal content.",
-    );
-    await handleCreateDiscussion({
-      pageSlug: "reconcile-test",
-      title: "Fix this claim",
-      body: "The content needs correction.",
-      author: "user1",
-    });
-
-    const result = await handleReconcilePage({
-      pageSlug: "reconcile-test",
-      threadIndex: 0,
-    });
-
-    expect(result.slug).toBe("reconcile-test");
-    expect(typeof result.changed).toBe("boolean");
-    expect(typeof result.disputed).toBe("boolean");
-  });
-
-  it("passes author to reconcileFromTalk", async () => {
-    await writeTestPage(
-      "reconcile-author",
-      "---\ntags: [test]\n---\n# Reconcile Author\n\nContent.",
-    );
-    await handleCreateDiscussion({
-      pageSlug: "reconcile-author",
-      title: "Needs update",
-      body: "Please fix this.",
-      author: "user2",
-    });
-
-    const result = await handleReconcilePage({
-      pageSlug: "reconcile-author",
-      threadIndex: 0,
-      author: "custom-agent",
-    });
-
-    expect(result.slug).toBe("reconcile-author");
   });
 });
 
@@ -3738,136 +3911,6 @@ describe("delete_agent", () => {
     await expect(
       handleDeleteAgent({ agent_id: "nonexistent" }),
     ).rejects.toThrow("Agent not found: nonexistent");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// publish_to_commons tests
-// ---------------------------------------------------------------------------
-
-describe("publish_to_commons", () => {
-  it("publishes an agent-knowledge page to the commons", async () => {
-    // Register agent with owner
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "Yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: ["my-topic"],
-      socialPages: [],
-      registered: "2026-06-01T00:00:00.000Z",
-      lastUpdated: "2026-06-01T00:00:00.000Z",
-    });
-
-    // Create an agent-knowledge page
-    await writeTestPage(
-      "my-topic",
-      `---
-title: My Topic
-type: agent-knowledge
-owner: alice--yoyo
-summary: Agent knowledge page
----
-# My Topic
-
-Agent knowledge content.
-`,
-    );
-
-    const result = await handlePublishToCommons({
-      slug: "my-topic",
-      agentId: "alice--yoyo",
-    });
-
-    expect(result.published).toBe(true);
-    expect(result.slug).toBe("my-topic");
-    expect(result.owner).toBe("alice");
-    expect(result.agent).toBe("alice--yoyo");
-    expect(result.previousType).toBe("agent-knowledge");
-  });
-
-  it("throws when page does not exist", async () => {
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "Yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: "2026-06-01T00:00:00.000Z",
-      lastUpdated: "2026-06-01T00:00:00.000Z",
-    });
-
-    await expect(
-      handlePublishToCommons({ slug: "nonexistent", agentId: "alice--yoyo" }),
-    ).rejects.toThrow("Page not found: nonexistent");
-  });
-
-  it("throws when page is not agent-scoped", async () => {
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "Yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: "2026-06-01T00:00:00.000Z",
-      lastUpdated: "2026-06-01T00:00:00.000Z",
-    });
-
-    // Write a normal page (no agent type)
-    await writeTestPage(
-      "normal-page",
-      `---
-title: Normal Page
-owner: alice--yoyo
-summary: A normal page
----
-# Normal Page
-
-Regular content.
-`,
-    );
-
-    await expect(
-      handlePublishToCommons({ slug: "normal-page", agentId: "alice--yoyo" }),
-    ).rejects.toThrow("not agent-scoped");
-  });
-
-  it("throws when agent does not own the page", async () => {
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "Yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: "2026-06-01T00:00:00.000Z",
-      lastUpdated: "2026-06-01T00:00:00.000Z",
-    });
-
-    // Page owned by a different agent
-    await writeTestPage(
-      "other-topic",
-      `---
-title: Other Topic
-type: agent-knowledge
-owner: bob--yoyo
-summary: Someone else's page
----
-# Other Topic
-
-Content.
-`,
-    );
-
-    await expect(
-      handlePublishToCommons({ slug: "other-topic", agentId: "alice--yoyo" }),
-    ).rejects.toThrow("does not own page");
   });
 });
 
@@ -4683,7 +4726,7 @@ describe("vault_delete", () => {
 // ---------------------------------------------------------------------------
 
 describe("revert_revision", () => {
-  it("reverts a page to a previous revision", async () => {
+  it("reverts a page to a previous revision through the omitted-principal stdio fallback", async () => {
     const v1Content = "---\ntitle: Test\n---\n# Test\nVersion 1";
     await writeTestPage("revert-test", v1Content);
 
@@ -4712,6 +4755,146 @@ describe("revert_revision", () => {
     expect(page.content).toContain("Version 1");
   });
 
+  it("denies a public-page revert before revision lookup and preserves stored bytes", async () => {
+    const current =
+      "---\ntitle: Public revert\nvisibility: public\n---\n# Public revert\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Public revert\nvisibility: public\n---\n# Public revert\n\nStored revision.";
+    await writeTestPage("public-revert-acl", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "public-revert-acl",
+      storedRevision,
+      "service:test",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "public-revert-acl" });
+    const storedTimestamp = revisions.revisions[0].timestamp;
+    const missingTimestamp = storedTimestamp + 10_000;
+    const pageBefore = (await readWikiPageWithFrontmatter("public-revert-acl"))!.content;
+    const revisionBefore = await readRevision("public-revert-acl", storedTimestamp);
+    const revisionHistoryBefore = await listRevisions("public-revert-acl");
+
+    await expect(
+      handleRevertRevision({
+        slug: "public-revert-acl",
+        timestamp: missingTimestamp,
+        author: "alice",
+        principal: { id: "user:alice", handle: "alice" },
+      }),
+    ).rejects.toThrow(WRITE_DENIAL_REALM.revert);
+
+    expect((await readWikiPageWithFrontmatter("public-revert-acl"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("public-revert-acl", storedTimestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("public-revert-acl")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("cloaks a private non-owner denial and preserves Page and revision bytes", async () => {
+    const current =
+      "---\ntitle: Private revert\nowner: bob\nvisibility: private\n---\n# Private revert\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Private revert\nowner: bob\nvisibility: private\n---\n# Private revert\n\nStored revision.";
+    await writeTestPage("private-revert-acl", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "private-revert-acl",
+      storedRevision,
+      "bob",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "private-revert-acl" });
+    const timestamp = revisions.revisions[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("private-revert-acl"))!.content;
+    const revisionBefore = await readRevision("private-revert-acl", timestamp);
+    const revisionHistoryBefore = await listRevisions("private-revert-acl");
+
+    let caught: unknown;
+    try {
+      await handleRevertRevision({
+        slug: "private-revert-acl",
+        timestamp,
+        author: "alice",
+        principal: { id: "user:alice", handle: "alice" },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe("page not found: private-revert-acl");
+    expect((caught as Error).message).not.toMatch(/realm|public knowledge/i);
+    expect((await readWikiPageWithFrontmatter("private-revert-acl"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("private-revert-acl", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("private-revert-acl")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("fails explicit null closed on a public artifact before revision lookup", async () => {
+    const current =
+      "---\ntitle: Null principal\nvisibility: public\ntype: html\n---\n# Null principal\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Null principal\nvisibility: public\ntype: html\n---\n# Null principal\n\nStored revision.";
+    await writeTestPage("null-principal-revert", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "null-principal-revert",
+      storedRevision,
+      "service:test",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "null-principal-revert" });
+    const storedTimestamp = revisions.revisions[0].timestamp;
+    const missingTimestamp = storedTimestamp + 10_000;
+    const pageBefore = (await readWikiPageWithFrontmatter("null-principal-revert"))!.content;
+    const revisionBefore = await readRevision(
+      "null-principal-revert",
+      storedTimestamp,
+    );
+    const revisionHistoryBefore = await listRevisions("null-principal-revert");
+
+    await expect(
+      handleRevertRevision({
+        slug: "null-principal-revert",
+        timestamp: missingTimestamp,
+        principal: null,
+      }),
+    ).rejects.toThrow(WRITE_DENIAL.revert);
+    expect((await readWikiPageWithFrontmatter("null-principal-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("null-principal-revert", storedTimestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("null-principal-revert")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("keeps principal out of the stdio revert_revision input schema", () => {
+    const server = createMcpServer();
+    // `_registeredTools` is private in TypeScript and readable at runtime —
+    // the same schema inspection used by the stdio argument-gate tests.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.revert_revision;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
+
+    expect(shape).not.toHaveProperty("principal");
+  });
+
   it("defaults author to 'agent' when not provided", async () => {
     const content = "---\ntitle: Default\n---\n# Default\nContent";
     await writeTestPage("revert-default", content);
@@ -4730,10 +4913,169 @@ describe("revert_revision", () => {
     expect(result.slug).toBe("revert-default");
   });
 
+  it("rejects a revision that restores a link to a same-owner merged alias", async () => {
+    await writeTestPage(
+      "revert-survivor",
+      "---\nowner: alice\naliases: [revert-retired]\n---\n# Survivor\n\nCanonical Page.",
+    );
+    await writeTestPage(
+      "revert-retired",
+      "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+    );
+    await writeTestPage(
+      "mcp-revert-linker",
+      "---\nowner: alice\n---\n# MCP revert linker\n\nCurrent body.",
+    );
+    await writeIndex([
+      { title: "Survivor", slug: "revert-survivor", summary: "canonical" },
+      { title: "Replacement", slug: "revert-retired", summary: "replacement" },
+      { title: "MCP revert linker", slug: "mcp-revert-linker", summary: "linker" },
+    ]);
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision(
+      "mcp-revert-linker",
+      "---\nowner: alice\n---\n# MCP revert linker\n\nSee [old](revert-retired.md).",
+      "alice",
+      "stale link snapshot",
+    );
+    const list = await handleListRevisions({ slug: "mcp-revert-linker" });
+
+    await expect(handleRevertRevision({
+      slug: "mcp-revert-linker",
+      timestamp: list.revisions[0].timestamp,
+      author: "alice",
+    })).rejects.toThrow(/missing|replaced/i);
+    expect((await handleReadPage({ slug: "mcp-revert-linker" })).content)
+      .not.toContain("revert-retired.md");
+  });
+
   it("throws for a nonexistent page", async () => {
     await expect(
       handleRevertRevision({ slug: "no-such-page", timestamp: 1234567890 }),
     ).rejects.toThrow("page not found: no-such-page");
+  });
+
+  /**
+   * The STRICT half. Without `strict: true` a non-ENOENT storage failure on the
+   * merge-base read flattens to `null` and the null branch below tells the MCP
+   * caller `page not found` — a deletion the store never made.
+   */
+  it("rejects with the STORAGE error — not `page not found` — when the merge-base read blips", async () => {
+    const stored = "---\ntitle: Blip revert\n---\n# Blip revert\n\nCurrent body.";
+    await writeTestPage("blip-revert", stored);
+
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision("blip-revert", "# Blip revert\n\nOld body.", "yoyo", "snapshot");
+    const list = await handleListRevisions({ slug: "blip-revert" });
+    const ts = list.revisions[0].timestamp;
+    const before = (await readWikiPageWithFrontmatter("blip-revert"))!.content;
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    // ONE-SHOT: failing every read of `blip-revert.md` would also break the
+    // write's own CAS re-read, so the call would reject either way.
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith("blip-revert.md")) {
+          blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await handleRevertRevision({ slug: "blip-revert", timestamp: ts });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    expect(message).not.toContain("page not found");
+
+    // And the stored Page is untouched, byte for byte — a handler that rejected
+    // only AFTER a partial write would pass every assertion above.
+    expect((await readWikiPageWithFrontmatter("blip-revert"))!.content).toBe(before);
+  });
+
+  /**
+   * The FRESH half, which `strict` cannot pin. These bytes wear three hats at
+   * once — the merge base (`expectedContent`), the `extractTitle` fallback, and
+   * the seed for `mergedFrontmatter` (title and `created` included) — so off a
+   * superseded `pageCache` entry every one of them describes a file that is not
+   * stored, and the write's CAS refuses the stale merge base rather than
+   * landing those metadata. Every field below therefore differs between the
+   * cached bytes and the stored ones, so a stale read cannot pass by accident.
+   */
+  it("takes the merge base and frontmatter from storage while a stale page cache is open", async () => {
+    const cachedBytes =
+      "---\ntitle: Cached Revert Title\ncreated: '2025-01-15'\n---\n# Cached Revert Heading\n\nCached body.\n";
+    await writeTestPage("mcp-stale-revert", cachedBytes);
+
+    // A revision with NO frontmatter block, so the handler serializes
+    // `mergedFrontmatter` over it rather than restoring the snapshot verbatim —
+    // and with NO H1, so `extractTitle(revisionContent, existing.title)`
+    // actually falls back to the read's title instead of taking one from the
+    // snapshot.
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision(
+      "mcp-stale-revert",
+      "Revision body with no heading of its own.\n",
+      "yoyo",
+      "snapshot",
+    );
+    const list = await handleListRevisions({ slug: "mcp-stale-revert" });
+    const ts = list.revisions[0].timestamp;
+
+    const { beginPageCache, readWikiPage } = await import("../wiki");
+    const cleanup = beginPageCache();
+    try {
+      expect((await readWikiPage("mcp-stale-revert"))!.content).toBe(cachedBytes);
+
+      // Newer bytes land underneath the open cache, written DIRECTLY to the
+      // flat path. Title, `created`, the H1 the title fallback reads, and the
+      // `stored_only` marker are ALL different from the cached copy.
+      const storedBytes =
+        "---\ntitle: Stored Revert Title\ncreated: '2024-06-30'\nstored_only: yes-it-is\n---\n# Stored Revert Heading\n\nStored body.\n";
+      const flatPath = path.join(process.env.WIKI_DIR!, "mcp-stale-revert.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      expect((await readWikiPage("mcp-stale-revert"))!.content).toBe(cachedBytes);
+
+      // THE CALL THAT FAILS WITHOUT THE FRESH READ — and it fails HERE, not at
+      // the assertions below: off the cached entry the merge base is the
+      // superseded file, so the write's CAS rejects with
+      // `LifecyclePageConflictError: Page "mcp-stale-revert" changed`.
+      await handleRevertRevision({ slug: "mcp-stale-revert", timestamp: ts });
+
+      // Reaching here at all is the load-bearing half. The rest confirms every
+      // role those bytes play was filled from STORAGE: the `mergedFrontmatter`
+      // seed (title, `created`, the stored-only marker) …
+      const after = await fs.readFile(flatPath, "utf-8");
+      expect(after).toContain("stored_only: yes-it-is");
+      expect(after).toContain("title: Stored Revert Title");
+      expect(after).toContain("created: 2024-06-30");
+      expect(after).not.toContain("Cached Revert Title");
+      expect(after).not.toContain("2025-01-15");
+      expect(after).toContain("Revision body with no heading of its own.");
+
+      // … and the `extractTitle` fallback, whose only observable is the index
+      // entry this write upserts (the reverted body carries no H1 of its own).
+      const indexAfter = await fs.readFile(
+        path.join(process.env.WIKI_DIR!, "index.md"),
+        "utf-8",
+      );
+      expect(indexAfter).toContain("Stored Revert Heading");
+      expect(indexAfter).not.toContain("Cached Revert Heading");
+    } finally {
+      cleanup();
+    }
   });
 
   it("throws for a nonexistent revision timestamp", async () => {
@@ -4908,7 +5250,9 @@ describe("MCP write ACL", () => {
           author: "alice",
           principal: { id: "user_alice", handle: "alice" },
         }),
-      ).rejects.toThrow("You don't have permission to edit this page.");
+        // The realm sentence, owned by `src/lib/write-denial.ts` — the same one
+        // `PUT /api/wiki/[slug]` and the edit screen answer for this deny.
+      ).rejects.toThrow(WRITE_DENIAL_REALM.edit);
     });
 
     it("allows body write on commons page when principal is a service", async () => {
@@ -5017,7 +5361,8 @@ describe("MCP write ACL", () => {
           author: "alice",
           principal: { id: "user_alice", handle: "alice" },
         }),
-      ).rejects.toThrow("You don't have permission to delete this page.");
+        // Same table, delete verb: one deny, one sentence, every surface.
+      ).rejects.toThrow(WRITE_DENIAL_REALM.delete);
     });
 
     it("allows deletion when no principal provided (stdio MCP fallback)", async () => {
@@ -5034,5 +5379,139 @@ describe("MCP write ACL", () => {
       expect(result.slug).toBe("commons-del-stdio");
       expect(result.removedFromIndex).toBe(true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleDeletePage: an UNREADABLE page is not an ABSENT one (DW-691)
+// ---------------------------------------------------------------------------
+
+/**
+ * The MCP mirror of the REST delete ACL DW-496 hardened. Its own comment
+ * claimed parity with that surface while the read underneath it was still
+ * optionless, so a non-ENOENT storage failure came back as `null` and was
+ * reported as `page not found: <slug>` for a page that is stored.
+ *
+ * Classification is what is pinned: a store fault rejects with the storage
+ * failure and never with the absence sentence, a genuine absence still says
+ * `page not found`, and neither deletes anything.
+ */
+describe("handleDeletePage — unreadable ≠ absent (DW-691)", () => {
+  async function seed(
+    slug: string,
+    fm: Record<string, unknown> = {},
+  ): Promise<void> {
+    const { writeWikiPageWithSideEffects, serializeFrontmatter } = await import(
+      "../wiki"
+    );
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          title: slug,
+          created: "2026-01-01",
+          confidence: 0.5,
+          expiry: "2099-01-01",
+          authors: ["system"],
+          contributors: [],
+          ...fm,
+        },
+        `# ${slug}\n\nStored bytes.`,
+      ),
+      summary: "test",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  it("rejects with the STORAGE error — not `page not found` — when the ACL read blips", async () => {
+    await seed("mcp-del-blip");
+    const before = (await readWikiPageWithFrontmatter("mcp-del-blip"))!.content;
+
+    // A non-ENOENT failure on `<slug>.md`: the file is there, the provider is
+    // not. Every other path (the page index included) is served for real.
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith("mcp-del-blip.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await handleDeletePage({ slug: "mcp-del-blip", author: "system" });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    expect(message).not.toContain("page not found");
+
+    // And the stored page is untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter("mcp-del-blip"))!.content).toBe(
+      before,
+    );
+  });
+
+  it("still rejects `page not found` for a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so a genuine absence is unchanged.
+    await expect(
+      handleDeletePage({ slug: "mcp-del-absent", author: "system" }),
+    ).rejects.toThrow("page not found: mcp-del-absent");
+  });
+
+  it("decides the delete ACL against storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin, and it needs its own row: strip
+    // `fresh: true` from the source read and every blip row above still passes,
+    // because a `pageCache` hit is answered before `storage.readFile` is ever
+    // reached. `pageCache` is module-global and ref-counted around bulk scans,
+    // so one can be holding a superseded entry open when this call arrives —
+    // and this handler decides a DELETE from the frontmatter the read returns.
+    const { beginPageCache, readWikiPage } = await import("../wiki");
+    await seed("mcp-del-cached", { owner: "bob", visibility: "private" });
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("mcp-del-cached"))!;
+      expect(cached.content).toContain("owner: bob");
+
+      // The page changes hands underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about.
+      const stored = cached.content.replace("owner: bob", "owner: carol");
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old owner.
+      expect((await readWikiPage("mcp-del-cached"))!.content).toBe(
+        cached.content,
+      );
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The ACL sees the
+      // STORED frontmatter — a private page owned by carol — and cloaks it as
+      // not-found. Off the cached entry it reads `owner: bob`, authorizes, and
+      // deletes a page that now belongs to another principal.
+      await expect(
+        handleDeletePage({
+          slug: "mcp-del-cached",
+          author: "bob",
+          principal: { id: "user_bob", handle: "bob" },
+        }),
+      ).rejects.toThrow("page not found: mcp-del-cached");
+
+      // Nothing was deleted: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+    } finally {
+      cleanup();
+    }
   });
 });

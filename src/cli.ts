@@ -15,7 +15,6 @@
  *   pnpm cli list                 List all wiki pages
  *   pnpm cli list --raw           List raw sources
  *   pnpm cli delete <slug>        Delete a wiki page and clean up side effects
- *   pnpm cli publish <slug> --agent <id>  Publish agent page to commons
  *   pnpm cli history              Show recent ingest history
  *   pnpm cli status               Show wiki health summary
  *   pnpm cli help                 Show this help
@@ -39,7 +38,6 @@ export type ParsedCommand =
   | { command: "delete"; slug: string }
   | { command: "history"; limit: number }
   | { command: "status" }
-  | { command: "publish"; slug: string; agentId: string }
   | { command: "help" }
   | { command: "error"; message: string };
 
@@ -152,21 +150,6 @@ export function parseArgs(argv: string[]): ParsedCommand {
     }
     case "status":
       return { command: "status" };
-    case "publish": {
-      const agentIdx = rest.indexOf("--agent");
-      const agentId = agentIdx !== -1 ? rest[agentIdx + 1] : undefined;
-      // Skip flag tokens and the value right after --agent when looking for slug
-      const skipIndices = new Set<number>();
-      if (agentIdx !== -1) { skipIndices.add(agentIdx); skipIndices.add(agentIdx + 1); }
-      const slug = rest.find((a, i) => !a.startsWith("-") && !skipIndices.has(i));
-      if (!slug) {
-        return { command: "error", message: "Usage: pnpm cli publish <slug> --agent <agentId>" };
-      }
-      if (!agentId) {
-        return { command: "error", message: "Usage: pnpm cli publish <slug> --agent <agentId>" };
-      }
-      return { command: "publish", slug, agentId };
-    }
     default:
       return { command: "error", message: `Unknown command: ${sub}\nRun "pnpm cli help" for usage.` };
   }
@@ -191,7 +174,6 @@ Commands:
   create <slug>        Create a new wiki page (reads body from stdin)
   update <slug>        Update an existing wiki page (reads body from stdin)
   delete <slug>        Delete a wiki page and clean up side effects
-  publish <slug>       Publish an agent page to commons (requires --agent <id>)
   lint                 Run wiki lint checks
   lint --fix           Run lint and auto-fix issues
   list                 List all wiki pages (slug + title)
@@ -380,8 +362,28 @@ export async function runCreate(slug: string, title: string, tags?: string[]): P
   // Validate slug format
   validateSlug(slug);
 
-  // Check for existing page
-  const existing = await readWikiPage(slug);
+  // Check for existing page.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation: `null` here is what
+  // authorizes the create below. `pageCache` is module-global and ref-counted
+  // around bulk scans, so a concurrent scan can hold a stale NEGATIVE entry
+  // open and the guard would rule a stored slug free.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", and the guard reads a blip
+  // as proof the slug is free — landing a create over a stored Page. Strict
+  // rethrows; the catch below keeps that out of the `already exists` sentence.
+  let existing: Awaited<ReturnType<typeof readWikiPage>>;
+  try {
+    existing = await readWikiPage(slug, { fresh: true, strict: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Error: could not read page "${slug}": ${message}\nNothing was created.`,
+    );
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
   if (existing) {
     console.error(`Error: page "${slug}" already exists.`);
     process.exit(1);
@@ -425,6 +427,8 @@ export async function runCreate(slug: string, title: string, tags?: string[]): P
     summary,
     logOp: "ingest",
     crossRefSource: body.trim(),
+    createOnly: true,
+    validateNewLinkTargets: true,
   });
 
   console.log(`Created: ${result.slug}`);
@@ -443,8 +447,30 @@ export async function runUpdate(slug: string, title?: string, tags?: string[]): 
   // Validate slug format
   validateSlug(slug);
 
-  // Check that the page exists
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Check that the page exists.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation, and its bytes ARE
+  // the merge base — `existing.content` becomes `expectedContent` below.
+  // `pageCache` is module-global and ref-counted around bulk scans, so a
+  // concurrent scan can hold a superseded entry open and the update would
+  // merge over — and compare against — bytes that are no longer stored.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", so a blip is reported as a
+  // page that does not exist and the update refuses a Page that is merely
+  // unreadable. Strict rethrows; the catch below keeps that out of the
+  // `not found` sentence.
+  let existing: Awaited<ReturnType<typeof readWikiPageWithFrontmatter>>;
+  try {
+    existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Error: could not read page "${slug}": ${message}\nNothing was written.`,
+    );
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
   if (!existing) {
     console.error(`Error: page "${slug}" not found.\nRun "pnpm cli list" to see available pages.`);
     process.exit(1);
@@ -481,6 +507,8 @@ export async function runUpdate(slug: string, title?: string, tags?: string[]): 
     summary,
     logOp: "edit",
     crossRefSource: body.trim(),
+    expectedContent: existing.content,
+    validateNewLinkTargets: true,
   });
 
   console.log(`Updated: ${result.slug}`);
@@ -501,21 +529,6 @@ export async function runDelete(slug: string): Promise<void> {
   }
   if (result.strippedBacklinksFrom.length > 0) {
     console.log(`  Stripped backlinks from: ${result.strippedBacklinksFrom.join(", ")}`);
-  }
-}
-
-export async function runPublish(slug: string, agentId: string): Promise<void> {
-  const { publishToCommons } = await import("./lib/publish");
-
-  try {
-    const result = await publishToCommons(slug, agentId);
-    console.log(`Published "${result.slug}" to commons`);
-    console.log(`  Previous type: ${result.previousType}`);
-    console.log(`  Owner: ${result.owner}`);
-    console.log(`  Agent: ${result.agent}`);
-  } catch (err) {
-    console.error(`Publish failed: ${(err as Error).message}`);
-    process.exit(1);
   }
 }
 
@@ -566,10 +579,96 @@ export async function runLint(fix: boolean): Promise<void> {
   }
 }
 
+/**
+ * Every Source row the CLI shows: the flat `raw/sources/<id>.md` listing and
+ * the hashed `raw/sources/<slug>/<id>.<ext>` snapshots, with the flat row
+ * DROPPED for any slug that has snapshots, and the snapshot rows of ONE
+ * arrival collapsed to one.
+ *
+ * `listRawSources` is non-recursive BY CONTRACT — that is the browse contract
+ * its docblock states, and the Workbench Sources surface built on it does not
+ * move. The caller unions instead, the same way `wiki-retrieve.ts` already
+ * does; without it a workspace whose Sources all arrived through hashed Intake
+ * reports an empty `list --raw` and a `Raw sources:\t0` status (DW-437).
+ *
+ * WHY THE FLAT ROW IS DROPPED when snapshots exist: a plain concatenation
+ * double-counts every normally-ingested page. `ingest()` writes BOTH keys for
+ * the same slug — the flat blob at `src/lib/ingest.ts:1953`
+ * (`saveRawSource(slug, content)`) and the per-source snapshot at
+ * `src/lib/ingest.ts:2012` (`saveRawSourceFor(slug, rawId, content)`) — so the
+ * two listings describe one page twice. The snapshots are the per-source view
+ * of that page and the flat blob is the legacy single-blob view of the same
+ * bytes, so the snapshots win: a page with three distinct sources still counts
+ * three, and a slug with no snapshot at all keeps its flat row.
+ *
+ * Only a MARKDOWN snapshot suppresses it, though. That whole argument is about
+ * the pair `ingest()` writes from one text; a BINARY snapshot on the same slug
+ * is a different Source, and dropping the flat blob for it would hide real
+ * prose behind an unrelated image (DW-569).
+ *
+ * Each listing gets its OWN try/catch: one root failing must not blank the
+ * other, which is the whole reason the union is worth more than either half.
+ */
+async function listRawSourceRows(): Promise<
+  Array<{ slug: string; filename: string }>
+> {
+  const { listRawSources, listRawSourceSnapshots } = await import("./lib/raw");
+  const flat: Array<{ slug: string; filename: string }> = [];
+  const hashed: Array<{ slug: string; filename: string }> = [];
+  const slugsWithSnapshots = new Set<string>();
+  try {
+    for (const source of await listRawSources()) {
+      flat.push({ slug: source.slug, filename: source.filename });
+    }
+  } catch (error) {
+    console.error(`Warning: could not list raw sources: ${String(error)}`);
+  }
+  // One entry per ARRIVAL, keyed `<slug>/<rawId>`: see the dedupe note below.
+  const byArrival = new Map<string, { slug: string; filename: string }>();
+  try {
+    // THIS CALLER DOES NOT FILTER by `ext` — it is the one that must not.
+    // `list --raw` and `Raw sources:` describe what is STORED, so a workspace
+    // whose only Source is a PDF has to show it and count it (DW-569); the
+    // reading callers (retrieval, `incomplete-coverage`) drop binaries because
+    // they need prose, and this one has no such excuse.
+    //
+    // It DOES collapse the rows of one arrival. A binary Source and the
+    // Markdown the sidecar extracted from it are stored under the same
+    // `rawId` on purpose, so listing both would print one Source twice and
+    // roughly double the count — the same double-count the flat/hashed union
+    // above exists to prevent, one level down. The non-Markdown artefact wins
+    // the row because it is the immutable original the owner actually handed
+    // over; the extract is derived from it.
+    for (const snapshot of await listRawSourceSnapshots()) {
+      // ONLY a MARKDOWN snapshot suppresses the slug's flat row. The
+      // suppression's whole warrant is that the two rows are one page's bytes
+      // twice, and that is a claim about `ingest()`: it writes the flat blob
+      // and the per-source `.md` snapshot from the SAME text, one call apart.
+      // A binary snapshot is a different Source entirely — an image or a PDF
+      // dropped onto a slug that also has a flat prose blob — so suppressing on
+      // it would delete a real prose Source from the listing and the count to
+      // make room for a file it has nothing to do with.
+      if (snapshot.ext === "md") slugsWithSnapshots.add(snapshot.slug);
+      const key = `${snapshot.slug}/${snapshot.rawId}`;
+      if (byArrival.has(key) && snapshot.ext === "md") continue;
+      byArrival.set(key, {
+        slug: snapshot.slug,
+        filename: `${snapshot.rawId}.${snapshot.ext}`,
+      });
+    }
+  } catch (error) {
+    console.error(`Warning: could not list raw snapshots: ${String(error)}`);
+  }
+  hashed.push(...byArrival.values());
+  return [
+    ...flat.filter((row) => !slugsWithSnapshots.has(row.slug)),
+    ...hashed,
+  ];
+}
+
 export async function runList(raw: boolean): Promise<void> {
   if (raw) {
-    const { listRawSources } = await import("./lib/raw");
-    const sources = await listRawSources();
+    const sources = await listRawSourceRows();
     const sorted = sources.sort((a, b) => a.slug.localeCompare(b.slug));
     for (const s of sorted) {
       console.log(`${s.slug}\t${s.filename}`);
@@ -586,16 +685,101 @@ export async function runList(raw: boolean): Promise<void> {
 
 export async function runStatus(): Promise<void> {
   const { listWikiPages } = await import("./lib/wiki");
-  const { listRawSources } = await import("./lib/raw");
-  const { getEffectiveSettings } = await import("./lib/config");
+  const { getEffectiveSettings, readConfig } = await import("./lib/config");
+  const { getErrorMessage } = await import("./lib/errors");
 
   const pages = await listWikiPages();
-  const sources = await listRawSources();
+  // Same union as `list --raw`: a count that omitted hashed snapshots would
+  // report 0 Sources for a workspace built entirely through Intake (DW-437).
+  const sources = await listRawSourceRows();
+
+  // WHY the store is loaded before it is read (DW-502).
+  //
+  // `getEffectiveSettings()` is synchronous: it reads the store through
+  // `loadConfigSync()`, which answers `{}` whenever the in-memory cache is not
+  // warm — and re-stamps that `{}` for another `CACHE_TTL_MS` (5 s,
+  // `src/lib/config.ts`) each time it does. So the hazard is "no async load
+  // inside the last 5 seconds", not something peculiar to fresh processes; a CLI
+  // process is simply the case that hits it EVERY time, since nothing ran ahead
+  // of this command to warm anything. Unwarmed, every ladder's store leg goes
+  // blind and `status` reports env-only settings: a provider the owner saved is
+  // invisible, and a stored `ollamaBaseUrl` the resolver refused has no refusal
+  // to report.
+  //
+  // WARMING AT THE CALL, which is what the web surface does too — there is no
+  // startup hook in this repo to warm anything globally. `src/app/api/status/
+  // route.ts` awaits a config read immediately before `getProviderInfo()`, per
+  // request, for exactly this reason; this is the same move on the CLI side.
+  //
+  // THROUGH `readConfig()` RATHER THAN `loadConfig()` (DW-549). Both warm the
+  // sync cache identically on the success path, so the DW-502 fix is unchanged;
+  // `readConfig()` is simply the only door that tells an ABSENT store from an
+  // UNREADABLE one. `loadConfig()` flattens both to `{}`, and the rows below
+  // then say "not configured" in the same sentence for "nothing was ever saved"
+  // and for "what you saved could not be read" — on the one surface with no
+  // Settings screen to go and look at.
+  //
+  // No error handling belongs here either: `readConfig()` RETURNS its failure
+  // rather than throwing, so the rows below print either way.
+  const stored = await readConfig();
+
   const settings = getEffectiveSettings();
 
   console.log(`Wiki pages:\t${pages.length}`);
   console.log(`Raw sources:\t${sources.length}`);
+  // WHY the unreadable store is reported ABOVE the provider verdict (DW-549).
+  //
+  // A store that could not be read degrades EVERY settings row below it to the
+  // environment alone — provider, endpoint and embeddings alike — so it is a
+  // caveat on all of them, not a note on one. `Ollama endpoint:` stays
+  // immediately after `LLM provider:` because it qualifies exactly that subject.
+  //
+  // CONDITIONAL, like `Ollama endpoint:`. ENOENT is `status: "ok"` with `{}`, so
+  // a deployment that simply never saved anything still prints the four rows it
+  // always has — `Label:\tvalue` is a parsed shape, and an unconditional fifth
+  // row would be a new field for every reader of this output.
+  if (stored.status !== "ok") {
+    // WHY THE MESSAGE IS FLATTENED AND CAPPED.
+    //
+    // `Label:\tvalue` is a parsed shape, and the value here is the only one on
+    // this surface that comes from OUTSIDE the program: V8's `JSON.parse` error
+    // quotes a snippet of the offending bytes back at you, so a config file
+    // holding a newline printed a SECOND, unlabelled physical line and detached
+    // the "environment only" caveat from the label it qualifies. Collapsing
+    // whitespace is what keeps one `console.log` to one row no matter what is in
+    // the file; the cap keeps a large malformed file from turning the row into a
+    // paragraph. The row is a POINTER — the operator opens the file next — so
+    // losing the tail of a long parser message costs nothing.
+    const detail = getErrorMessage(stored.error).replace(/\s+/g, " ").trim();
+    const message = detail.length > 200 ? `${detail.slice(0, 197)}...` : detail;
+    console.log(
+      `Stored config:\tunreadable — ${message}; ` +
+      `the settings below reflect the environment only`,
+    );
+  }
   console.log(`LLM provider:\t${settings.provider ?? "not configured"}`);
+  // WHY the endpoint was thrown away (DW-402, DW-418).
+  //
+  // "not configured" above is the same word for "nothing was ever set" and for
+  // "what you set was refused", and only the second has an action attached. The
+  // resolver already knows which and carries the sentence on
+  // `EffectiveSettings`; the headless operator is the reader least able to go
+  // look, since there is no Settings screen on this side of the product.
+  //
+  // LABELLED FOR ITS OWN SUBJECT, not as a note on the row above. The refusal is
+  // about `OLLAMA_BASE_URL` and is reported whether or not a provider resolved —
+  // a deployment running `anthropic` can still have a typo'd Ollama endpoint,
+  // and suppressing the sentence there would hide it from the only reader who
+  // cannot go and look. A row called "Provider note" printed under a successful
+  // `LLM provider:` line would read as qualifying a verdict that succeeded;
+  // "Ollama endpoint" names what it is actually about.
+  //
+  // CONDITIONAL, so a clean config prints exactly the four lines it always has —
+  // `Label:\tvalue` is a parsed shape, and an empty fifth row would be a new
+  // field for every reader of this output.
+  if (settings.ollamaBaseUrlIssue) {
+    console.log(`Ollama endpoint:\t${settings.ollamaBaseUrlIssue}`);
+  }
   console.log(`Embeddings:\t${settings.embeddingSupport ? "available" : "not available"}`);
 }
 
@@ -677,9 +861,6 @@ async function main(): Promise<void> {
     case "delete":
       await runDelete(parsed.slug);
       return;
-    case "publish":
-      await runPublish(parsed.slug, parsed.agentId);
-      return;
     case "lint":
       await runLint(parsed.fix);
       return;
@@ -695,22 +876,36 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
+// Only run main when executed directly (not imported for testing) — DW-551.
+//
+// This module exports `runStatus`, `runList` and the rest for the suites that
+// pin them, and a bare `main()` at module scope runs a COMMAND on every one of
+// those imports: with no argv the parser falls through to `help`, so a suite
+// gets the HELP block in its output, and any command that throws reaches the
+// `process.exit(1)` below and takes the vitest worker down with it.
+//
+// The shape mirrors `src/mcp.ts` verbatim so the two entry points cannot drift.
+const isDirectExecution =
+  process.argv[1]?.endsWith("cli.ts") ||
+  process.argv[1]?.endsWith("cli.js");
 
-  // Friendly message for missing API key
-  if (message.toLowerCase().includes("api key") || message.toLowerCase().includes("api_key")) {
-    console.error(
-      `Error: No LLM API key configured.\n\n` +
-      `Set one of these environment variables:\n` +
-      `  ANTHROPIC_API_KEY=sk-...\n` +
-      `  OPENAI_API_KEY=sk-...\n` +
-      `  GOOGLE_GENERATIVE_AI_API_KEY=...\n\n` +
-      `Or configure a provider in the Settings UI (http://localhost:3000/settings).`,
-    );
-  } else {
-    console.error(`Error: ${message}`);
-  }
-  process.exit(1);
-});
+if (isDirectExecution) {
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
 
+    // Friendly message for missing API key
+    if (message.toLowerCase().includes("api key") || message.toLowerCase().includes("api_key")) {
+      console.error(
+        `Error: No LLM API key configured.\n\n` +
+        `Set one of these environment variables:\n` +
+        `  ANTHROPIC_API_KEY=sk-...\n` +
+        `  OPENAI_API_KEY=sk-...\n` +
+        `  GOOGLE_GENERATIVE_AI_API_KEY=...\n\n` +
+        `Or configure a provider in the Settings UI (http://localhost:3000/settings).`,
+      );
+    } else {
+      console.error(`Error: ${message}`);
+    }
+    process.exit(1);
+  });
+}

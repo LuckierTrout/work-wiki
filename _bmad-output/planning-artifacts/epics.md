@@ -397,7 +397,9 @@ so that I can browse compiled Pages and vault files without opening a local fold
 
 **Given** I switch Wikis from the header
 **When** I pick another of my Wikis
-**Then** the trees show that Wiki’s files
+**Then** the Files tree shows that Wiki’s `purpose.md` and Schema
+**And** Pages and Sources are shared across my Wikis, so Knowledge and Files keep showing the same ones
+**And** the left column says so, so a Wiki reads as a lens over shared Pages and Sources
 **And** I cannot see another owner’s Wiki
 
 ### Story 1.5: View-first Preview with GFM and wikilinks
@@ -1464,6 +1466,8 @@ so that findings join the compiled wiki.
 
 Sidecar extract for office/PDF/EPUB, inbound email, Plaud OAuth, media preview, Mermaid/KaTeX.
 
+**Status (2026-08-25):** Closed. Stories 7.1–7.5 and 7.7–7.8 are done. Story 7.6 is deferred (no consumer OAuth list/pull HTTP). Retrospective stays optional.
+
 ### Story 7.1: Sidecar claims kernel extract jobs
 
 As Christian,
@@ -1582,6 +1586,8 @@ so that I am not limited to file upload.
 **When** the attempt ends
 **Then** it fails closed
 **And** there are no partial Wiki Page writes from that pull
+
+**Status (2026-08-25):** Deferred. Plaud publishes no consumer OAuth list/pull HTTP. Epic 7 is closed on 7.1–7.5 and 7.7–7.8. Do not rewrite these ACs to email or unofficial `api.plaud.ai`. A later official-MCP pull is a new story.
 
 ### Story 7.7: Image lightbox and AV player
 

@@ -1,0 +1,1996 @@
+exact-head SHA: 250688ee769d356c8be6c8567b00c2dd7b34a620
+command: pnpm test
+cwd: /Users/christianlee/App-Development/work-wiki
+started: 2026-08-24T15:22:53Z
+
+> work-wiki@0.1.0 test /Users/christianlee/App-Development/work-wiki
+> vitest run
+
+
+ RUN  v3.2.4 /Users/christianlee/App-Development/work-wiki
+
+stderr | src/lib/__tests__/wiki-schema-edit.test.ts > editing the Schema > reports a FAILED pre-write read as a server error, never as a conflict
+[workbench-artifact] artifact write failed Error: the disk went away
+    at FilesystemStorageProvider.<anonymous> (/Users/christianlee/App-Development/work-wiki/src/lib/__tests__/wiki-schema-edit.test.ts:843:35)
+    at FilesystemStorageProvider.mockCall (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at FilesystemStorageProvider.readFile (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/tinyspy@4.0.4/node_modules/tinyspy/dist/index.js:47:80)
+    at readWikiArtifact (/Users/christianlee/App-Development/work-wiki/src/lib/wikis.ts:1740:31)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/wikis.ts:918:24
+    at /Users/christianlee/App-Development/work-wiki/src/lib/wiki-lock.ts:106:42
+
+ ✓ |node| src/lib/__tests__/lint-checks.test.ts (78 tests) 26873ms
+   ✓ getOnDiskSlugs > ignores non-.md files (fallback)  377ms
+   ✓ checkEmptyPages > detects pages with very little content (just a heading)  302ms
+   ✓ checkEmptyPages > detects pages with only a heading and a few words  324ms
+   ✓ checkBrokenLinks > detects links to non-existent pages  333ms
+   ✓ checkBrokenLinks > populates suggestion field for broken links  325ms
+   ✓ checkBrokenLinks > does not flag links to existing pages  387ms
+   ✓ checkBrokenLinks > detects a dangling [[wikilink]] as a broken link with source page  331ms
+   ✓ checkBrokenLinks > skips links to infrastructure files (index.md, log.md)  320ms
+   ✓ checkMissingCrossRefs > detects when page A mentions a term that is slug B's title but does not link to B  377ms
+   ✓ checkMissingCrossRefs > populates suggestion field for missing cross-refs  421ms
+   ✓ checkMissingCrossRefs > does NOT flag partial matches inside larger words  441ms
+   ✓ checkMissingCrossRefs > does not flag when a link already exists  360ms
+   ✓ checkMissingCrossRefs > handles pages with no potential cross-refs  329ms
+   ✓ checkMissingCrossRefs > ignores titles shorter than 3 characters  409ms
+   ✓ checkStalePages > flags a page whose expiry is in the past  354ms
+   ✓ checkStalePages > does NOT flag a page whose expiry is in the future  387ms
+   ✓ checkStalePages > gracefully skips pages with no expiry field  435ms
+   ✓ checkStalePages > flags multiple stale pages  869ms
+   ✓ checkStalePages > includes valid_from in message when available on expired page  422ms
+   ✓ checkStalePages > flags page with very old valid_from even if expiry is in the future  387ms
+   ✓ checkStalePages > does NOT flag page with recent valid_from and future expiry  385ms
+   ✓ checkStalePages > does not double-flag when both expiry passed and valid_from old  528ms
+   ✓ checkLowConfidence > flags a page with confidence below the threshold  363ms
+   ✓ checkLowConfidence > does NOT flag a page with confidence above the threshold  382ms
+   ✓ checkLowConfidence > gracefully skips pages with no confidence field  383ms
+   ✓ checkLowConfidence > does NOT flag a page with confidence exactly at the threshold  429ms
+   ✓ checkLowConfidence > flags confidence of 0  462ms
+   ✓ checkUnmigratedPages > flags a page with no yopedia fields  411ms
+   ✓ checkUnmigratedPages > does NOT flag a page with all three core fields  423ms
+   ✓ checkUnmigratedPages > does NOT flag a page with only confidence (partial is fine)  430ms
+   ✓ checkUnmigratedPages > does NOT flag a page with only authors  409ms
+   ✓ checkUnmigratedPages > does NOT flag a page with only expiry  417ms
+   ✓ checkUncitedClaims > flags a page with no sources and no inline citations  459ms
+   ✓ checkUncitedClaims > does NOT flag a page with structured sources  440ms
+   ✓ checkUncitedClaims > does NOT flag a page with numbered inline citations  400ms
+   ✓ checkUncitedClaims > does NOT flag a page with named inline citations  459ms
+   ✓ checkUncitedClaims > does NOT flag a page with wikilink citations  350ms
+   ✓ checkUncitedClaims > flags multiple uncited pages  622ms
+   ✓ checkUncitedClaims > does NOT flag a page with empty sources string but inline citations  405ms
+   ✓ checkSupersededDangling > flags a page whose supersedes target does not exist on disk  347ms
+   ✓ checkSupersededDangling > does NOT flag a page whose supersedes target exists on disk  451ms
+   ✓ checkSupersededDangling > does NOT flag pages without a supersedes field  305ms
+   ✓ checkDisputedPages > flags a page whose disputed flag is true  428ms
+   ✓ checkDisputedPages > names the surviving clear path in the suggestion, not a talk thread  424ms
+   ✓ checkDisputedPages > does NOT flag a page with disputed: false  366ms
+   ✓ checkDisputedPages > does NOT flag a page with no disputed key at all  351ms
+   ✓ checkDisputedPages > flags only the disputed page when both kinds are present  577ms
+   ✓ checkDisputedPages > skips an index entry with no readable page file and keeps checking  517ms
+stderr | src/lib/__tests__/wiki-schema-edit.test.ts > editing the Schema > answers a failed storage write with 500, and moves nothing
+[workbench-artifact] artifact write failed Error: disk is gone
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/wiki-schema-edit.test.ts:1014:59
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+ ✓ |node| src/lib/__tests__/merge.test.ts (13 tests) 29846ms
+   ✓ mergePages > folds bodies, unions provenance + aliases, and deletes the absorbed page  2687ms
+   ✓ mergePages > re-points internal backlinks from the absorbed slug to the survivor BEFORE deleting  4425ms
+   ✓ mergePages > re-points via the precomputed backlink index when it's present (the production fast path)  4890ms
+   ✓ mergePages > escalates `disputed` (and caps confidence) when the fold finds a contradiction  3132ms
+   ✓ mergePages > appends both bodies (no reconcile) when there's no LLM key  3361ms
+   ✓ mergePages > rejects merging a page into itself and a missing page  927ms
+   ✓ mergePages > rejects an artifact survivor and a public→private merge  2985ms
+   ✓ mergePages > rejects a cross-owner merge without an admin caller  3070ms
+   ✓ aliasRedirectForMissing (alias redirect safety) > never forwards an anonymous viewer to a private page, but forwards its owner  897ms
+   ✓ aliasRedirectForMissing (alias redirect safety) > returns null for a slug with no alias  840ms
+   ✓ aliasRedirectForMissing (alias redirect safety) > forwards an alias of an ownerless page to the DEFAULT_TENANT canonical URL  914ms
+   ✓ aliasRedirectForMissing (alias redirect safety) > never self-redirects an existing-but-unreadable page (canonical !== slug guard)  880ms
+   ✓ aliasRedirectForMissing (alias redirect safety) > fails closed (null, not a throw) when a page file has malformed frontmatter  836ms
+ ✓ |node| src/lib/__tests__/wiki-schema-edit.test.ts (53 tests) 30634ms
+   ✓ editing the Schema > lands the bytes at the artifact path, logs the edit and bumps the signal  875ms
+   ✓ editing the Schema > changes nothing else — no page, no index entry, no page count  1089ms
+   ✓ editing the Schema > is callable from inside the tenant lock's own holder without deadlocking  1724ms
+   ✓ editing the Schema > still resolves when the log or the counter fails, because the bytes landed  1006ms
+   ✓ editing the Schema > reaches the prompts: loadPageConventions() returns the EDITED section  1183ms
+   ✓ editing the Schema > reaches the prompts through the route as well, end to end  1224ms
+   ✓ editing the Schema > round-trips a Schema with a leading YAML block without eating it  2082ms
+   ✓ editing the Schema > still strips the YAML block for a page, which is not whole-file  660ms
+   ✓ editing the Schema > refuses a signed-in principal who is not the owner  622ms
+   ✓ editing the Schema > refuses a signed-out save and writes nothing  601ms
+   ✓ editing the Schema > refuses every save on a read-only deployment  580ms
+   ✓ editing the Schema > lands the save when the precondition matches, and answers the NEW version  1362ms
+   ✓ editing the Schema > refuses a STALE save with 412, and the writer commits nothing  1109ms
+   ✓ editing the Schema > refuses a save with NO precondition with 428 and writes nothing  648ms
+   ✓ editing the Schema > refuses a save into a Schema that VANISHED — a missing file matches nothing  629ms
+   ✓ editing the Schema > lets the editor save twice without a reload  1851ms
+   ✓ editing the Schema > treats `*` and an unquoted version as absent  663ms
+   ✓ editing the Schema > lands exactly ONE of two saves carrying the same valid version  1495ms
+   ✓ editing the Schema > refuses a draft seeded from ANOTHER Wiki, even when the bytes are identical  2018ms
+   ✓ editing the Schema > reports a FAILED pre-write read as a server error, never as a conflict  612ms
+   ✓ editing the Schema > does not offer the Schema for editing on a read-only deployment  686ms
+   ✓ editing the Schema > does not offer the Schema for editing to anyone the write route will refuse  620ms
+   ✓ editing the Schema > keeps a seeded Schema saveable back through the route it is offered in  1264ms
+   ✓ editing the Schema > answers ONE identical 400 for every path that is not the editable artifact  649ms
+   ✓ editing the Schema > refuses a Schema that would silently stop steering anything  623ms
+   ✓ editing the Schema > refuses a Schema the Preview would then truncate and refuse to edit  664ms
+   ✓ editing the Schema > refuses an empty, non-string or unparseable body  552ms
+   ✓ editing the Schema > answers a failed storage write with 500, and moves nothing  587ms
+   ✓ editing the Schema > still answers 200 when only the tail failed  1070ms
+   ✓ editing the Schema > never lets the caller name the Wiki, the tenant or a storage key  1781ms
+ ✓ |node| src/lib/__tests__/query.test.ts (96 tests) 31359ms
+   ✓ Full-body BM25 indexing > searchIndex with fullBody=true finds body-only terms  338ms
+   ✓ searchIndex > uses LLM re-ranking when available and parses JSON response  392ms
+   ✓ searchIndex > falls back to fusion order when LLM returns invalid JSON  316ms
+   ✓ searchIndex > filters out slugs not in fusion candidates from LLM response  332ms
+   ✓ searchIndex > LLM re-ranking narrows candidates from fusion results, not full index  354ms
+   ✓ searchIndex > LLM re-ranking failure falls back to fusion order  320ms
+   ✓ buildContext > loads only specified pages  361ms
+   ✓ query > uses searchIndex for large wikis (> 5 pages)  772ms
+   ✓ query > includes full index listing in system prompt for large wikis  675ms
+   ✓ saveAnswerToWiki > saves an answer as a wiki page and updates the index  797ms
+   ✓ saveAnswerToWiki > files a Chat save under wiki/queries/ with a Conversation link  937ms
+   ✓ saveAnswerToWiki > saves an HTML answer verbatim as a typed, owner-attributed artifact  862ms
+   ✓ saveAnswerToWiki > strips a wrapping markdown fence from a saved HTML answer  894ms
+   ✓ saveAnswerToWiki > wraps saved answer in YAML frontmatter with source and tags  957ms
+   ✓ saveAnswerToWiki > attributes markdown save to the known owner in frontmatter authors  894ms
+   ✓ saveAnswerToWiki > attributes markdown save to author when both author and owner are provided  877ms
+   ✓ saveAnswerToWiki > uses the known owner in source entry triggered_by instead of system  888ms
+   ✓ saveAnswerToWiki > uses author for source entry triggered_by when both author and owner are provided  919ms
+   ✓ saveAnswerToWiki > does not duplicate heading if content already starts with one  915ms
+   ✓ saveAnswerToWiki > saves a slides deck as an owner-attributed artifact (type slides, verbatim HTML body, no data-URI in summary)  940ms
+   ✓ saveAnswerToWiki > bakes illustration directives at save time, dropping unfillable ones and leaving mermaid alone  958ms
+   ✓ saveAnswerToWiki > updates existing index entry on re-save  1991ms
+   ✓ saveAnswerToWiki > cross-references related pages after saving  2737ms
+   ✓ saveAnswerToWiki > includes sources as wiki-ref provenance entries in frontmatter when provided  879ms
+   ✓ saveAnswerToWiki > omits sources from frontmatter when not provided  901ms
+   ✓ saveAnswerToWiki > omits sources from frontmatter when empty array is provided  986ms
+   ✓ hybrid search in searchIndex > falls back to pure BM25 when vector search returns empty  523ms
+   ✓ hybrid search in searchIndex > uses RRF fusion when vector search returns results  656ms
+   ✓ hybrid search in searchIndex > handles vector search errors gracefully  389ms
+   ✓ query — scope parameter > returns helpful message for invalid scope  425ms
+   ✓ query — scope parameter > works normally without scope parameter  424ms
+   ✓ query — scoped search with registered agent > restricts results to agent's pages when scope is agent:id  669ms
+   ✓ query — scoped search with registered agent > returns error for nonexistent agent scope  324ms
+   ✓ query — scoped search with registered agent > returns 'no pages found' when agent has empty page lists  503ms
+   ✓ query — scoped search with registered agent > handles agent referencing deleted wiki pages gracefully  443ms
+ ✓ |node| src/lib/__tests__/lint.test.ts (78 tests) 34741ms
+   ✓ lint > should return only LLM-skipped info issues for a clean wiki  352ms
+   ✓ lint > should detect orphan pages (on disk but not in index)  309ms
+   ✓ lint > should detect stale index entries (in index but no file on disk)  469ms
+   ✓ lint > should detect empty pages  426ms
+   ✓ lint > should detect missing cross-references  487ms
+   ✓ lint > should not flag cross-references when links exist  495ms
+   ✓ lint > should not flag index.md or log.md as orphan pages  520ms
+   ✓ lint > should return a meaningful summary  647ms
+   ✓ lint > should handle an empty wiki directory gracefully  435ms
+   ✓ lint > should NOT flag cross-refs when short title appears inside other words  550ms
+   ✓ lint > should flag cross-refs when a multi-word title appears as a phrase  556ms
+   ✓ lint > should NOT flag cross-refs when short title appears as substring of another word  552ms
+   ✓ lint > should NOT flag cross-refs for 'map' inside 'bitmap'  544ms
+   ✓ lint > appends a 'lint' log entry on every pass  545ms
+   ✓ lint > should use page cache to avoid redundant disk reads  647ms
+   ✓ checkContradictions > returns contradiction issues when LLM finds them  336ms
+   ✓ checkContradictions > returns no issues when LLM finds no contradictions  336ms
+   ✓ checkContradictions > handles malformed LLM response gracefully  305ms
+   ✓ checkContradictions > handles LLM call failure gracefully  339ms
+   ✓ checkContradictions > includes SCHEMA.md conventions in contradiction detection prompt  340ms
+   ✓ checkContradictions > lint result includes missing-concept-page issues when LLM is available  553ms
+   ✓ checkContradictions > checkBrokenLinks > should detect a link to a non-existent page  304ms
+   ✓ checkContradictions > lint result includes broken-link issues  517ms
+   ✓ lint with LintOptions > returns only orphan-page issues when checks: ['orphan-page']  446ms
+   ✓ lint with LintOptions > excludes info-level issues when minSeverity is 'warning'  631ms
+   ✓ lint with LintOptions > excludes warning and info issues when minSeverity is 'error'  534ms
+   ✓ lint with LintOptions > runs all checks when no options are provided (backwards compat)  407ms
+   ✓ lint with LintOptions > combining checks and minSeverity filters correctly  495ms
+   ✓ lint with LintOptions > returns empty issues array when checks is empty array  539ms
+   ✓ checkIncompleteCoverage > reports issues when LLM finds gaps between raw source and wiki page  659ms
+   ✓ checkIncompleteCoverage > returns no issues when LLM finds no gaps  624ms
+   ✓ checkIncompleteCoverage > processes at most MAX_COVERAGE_CHECKS pages per run  13656ms
+   ✓ lint dispatches the disputed-page check > returns exactly one disputed-page warning, for the disputed slug  501ms
+   ✓ lint dispatches the disputed-page check > skips the check when it is not in the requested check list  547ms
+   ✓ lint dispatches the disputed-page check > runs nothing at all when checks is an EMPTY array  550ms
+   ✓ lint dispatches the disputed-page check > runs the check when it is the ONLY requested check  547ms
+   ✓ lint dispatches the disputed-page check > survives the warning severity floor  544ms
+ ✓ |node| src/lib/__tests__/contributors.test.ts (32 tests) 35010ms
+   ✓ contributors data layer > listContributors > aggregates multiple authors correctly  776ms
+   ✓ contributors data layer > listContributors > excludes agent-scoped pages so agents aren't listed as contributors  918ms
+   ✓ contributors data layer > listContributors > folds automation authors (system/lint-fix) into the agent, not their own handles  1175ms
+   ✓ contributors data layer > listContributors > takes the contributor-index fast path ONLY for an anonymous viewer; a non-null principal uses the per-principal scan (sees their own private pages)  1050ms
+   ✓ contributors data layer > buildContributorProfile > counts edits correctly across multiple pages  1143ms
+   ✓ contributors data layer > buildContributorProfile > uses the contributor index when present (O(1) fast-path, not a live scan)  817ms
+   ✓ contributors data layer > buildContributorProfile > returns an empty profile (no scan) for a handle absent from a present index  786ms
+   ✓ contributors data layer > buildContributorProfile > counts talk comments and threads  489ms
+   ✓ contributors data layer > trust score > caps at 1.0 for prolific contributors  10749ms
+   ✓ contributors data layer > trust score > computes trust proportionally for low activity  2175ms
+   ✓ contributors data layer > trust score > includes comment count in trust calculation  748ms
+   ✓ contributors data layer > firstSeen and lastSeen > reflects actual date range from revisions  527ms
+   ✓ contributors data layer > revert detection > contributor with no reverts gets full trust score  2321ms
+   ✓ contributors data layer > revert detection > contributor whose content was reverted gets reduced trust score  679ms
+   ✓ contributors data layer > revert detection > revert detection only triggers when different author reverts  757ms
+   ✓ contributors data layer > revert detection > revert detection requires >50% size reduction  855ms
+   ✓ contributors data layer > revert detection > multiple reverts accumulate and cap trust penalty at 50%  2359ms
+   ✓ contributors data layer > revert detection > revert counts show up in listContributors  643ms
+   ✓ contributors data layer > batch lookup — buildContributorProfiles > returns profiles for multiple handles in one call  942ms
+   ✓ contributors data layer > batch lookup — buildContributorProfiles > mixes known and unknown handles correctly  463ms
+   ✓ contributors data layer > batch lookup — buildContributorProfiles > preserves order matching input handles  715ms
+   ✓ contributors data layer > shared scan data — computeScanData > computes scan data that can be shared across multiple profile builds  685ms
+   ✓ contributors data layer > shared scan data — computeScanData > shared scan data includes talk activity  401ms
+   ✓ contributors data layer > shared scan data — computeScanData > shared scan data includes revert detection  686ms
+   ✓ contributors data layer > shared scan data — computeScanData > batch profiles with shared scan data match individual builds  680ms
+   ✓ contributors data layer > reduceReverts normalizeActor > trust score for yoyo reflects revert penalties from automation actors  749ms
+ ✓ |node| src/lib/__tests__/mcp-http.test.ts (113 tests) 34839ms
+   ✓ dispatchMcp — tools/call auth gating > reingest explains the realm on a readable public knowledge page  304ms
+   ✓ dispatchMcp — per-agent target vault > files a created page into the target vault and notes it in the result  1012ms
+   ✓ dispatchMcp — per-agent target vault > a vault-filing failure does not fail the write (fail-soft)  841ms
+   ✓ dispatchMcp — update_metadata > forwards the principal to patchMetadata (updates metadata on an owned page)  1159ms
+   ✓ dispatchMcp — update_metadata > refuses an agent principal patching a public knowledge page (DW-121)  318ms
+   ✓ dispatchMcp — update_page > updates a page owned by the caller (ACL + success)  1197ms
+   ✓ dispatchMcp — update_page > rejects update_page when caller cannot write the page (ACL)  332ms
+   ✓ dispatchMcp — delete_page > deletes a page owned by the caller (ACL + success)  914ms
+   ✓ dispatchMcp — delete_page > rejects delete_page when caller cannot write the page (ACL)  355ms
+   ✓ dispatchMcp — lint_wiki > lint_wiki works for an authenticated reader  437ms
+   ✓ dispatchMcp — reconcile_page (retired) > lint_wiki accepts disputed-page as a valid check type  490ms
+   ✓ dispatchMcp — list_revisions > returns revisions for a valid slug for an authenticated reader  562ms
+   ✓ dispatchMcp — read_revision > returns revision content for a valid slug + timestamp  705ms
+   ✓ dispatchMcp — revert_revision > passes principal.handle as author to handleRevertRevision  1616ms
+   ✓ dispatchMcp — vault tools > list_vaults defaults to caller's handle when no owner arg  320ms
+   ✓ dispatchMcp — vault tools > vault_pages returns enriched metadata for vault contents  504ms
+   ✓ dispatchMcp — vault tools > vault_curate forces owner from principal (ignores caller-supplied owner)  497ms
+   ✓ dispatchMcp — wiki_graph > returns graph data (nodes + edges) without auth  391ms
+   ✓ dispatchMcp — list_agents > returns agents array without auth (read-only)  308ms
+   ✓ dispatchMcp — update_agent > updates an agent profile when called by the owner  420ms
+   ✓ dispatchMcp — seed_agent > seeds a new agent when authenticated  305ms
+   ✓ dispatchMcp — delete_agent > deletes an agent when called by the owner  371ms
+   ✓ dispatchMcp — delete_agent > rejects delete_agent when caller does not own the agent (cross-user)  303ms
+   ✓ dispatchMcp — vault_delete > deletes a vault when called by the owner  380ms
+   ✓ dispatchMcp — vault_delete > rejects vault_delete when caller does not own the vault (cross-user)  317ms
+   ✓ dispatchMcp — vault_rename > renames a vault when called by the owner  387ms
+   ✓ dispatchMcp — vault_rename > rejects vault_rename when caller does not own the vault (cross-user)  369ms
+ ✓ |node| src/lib/__tests__/search.test.ts (102 tests) 38389ms
+   ✓ searchWikiContent > finds pages matching a single term (case-insensitive)  340ms
+   ✓ searchWikiContent > excludes agent-scoped pages from general (unscoped) search  398ms
+   ✓ searchWikiContent > excludes artifacts even WITHIN a scope (vault/owner) — markup is never query knowledge  535ms
+   ✓ searchWikiContent > an `agent:` scope STILL surfaces agent-typed pages (only unscoped excludes them)  365ms
+   ✓ searchWikiContent > is case-insensitive  313ms
+   ✓ searchWikiContent > scores by number of matching terms (OR semantics)  481ms
+   ✓ searchWikiContent > sorts alphabetically by title when scores are equal  461ms
+   ✓ searchWikiContent > skips index.md and log.md  598ms
+   ✓ searchWikiContent > respects maxResults limit  734ms
+   ✓ searchWikiContent > defaults maxResults to 10  1633ms
+   ✓ searchWikiContent > builds snippet around first match with ellipsis  385ms
+   ✓ searchWikiContent > snippet has no leading ellipsis when match is near the start  404ms
+   ✓ searchWikiContent > never leaks YAML frontmatter into the snippet  353ms
+   ✓ searchWikiContent > cuts snippets on word boundaries (no mid-word fragments)  388ms
+   ✓ searchWikiContent > falls back to the clean summary when the term matched only in frontmatter  414ms
+   ✓ searchWikiContent > extracts title from first heading  395ms
+   ✓ searchWikiContent > falls back to slug when no heading present  365ms
+   ✓ searchWikiContent > returns no results when no pages match  463ms
+   ✓ searchWikiContent > extracts summary from first paragraph after heading  401ms
+   ✓ findBacklinks > finds pages that link to the target slug  556ms
+   ✓ findBacklinks > skips index and log pages  734ms
+   ✓ findBacklinks > skips the target page itself  369ms
+   ✓ findBacklinks > returns empty array when no pages link to target  493ms
+   ✓ findBacklinks > detects multiple backlinks  752ms
+   ✓ findBacklinks > excludes agent-scoped pages from a wiki page's backlinks  647ms
+   ✓ findBacklinks > excludes agent-scoped backlinks via the precomputed index (fast path)  669ms
+   ✓ findSimilarPages > resolves titles and drops below-threshold matches  694ms
+   ✓ findSimilarPages > skips the page itself, index, and log  478ms
+   ✓ findSimilarPages > excludes agent-scoped pages from a wiki page's related list  552ms
+   ✓ findSimilarPages > an agent page's related list excludes commons (wiki) pages  610ms
+   ✓ findSimilarPages > excludes pages not in the reader's readable set  499ms
+   ✓ findSimilarPages > enforces visibility: a private page is hidden from non-owners, shown to its owner  638ms
+   ✓ findSimilarPages > respects the limit  864ms
+   ✓ updateRelatedPages > appends 'See also' links to related pages  1301ms
+   ✓ updateRelatedPages > creates a revision with author 'system' when injecting See-also  1193ms
+   ✓ updateRelatedPages > PRESERVES the page's frontmatter when appending a See-also  1185ms
+   ✓ updateRelatedPages > never appends a See-also to an HTML artifact  320ms
+   ✓ updateRelatedPages > keeps the backlink index fresh for the appended See-also link  1534ms
+   ✓ updateRelatedPages > skips pages that already link to the new slug  312ms
+   ✓ updateRelatedPages > extends existing 'See also' section rather than creating duplicate  1104ms
+   ✓ updateRelatedPages > returns array of actually modified slugs  2054ms
+   ✓ updateRelatedPages > handles multiple related slugs with mixed existing See-also  2062ms
+   ✓ fuzzySearchWikiContent > returns exact results when enough exist  478ms
+   ✓ fuzzySearchWikiContent > falls back to fuzzy when exact results are sparse  492ms
+   ✓ fuzzySearchWikiContent > does not duplicate pages in exact and fuzzy results  360ms
+   ✓ fuzzySearchWikiContent > skips fuzzy for very short query terms  436ms
+   ✓ searchWikiContent with scope > returns all matching pages when no scope is provided  530ms
+   ✓ searchWikiContent with scope > returns only pages in the scope's slug list  582ms
+   ✓ searchWikiContent with scope > returns empty when scope slugs don't match any existing pages  325ms
+   ✓ searchWikiContent with scope > returns empty when scope slugs exist but don't match query  445ms
+   ✓ searchWikiContent with scope > scope with empty slugs array returns no results  430ms
+   ✓ fuzzySearchWikiContent with scope > applies scope filtering to both exact and fuzzy phases  465ms
+   ✓ resolveScope > resolves 'vault:<id>' for a PUBLIC vault to its member slugs  461ms
+   ✓ resolveScope > returns null for a PRIVATE vault (never exposed via scope)  439ms
+stderr | src/lib/__tests__/agents.test.ts > per-agent credentials > fails closed on a corrupt secret file
+[agents] verifyAgentToken: corrupt secret file for "alice--yoyo": SyntaxError: Unexpected token 'o', "not json{{{" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at verifyAgentToken (/Users/christianlee/App-Development/work-wiki/src/lib/agents.ts:325:19)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/agents.test.ts:1345:12
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+stderr | src/lib/__tests__/agents.test.ts > per-agent credentials > agentTokenInfo treats a corrupt secret file as existing (rotate fixes it)
+[agents] agentTokenInfo: corrupt secret file for "alice--yoyo": SyntaxError: Unexpected token 'o', "not json{{{" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at agentTokenInfo (/Users/christianlee/App-Development/work-wiki/src/lib/agents.ts:245:19)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/agents.test.ts:1396:12
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+stderr | src/lib/__tests__/agents.test.ts > addAgentLearningPage > is a no-op for a missing agent
+[agents] addAgentLearningPage: agent "ghost--yoyo" not found; page "x" left unattached
+
+ ✓ |node| src/lib/__tests__/agents.test.ts (97 tests) 41015ms
+   ✓ updateAgent — defaultVault > sets a target vault the owner owns  370ms
+   ✓ updateAgent — defaultVault > clears the target vault with an empty string  430ms
+   ✓ registerAgent validation > accepts valid IDs  407ms
+   ✓ deleteAgent > does not affect other agents  314ms
+   ✓ seedAgent > creates wiki pages with correct frontmatter and registers agent  2033ms
+   ✓ seedAgent > sets correct frontmatter on created pages  827ms
+   ✓ seedAgent > is idempotent — second call updates rather than duplicates  1837ms
+   ✓ seedAgent > preserves original created date on re-seed  1971ms
+   ✓ updateAgent > updates name without touching pages  308ms
+   ✓ updateAgent > updates description without touching pages  301ms
+   ✓ updateAgent > removePages with non-matching slugs is a no-op  300ms
+   ✓ updateAgent > adds pages and creates wiki files  1522ms
+   ✓ updateAgent > does not duplicate slugs when adding existing page  1179ms
+   ✓ updateAgent > handles combined update: name + addPages + removePages  903ms
+   ✓ agent ownership > seedAgent persists the owner and a composite id  886ms
+   ✓ agent ownership > re-seed by the owner keeps owner; a different owner gets a separate agent  3070ms
+   ✓ agent ownership > assertCanMutateAgent > allows the owner to mutate their agent  911ms
+   ✓ agent ownership > assertCanMutateAgent > rejects a non-owner with AgentOwnershipError  836ms
+   ✓ agent ownership > listAgentsForOwner > returns only the agents owned by the handle  1927ms
+   ✓ agent addressing > getAgentByOwnerName round-trips a seeded agent  721ms
+   ✓ forkAgent > creates a fork owned by the user that inherits the base by reference  1572ms
+   ✓ forkAgent > is idempotent — re-forking returns the existing profile  1540ms
+   ✓ forkAgent > never returns an agent owned by someone else (collision safety)  1489ms
+   ✓ resolveAgentPages > resolves a fork's pages from its template chain  1932ms
+   ✓ resolveAgentPages > unions a fork's own pages on top of the inherited ones (de-duped)  991ms
+   ✓ agent page interlinking > links sibling pages into a connected cluster (star, hub = first section)  1886ms
+   ✓ agent page interlinking > adds no Related block for a single-section agent  791ms
+   ✓ per-agent credentials > verifyAgentToken accepts the right token and rejects others  302ms
+   ✓ per-agent credentials > rotating invalidates the previous token  332ms
+   ✓ per-agent credentials > revokeAgentToken clears the credential  378ms
+   ✓ per-agent credentials > agentTokenInfo reports existence + createdAt, never the secret  327ms
+   ✓ per-agent credentials > deleting an agent revokes its credential and removes the secret file  385ms
+stderr | src/lib/__tests__/wiki-artifact-revisions.test.ts > per-Wiki artifact revisions > answers a revert whose artifact write rejects with 500, and moves nothing
+[workbench-artifact-revisions] reverting an artifact failed Error: disk is gone
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/wiki-artifact-revisions.test.ts:958:59
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+ ✓ |node| src/lib/__tests__/wiki-artifact-revisions.test.ts (36 tests) 47210ms
+   ✓ per-Wiki artifact revisions > snapshots the bytes an edit replaces, into the Wiki's own directory  820ms
+   ✓ per-Wiki artifact revisions > lists two edits newest-first, newest holding what the second edit replaced  1647ms
+   ✓ per-Wiki artifact revisions > writes NO revision on the first write, and warns about nothing  982ms
+   ✓ per-Wiki artifact revisions > is FAIL-SOFT: a snapshot that cannot be written warns and the save still lands  868ms
+   ✓ per-Wiki artifact revisions > a failed SIDECAR write leaves the revision standing, and is not reported as a lost snapshot  1072ms
+   ✓ per-Wiki artifact revisions > records ONE normalized reason in both the sidecar and the log line  1170ms
+   ✓ per-Wiki artifact revisions > treats a whitespace-only reason as ABSENT in both records, and caps a long one  2386ms
+   ✓ per-Wiki artifact revisions > is invisible to callers that do not ask: no revision dir until the first overwrite  616ms
+   ✓ per-Wiki artifact revisions > reads null for an unknown revision and null meta for an unattributed one  721ms
+   ✓ per-Wiki artifact revisions > is FAIL-SOFT the other way too: a non-ENOENT READ failure warns and the save lands  1004ms
+   ✓ per-Wiki artifact revisions > warns about a corrupt sidecar rather than swallowing it, and still lists the revision  1272ms
+   ✓ per-Wiki artifact revisions > lists nothing it cannot open: junk files, subdirectories and non-canonical stems  1456ms
+   ✓ per-Wiki artifact revisions > keeps two Wikis' histories apart  2862ms
+   ✓ per-Wiki artifact revisions > a committed re-template records the Schema bytes it overwrote  2096ms
+   ✓ per-Wiki artifact revisions > records the bytes the snapshot held, never the template's own  2700ms
+   ✓ per-Wiki artifact revisions > records only schema.md — purpose.md has no surface to reach a revision through  1501ms
+   ✓ per-Wiki artifact revisions > writes NO revision when the pre-seed read found nothing  1151ms
+   ✓ per-Wiki artifact revisions > writes NO revision when the re-template FAILS mid-seed  1955ms
+   ✓ per-Wiki artifact revisions > is FAIL-SOFT on the commit: a rejected snapshot warns and the re-template still lands  1725ms
+   ✓ per-Wiki artifact revisions > dies with the Wiki: deleteWiki leaves nothing under the Wiki directory  1855ms
+   ✓ per-Wiki artifact revisions > GET lists revisions newest-first, private and unstored  1777ms
+   ✓ per-Wiki artifact revisions > GET ?timestamp= returns that revision's content and its whole envelope  1140ms
+   ✓ per-Wiki artifact revisions > GET ?timestamp= carries the reason a revert recorded  1708ms
+   ✓ per-Wiki artifact revisions > GET refuses an unknown or malformed timestamp  550ms
+   ✓ per-Wiki artifact revisions > GET refuses any path that is not the editable artifact, with ONE body  543ms
+   ✓ per-Wiki artifact revisions > refuses a non-editable path with the PARENT route's body, byte for byte  612ms
+   ✓ per-Wiki artifact revisions > GET still answers in a read-only deployment — history is a read  1241ms
+   ✓ per-Wiki artifact revisions > GET is 401 signed out and 403 for a non-owner  573ms
+   ✓ per-Wiki artifact revisions > stays UNGATED — a revert carries no precondition and needs none  1738ms
+   ✓ per-Wiki artifact revisions > reverts to a revision, snapshots what it replaced, logs it and bumps the signal  2243ms
+   ✓ per-Wiki artifact revisions > refuses a revert to a conventions-less revision, writing nothing  884ms
+   ✓ per-Wiki artifact revisions > refuses a revert while the deployment is read-only, writing nothing  1128ms
+   ✓ per-Wiki artifact revisions > refuses a malformed revert body, an unknown revision and a non-editable path  689ms
+   ✓ per-Wiki artifact revisions > answers a revert whose artifact write rejects with 500, and moves nothing  1259ms
+   ✓ per-Wiki artifact revisions > POST is 401 signed out and 403 for a non-owner  1189ms
+ ✓ |node| src/lib/__tests__/wiki.test.ts (154 tests) 49595ms
+   ✓ updateIndex + listWikiPages roundtrip > enriches entries with frontmatter metadata (tags, updated, source_count)  389ms
+   ✓ saveRawSource > should write file and return its path  399ms
+   ✓ appendToLog > should append H2-headed entries to log.md matching the founding spec  514ms
+   ✓ appendToLog > grep-style match returns one line per appended entry  718ms
+   ✓ writeWikiPageWithSideEffects > writes the page file with the supplied content  672ms
+   ✓ writeWikiPageWithSideEffects > inserts a new index entry when the slug is unknown  701ms
+   ✓ writeWikiPageWithSideEffects > updates the existing index entry on re-write (no duplicates)  1582ms
+   ✓ writeWikiPageWithSideEffects > appends a structured log line with the supplied op + details  672ms
+   ✓ writeWikiPageWithSideEffects > skips cross-reference entirely when crossRefSource is null  946ms
+   ✓ writeWikiPageWithSideEffects > returns the slug it wrote  666ms
+   ✓ deleteWikiPage > deletes the page file from the wiki directory  826ms
+   ✓ deleteWikiPage > removes the entry from the index  986ms
+   ✓ deleteWikiPage > strips a plain markdown backlink from a linking page  1342ms
+   ✓ deleteWikiPage > strips a **See also:** line cleanly when it only links the deleted page  1322ms
+   ✓ deleteWikiPage > cleans leading-comma artefact in a multi-link See also line  1556ms
+   ✓ deleteWikiPage > cleans trailing-comma artefact in a multi-link See also line  1504ms
+   ✓ deleteWikiPage > appends a log entry with op 'delete' and 'deleted' in the details  880ms
+   ✓ deleteWikiPage > returns an accurate strippedBacklinksFrom list  1540ms
+   ✓ deleteWikiPage > strips inbound links from two linking pages while preserving their non-link content  1453ms
+   ✓ deleteWikiPage > removes only the deleted page's index entry, leaving other entries alone  1082ms
+   ✓ /api/wiki/graph route > extracts edges across multiple pages without losing matches  2083ms
+   ✓ /api/wiki/graph route > counts [[wikilink]] targets as the wikilink Relevance signal  416ms
+   ✓ /api/wiki/graph route > a scoped graph excludes another owner's private page (readable ∩ scope)  318ms
+   ✓ /api/wiki/routes route > maps readable slugs to their tenant and omits others' private pages  437ms
+   ✓ listRawSources > lists every file, sorted by modified time (newest first)  302ms
+   ✓ listRawSources > skips dotfiles and subdirectories  382ms
+   ✓ readRawSource > returns the content of an existing raw source  312ms
+   ✓ concurrent updateIndex > both calls succeed — no data loss  345ms
+   ✓ concurrent appendToLog > both entries appear in the log  661ms
+   ✓ findBacklinks > returns pages that link to the target slug  442ms
+   ✓ findBacklinks > excludes the target page itself  392ms
+   ✓ findBacklinks > excludes index.md and log.md  550ms
+   ✓ findBacklinks > returns empty array when no pages link to target  487ms
+   ✓ findBacklinks > does not match slug appearing in text but not as a markdown link  467ms
+   ✓ findBacklinks > escapes dots in slug so 'node.js' doesn't match 'nodejs.md'  321ms
+   ✓ findBacklinks > handles slug with parentheses without throwing regex error  349ms
+   ✓ findBacklinks > populates page cache during scan  482ms
+   ✓ searchWikiContent > finds pages containing query terms  375ms
+   ✓ searchWikiContent > skips index.md and log.md  389ms
+   ✓ searchWikiContent > ranks pages with more matching terms higher  356ms
+   ✓ searchWikiContent > respects maxResults  654ms
+   ✓ page cache > writeWikiPage invalidates cache entry  514ms
+   ✓ page cache > withPageCache cleans up after error  321ms
+   ✓ page cache > readWikiPage always reads disk when cache is not active  366ms
+   ✓ page cache > a fresh read returns the STORED bytes while a stale entry is cached  330ms
+   ✓ page cache > a fresh MISS neither caches a negative entry nor disturbs an existing one  307ms
+   ✓ page cache > forwards `fresh` through readWikiPageWithFrontmatter  306ms
+   ✓ updateRelatedPages > adds cross-ref when slug appears in prose but not as a wiki link  1079ms
+   ✓ updateRelatedPages > skips cross-ref when a proper wiki link already exists  353ms
+   ✓ deleteWikiPage — orphaned comma cleanup > collapses orphaned commas when a middle link is removed  1640ms
+   ✓ deleteWikiPage — orphaned comma cleanup > cleans up when the first link is removed from See-also  1732ms
+   ✓ silo-primary reads > readWikiPage reads from silo when page-index exists  388ms
+   ✓ silo-primary reads > wikiPageExists returns true from silo path  303ms
+   ✓ writeWikiPage with tenant parameter > writes to tenant silo path when tenant is provided  382ms
+   ✓ writeWikiPage with tenant parameter > writes to flat path when tenant is omitted (backward compat)  368ms
+   ✓ writeWikiPage with tenant parameter > saves revision to tenant silo when overwriting with tenant  684ms
+stderr | src/lib/__tests__/maintenance.test.ts > sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147) > returns 0 instead of throwing when the sweep fails
+[maintenance] orphan wiki-directory sweep failed: Error: listing the wikis directory failed
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/maintenance.test.ts:451:7
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+ ✓ |node| src/lib/__tests__/workbench-settings.test.ts (235 tests) 17504ms
+   ✓ the client and the route read the same vector rule > allows the same deployment once the binding is bound (DW-225)  887ms
+   ✓ PUT /api/settings > still refuses TURNING IT ON over a mismatch, and allows turning it OFF (DW-219)  331ms
+   ✓ PUT /api/settings > turns vector search on when the endpoint, the model and the key all arrive  354ms
+   ✓ PUT /api/settings > clears a key on null and on empty, and leaves an ABSENT one alone  484ms
+   ✓ PUT /api/settings > counts an embedding model set by the LEGACY field in the same request  351ms
+ ✓ |node| src/lib/__tests__/raw.test.ts (39 tests) 19675ms
+   ✓ saveRawSource > writes a file to raw/sources/<id>.md and returns the path  384ms
+   ✓ saveRawSource > creates the raw directory if it doesn't exist  403ms
+   ✓ saveRawSource > leaves stored bytes alone when the same id arrives again (FR-2)  657ms
+   ✓ saveRawSource > returns the path either way, so a re-arrival is not an error  525ms
+   ✓ listRawSources > lists files with correct slug, filename, size, and modified  416ms
+   ✓ listRawSources > strips extension to produce slug  427ms
+   ✓ listRawSources > sorts newest first by modified time  723ms
+   ✓ listRawSources > skips dotfiles  572ms
+   ✓ listRawSources > skips subdirectories  573ms
+   ✓ listRawSources > handles multiple files correctly  1123ms
+   ✓ readRawSource > reads content and metadata for a valid slug  514ms
+   ✓ readRawSource > keeps the FIRST content after a second arrival on the same id  551ms
+   ✓ per-source raw snapshots > round-trips a per-source snapshot at raw/<slug>/<rawId>.md  620ms
+   ✓ per-source raw snapshots > keeps multiple sources for the same slug side by side  979ms
+   ✓ per-source raw snapshots > does not pollute the flat listRawSources() (subdirs are skipped)  886ms
+   ✓ per-source raw snapshots > writes the snapshot under raw/sources/<slug>/<rawId>.md  544ms
+   ✓ per-source raw snapshots > leaves an occupied hash key exactly as it is (FR-2)  856ms
+   ✓ per-source raw snapshots > refuses the write when existence cannot be confirmed (FR-2)  883ms
+   ✓ saveRawSourceTree > writes the sanitized relative path under raw/sources/  524ms
+   ✓ saveRawSourceTree > leaves an occupied tree key exactly as it is (FR-2)  826ms
+   ✓ intake writes (owner option) > mirrors the bytes into the owner's silo so Files can see them  649ms
+   ✓ intake writes (owner option) > writes NO silo copy when no owner is given  457ms
+   ✓ intake writes (owner option) > repairs a missing mirror even when the flat bytes are already stored  874ms
+   ✓ intake writes (owner option) > bumps dataVersion on a new write and not on a declined one  706ms
+   ✓ intake writes (owner option) > bumps dataVersion when a declined write repairs the silo  854ms
+   ✓ intake writes (owner option) > keeps the stored Source when the silo mirror fails  557ms
+   ✓ intake writes (owner option) > mirrors a tree path into the owner's silo and bumps dataVersion  813ms
+   ✓ intake writes (owner option) > repairs a missing tree silo from the stored bytes, not the request  751ms
+ ✓ |node| src/lib/__tests__/source-index.test.ts (53 tests) 15245ms
+   ✓ buildSourceIndex > builds index from pages with source_url  381ms
+   ✓ buildSourceIndex > builds index from pages with content_hash  421ms
+   ✓ buildSourceIndex > indexes both url and hash when both are present  402ms
+   ✓ buildSourceIndex > skips pages without source_url or content_hash  394ms
+   ✓ buildSourceIndex > skips infrastructure pages (index, log)  345ms
+   ✓ resolveSourceUrl > finds existing slug by URL  369ms
+   ✓ resolveSourceUrl > returns null for unknown URLs  402ms
+   ✓ URL normalization > matches URLs with trailing slash to those without  352ms
+   ✓ URL normalization > matches URLs stored with trailing slash via query without  460ms
+   ✓ URL normalization > trims whitespace from URLs  382ms
+   ✓ URL normalization > skips text-paste sentinel during index build  388ms
+   ✓ resolveSourceUrl variant dedup > matches www variant to stored non-www URL  322ms
+   ✓ resolveSourceUrl variant dedup > matches http variant to stored https URL  396ms
+   ✓ resolveSourceUrl variant dedup > matches URL with fragment to stored URL without fragment  399ms
+   ✓ resolveSourceUrl variant dedup > matches URL with different hostname casing  382ms
+   ✓ resolveSourceUrl variant dedup > matches URL with reordered query params  353ms
+   ✓ resolveSourceUrl variant dedup > matches URL with default port to stored URL without port  356ms
+   ✓ resolveContentSha256 > finds a slug after resetSourceIndex for a page with content_sha256  373ms
+   ✓ resolveContentHash > finds existing slug by hash  366ms
+   ✓ resolveContentHash > returns null for unknown hashes  380ms
+   ✓ removeSourceForPage > removes URL and hash entries for a slug  358ms
+   ✓ removeSourceForPage > does not affect entries for other pages  513ms
+   ✓ cache behavior > getSourceIndex returns cached index on second call  324ms
+   ✓ cache behavior > buildSourceIndex replaces previous cache  574ms
+stderr | src/lib/__tests__/maintenance.test.ts > backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137) > returns 0 instead of throwing when the migration fails
+[maintenance] workspace-profile backfill failed: Error: the registry is gone
+    at FilesystemStorageProvider.<anonymous> (/Users/christianlee/App-Development/work-wiki/src/lib/__tests__/maintenance.test.ts:552:48)
+    at FilesystemStorageProvider.mockCall (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at FilesystemStorageProvider.readFile (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/tinyspy@4.0.4/node_modules/tinyspy/dist/index.js:47:80)
+    at readRegistry (/Users/christianlee/App-Development/work-wiki/src/lib/wikis.ts:291:37)
+    at listWikis (/Users/christianlee/App-Development/work-wiki/src/lib/wikis.ts:1018:17)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/workspace-profile-backfill.ts:171:25
+    at /Users/christianlee/App-Development/work-wiki/src/lib/wiki-lock.ts:106:42
+
+ ✓ |node| src/lib/__tests__/maintenance.test.ts (25 tests) 24156ms
+   ✓ scanForMaintenance > enqueues a staleness task for an expired page with a source_url  915ms
+   ✓ scanForMaintenance > enqueues a stale-page fix for an expired page with no source_url  867ms
+   ✓ scanForMaintenance > produces no task for a disputed page (reconcile-from-talk retired)  1025ms
+   ✓ scanForMaintenance > enqueues a fix for a legacy page missing all yopedia schema fields  768ms
+   ✓ scanForMaintenance > enqueues a fix to clear a dangling supersedes reference  722ms
+   ✓ scanForMaintenance > enqueues a broken-link fix for each dead wiki link in a page  1391ms
+   ✓ scanForMaintenance > emits multiple broken-link tasks for multiple dead links in one page  854ms
+   ✓ scanForMaintenance > never flags a PRIVATE page (commons-only; avoids the reingest-fork loop)  1431ms
+   ✓ scanForMaintenance > skips a page edited today (let recent changes settle)  767ms
+   ✓ scanForMaintenance > caps the number of tasks per scan  3174ms
+   ✓ scanForMaintenance > enqueues an orphan-page fix for a file on disk with no index entry  911ms
+   ✓ scanForMaintenance > does NOT flag an indexed page as orphan  793ms
+   ✓ scanForMaintenance > enqueues an empty-page fix for a page with trivially short content  749ms
+   ✓ scanForMaintenance > does NOT flag a page with substantial content as empty  768ms
+   ✓ scanForMaintenance > enqueues a missing-crossref fix when a page mentions another page's title without linking  1420ms
+   ✓ scanForMaintenance > enqueues a staleness task for a low-confidence page with a source_url  901ms
+   ✓ scanForMaintenance > does NOT enqueue a task for a low-confidence page without a source_url  821ms
+   ✓ scanForMaintenance > does NOT enqueue a low-confidence task for a page above the threshold  833ms
+   ✓ rebuildDerivedIndexes — commons index (#398) > includes the commons index in the daily self-heal rebuild  1412ms
+   ✓ sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147) > sweeps the configured owner's tenant and returns the count  817ms
+   ✓ sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147) > is a no-op when no owner handle is configured  383ms
+   ✓ sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147) > returns 0 instead of throwing when the sweep fails  705ms
+   ✓ backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137) > migrates the configured owner's tenant and returns the count  773ms
+   ✓ backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137) > returns 0 instead of throwing when the migration fails  660ms
+ ✓ |node| src/lib/__tests__/tenant-admin.test.ts (12 tests) 16142ms
+   ✓ deleteTenant > deletes only the tenant's OWNED pages (flat + silo) and its folder  3878ms
+   ✓ deleteTenant > removes the tenant's query history (it lives in the silo)  779ms
+   ✓ deleteTenant > never deletes a page the handle only CONTRIBUTED to (owned by another)  892ms
+   ✓ deleteTenant > ownerless/seed pages belong to the yopedia tenant  2987ms
+   ✓ deleteTenant on a read-only deployment > refuses before touching anything — pages, silo and query history all survive  1788ms
+   ✓ deleteTenant on a read-only deployment > deletes exactly as before with the flag unset — the control case  1551ms
+   ✓ DELETE /api/admin/tenant/[handle] — gating > deletes with the service token + matching confirm  1430ms
+   ✓ DELETE /api/admin/tenant/[handle] — gating > admins (service token) CAN delete the platform yopedia tenant  1400ms
+   ✓ DELETE /api/admin/tenant/[handle] — gating > answers 403 on a read-only deployment, not 500 and not 207  758ms
+ ✓ |node| src/lib/__tests__/wiki-log.test.ts (25 tests) 13787ms
+   ✓ appendToLog > writes a log entry with correct date format  425ms
+   ✓ appendToLog > uses today's date  512ms
+   ✓ appendToLog > writes all allowed operation types  1708ms
+   ✓ appendToLog > trims the title  407ms
+   ✓ appendToLog > appends multiple entries sequentially  915ms
+   ✓ appendToLog > includes details body below heading  434ms
+   ✓ appendToLog > trims details whitespace  403ms
+   ✓ appendToLog > omits details block when details is empty string  414ms
+   ✓ appendToLog > omits details block when details is whitespace-only  460ms
+   ✓ appendToLog > omits details block when details is undefined  499ms
+   ✓ appendToLog > handles concurrent appends — all entries appear  2515ms
+   ✓ appendToLog > concurrent appends don't corrupt file  1265ms
+   ✓ readLog > reads back what was written  434ms
+   ✓ readLog > returns string content (not buffer)  408ms
+   ✓ readLog > returns full content with multiple entries  524ms
+   ✓ readLog > preserves entry ordering  660ms
+ ✓ |node| src/lib/__tests__/read-only-kernel-gate.test.ts (20 tests) 17442ms
+   ✓ the kernel writers refuse on a read-only deployment > writeWikiPageWithSideEffects — an EDIT of an existing page is refused too  893ms
+   ✓ the kernel writers refuse on a read-only deployment > deleteWikiPage — the page and every index entry survive  975ms
+   ✓ the kernel writers refuse on a read-only deployment > deleteWikiPage — answers the same refusal for a slug that does not exist  891ms
+   ✓ the kernel writers refuse on a read-only deployment > patchMetadata — the frontmatter is untouched, and the sentence is the metadata one  850ms
+   ✓ the kernel writers refuse on a read-only deployment > writeWikiArtifact — the Schema and its history are unchanged  800ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > createWiki — no registry entry, no wiki directory, no compensation  722ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > applyScenarioTemplate — no snapshot, no restore, no re-seeded bytes  619ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > renameWiki — wikis.json and purpose.md both survive  699ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > saveWorkspaceProfile — the profile bytes are untouched  658ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > setCurrentWiki — the pointer and every registry byte survive  1148ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > deleteWiki — the entry stays, the directory stays, nothing is swallowed  1193ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > sweepOrphanWikiDirectories — an orphan the cron would have reclaimed stays put  786ms
+   ✓ the wiki lifecycle writers refuse on a read-only deployment > all seven are unchanged on a writable deployment — the control case  2438ms
+   ✓ the kernel writers are unchanged on a writable deployment > writes, patches and deletes exactly as before — the control case  3349ms
+ ✓ |node| src/lib/__tests__/ingest-image.test.ts (7 tests) 12406ms
+   ✓ ingestImage > creates a page embedding the image + vision description, attributed to the owner with sourceType image  1445ms
+   ✓ ingestImage > still creates an image-only page when vision is unavailable (fail-soft)  1566ms
+   ✓ ingestImage > does not duplicate the embedded image in a ## Images section  1485ms
+   ✓ ingestImage > titles the page from the vision text when no title is given (not the random filename)  1642ms
+   ✓ source images → dropped (ingest, LLM path) > drops source images: body is image-free with no ## Figures; raw keeps the original refs  1497ms
+   ✓ source images → dropped (ingest, LLM path) > no-LLM-key fallback also drops images (no gallery, body image-free)  1600ms
+   ✓ source provenance — text-paste supersession > a real source URL replaces a prior text-paste placeholder of the same type  3171ms
+ ✓ |node| src/lib/__tests__/dataview.test.ts (27 tests) 12166ms
+   ✓ filter by tag contains > returns pages whose tags array contains the value  516ms
+   ✓ filter by tag contains > returns empty when no page has the tag  568ms
+   ✓ filter by created date range > filters pages created after a date (gt)  557ms
+   ✓ filter by created date range > filters pages created before a date (lt)  507ms
+   ✓ filter by created date range > combined gt + lt produces a date range  546ms
+   ✓ filter by source_count > filters by source_count >= 3  453ms
+   ✓ filter by source_count > filters by exact source_count  533ms
+   ✓ filter by exists > returns pages that have a source_url field  455ms
+   ✓ filter by exists > returns empty when filtering for a field no page has  577ms
+   ✓ sort by created > sorts ascending by default  498ms
+   ✓ sort by created > sorts descending  489ms
+   ✓ limit > returns at most `limit` results  530ms
+   ✓ limit > defaults to 50 (all pages returned when fewer)  568ms
+   ✓ empty filters > returns all pages when no filters are specified  583ms
+   ✓ empty filters > returns all pages with an empty filters array  539ms
+   ✓ unknown field > returns empty for eq on unknown field  561ms
+   ✓ unknown field > does not crash for gt on unknown field  638ms
+   ✓ neq operator > excludes pages with a matching value  557ms
+   ✓ sort with missing field > pages missing the sort field appear last  403ms
+   ✓ combined filter + sort + limit > filters, sorts, then limits  574ms
+ ✓ |node| src/lib/__tests__/config.test.ts (129 tests) 11428ms
+ ✓ |node| src/lib/__tests__/revisions.test.ts (33 tests) 12048ms
+   ✓ saveRevision > creates a timestamped file in the correct directory  360ms
+   ✓ listRevisions > returns revisions newest-first  323ms
+   ✓ listRevisions > keeps no-sidecar revisions alongside sidecar ones (mixed), newest-first; skips non-revision entries  426ms
+   ✓ listRevisionAuthors > caps to the newest `max` revisions (by filename timestamp), newest-first  328ms
+   ✓ listRevisionAuthors > ranks by NUMERIC timestamp, not lexicographically  356ms
+   ✓ listRevisionAuthors > reads author/reason from sidecars and leaves them undefined when absent  356ms
+   ✓ writeWikiPage integration > writing over an existing page creates a revision  570ms
+   ✓ writeWikiPage integration > multiple writes create multiple revisions  789ms
+   ✓ author attribution > saveRevision with author creates .meta.json sidecar  402ms
+   ✓ author attribution > listRevisions returns author when sidecar exists  468ms
+   ✓ author attribution > listRevisions returns undefined author when no sidecar (backward compat)  367ms
+   ✓ author attribution > saveRevision without author does not create sidecar  375ms
+   ✓ reason attribution > saveRevision with author and reason writes both to sidecar  461ms
+   ✓ reason attribution > listRevisions returns reason when sidecar contains it  458ms
+   ✓ reason attribution > listRevisions returns undefined reason when sidecar has no reason (backward compat)  512ms
+   ✓ reason attribution > saveRevision with reason but no author writes only reason to sidecar  462ms
+   ✓ reason attribution > omitting both author and reason does not create sidecar  374ms
+   ✓ readRevisionMeta > returns author and reason when sidecar exists  396ms
+   ✓ readRevisionMeta > returns only author when reason is not present  390ms
+   ✓ readRevisionMeta > returns only reason when author is not present  398ms
+   ✓ readRevisionMeta > returns null when no sidecar exists  332ms
+   ✓ saveRevision with tenant parameter > writes revision to tenant silo path  477ms
+   ✓ saveRevision with tenant parameter > writes revision to flat path when tenant is omitted (backward compat)  412ms
+ ✓ |node| src/lib/__tests__/wiki-retrieve.test.ts (19 tests) 10160ms
+   ✓ assemble and search > returns empty assemble and the coverage sentence when nothing matches  393ms
+   ✓ assemble and search > does not stuff a small wiki or fall back to first-N  434ms
+   ✓ assemble and search > tokenizes wiki pages and raw sources, ranking a title match first  843ms
+   ✓ assemble and search > expands a human-readable [[wikilink]] the same way Graph does  538ms
+   ✓ assemble and search > treats the shared Graph fixture as the same Chat direct-link evidence  653ms
+   ✓ assemble and search > expands a wikilinked neighbor on the second hop  593ms
+   ✓ assemble and search > expands a shared-Source neighbor ahead of a wikilink-only neighbor  584ms
+   ✓ assemble and search > surfaces a vector-phase failure and still returns tokenized hits  376ms
+   ✓ assemble and search > merges cosine hits when vector is on, then tokenized on throw  424ms
+   ✓ assemble and search > keeps purpose and index out of the numbered page bodies  650ms
+   ✓ assemble and search > respects the token budget split  421ms
+   ✓ assemble and search > includes hashed raw/sources snapshots that the browse list skips  628ms
+   ✓ assemble and search > does not leak an apiKey on the retrieve chatModel payload  391ms
+   ✓ assemble and search > Sources-only returns source paths  771ms
+   ✓ assemble and search > excludes an oversized page so a later smaller page can fill the 60% slot  426ms
+   ✓ assemble and search > applies the 20% history cap to newest structured messages  435ms
+   ✓ assemble and search > keeps distinct Source identities that share a body  993ms
+   ✓ assemble and search > Search hits carry path, title, snippet, and score  391ms
+ ✓ |node| src/lib/__tests__/workspace-profile.test.ts (19 tests) 11506ms
+   ✓ workspace purpose profile > starts empty and stores one profile per wiki  1141ms
+   ✓ workspace purpose profile > treats this wiki's OWN unparseable profile as empty rather than throwing (DW-144)  573ms
+   ✓ workspace purpose profile > lets a re-template overwrite a corrupt own profile (DW-144)  1143ms
+   ✓ workspace purpose profile > lets a Settings save overwrite a corrupt own profile (DW-144)  679ms
+   ✓ workspace purpose profile > still throws when this wiki's own profile is UNREADABLE, not merely unparseable (DW-144)  610ms
+   ✓ workspace purpose profile > treats a schema-REJECTED own profile as empty too, not just unparseable JSON (DW-144)  758ms
+   ✓ workspace purpose profile > refuses a lock token used AFTER withWikiLock returned (DW-139)  721ms
+   ✓ workspace purpose profile > retires the token even when the locked body THREW (DW-139)  521ms
+   ✓ workspace purpose profile > rejects a lock token minted for a DIFFERENT owner (DW-139)  719ms
+   ✓ workspace purpose profile > rejects a lock token minted for a DIFFERENT owner in the BACKFILL putter too (DW-137)  737ms
+   ✓ guidance follows the active wiki > renders NOTHING for an owner with a legacy file and no wiki (DW-137)  567ms
+   ✓ guidance follows the active wiki > degrades to no guidance when the registry cannot be read  598ms
+   ✓ guidance follows the active wiki > swaps which profile reaches the prompt when the pointer moves  1359ms
+   ✓ guidance follows the active wiki > versions a save and the read-back of it IDENTICALLY, against real bytes  694ms
+   ✓ guidance follows the active wiki > injects the active wiki's saved purpose into ingest and query prompts  587ms
+stderr | src/lib/__tests__/query-history.test.ts > storage placement + isolation > never clobbers history when a read fails (corrupt file → throws, untouched)
+[query-history] read tenants/tester/query-history.json failed: SyntaxError: Unexpected token 'o', "not json!" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at readOwnerHistory (/Users/christianlee/App-Development/work-wiki/src/lib/query-history.ts:141:25)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/query-history.ts:255:21
+
+ ✓ |node| src/lib/__tests__/embeddings.test.ts (156 tests) 11010ms
+   ✓ vector store persistence (storage provider) > clearEmbeddings removes every stored vector  359ms
+   ✓ relatedByVector > ranks other pages by similarity to the anchor and excludes the anchor itself  453ms
+   ✓ relatedByVector > respects topK  383ms
+   ✓ relatedByVector > returns [] when the anchor has no stored vector  407ms
+   ✓ relatedByVector > returns [] when the anchor's vector is from a different model (stale)  428ms
+   ✓ removeEmbedding > removes the correct slug from the store  465ms
+   ✓ searchByVector > returns correct ranking order  406ms
+   ✓ searchByVector > respects topK limit  476ms
+   ✓ searchByVector > says the drift line ONCE however many queries run against the drifted corpus  381ms
+   ✓ searchByVector > SPEAKS again after the corpus is REBUILT and drifts a second time  675ms
+   ✓ searchByVector > does NOT re-arm while the drift is still standing  301ms
+   ✓ searchByVector > does NOT re-arm when the query THROWS  316ms
+   ✓ searchByVector > SPEAKS again after a REAL rebuildVectorStore, not a simulated one  424ms
+   ✓ rebuildVectorStore > embeds all wiki pages into the store  304ms
+   ✓ rebuildVectorStore > warns ONCE about a mismatched EMBEDDING_MODEL across all N pages  372ms
+ ✓ |node| src/lib/__tests__/wiki-schema-source.test.ts (15 tests) 9833ms
+   ✓ loadPageConventions resolves the active wiki's Schema > returns the current wiki's conventions once one exists  555ms
+   ✓ loadPageConventions resolves the active wiki's Schema > adds the scenario's guidance without dropping the engine's rules  571ms
+   ✓ loadPageConventions resolves the active wiki's Schema > falls back to the root Schema when the wiki's conventions section is empty  541ms
+   ✓ loadPageConventions resolves the active wiki's Schema > follows the active pointer when a second wiki is created  1073ms
+   ✓ loadPageConventions resolves the active wiki's Schema > falls back to the root Schema when the wiki's file cannot be read  571ms
+   ✓ loadPageConventions resolves the active wiki's Schema > falls back to the root Schema when no owner handle is configured  606ms
+   ✓ loadPageConventions resolves the active wiki's Schema > respects an explicit path override, wiki or no wiki  614ms
+   ✓ single-owner Schema resolution invariant > a second tenant's active Wiki never wins over the site owner's  1153ms
+   ✓ single-owner Schema resolution invariant > follows NEXT_PUBLIC_OWNER_HANDLE rather than any fixed handle  1121ms
+   ✓ single-owner Schema resolution invariant > a non-owner tenant's Wiki alone still falls back to the repo-root Schema  502ms
+   ✓ single-owner Schema resolution invariant > gives a non-owner ingest caller the SITE OWNER's conventions  1067ms
+   ✓ single-owner Schema resolution invariant > gives a non-owner query caller the SITE OWNER's conventions  929ms
+   ✓ loadPageTemplates stays on the repo-root SCHEMA.md > is unaffected by an active wiki  484ms
+stderr | src/lib/__tests__/workbench-data-version.test.ts > the counter in the config store > answers a throw with its own { error } shape, never a framework 500
+[workbench-version] data version read failed Error: auth backend unreachable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-data-version.test.ts:36:33
+    at mockCall (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at spy (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/tinyspy@4.0.4/node_modules/tinyspy/dist/index.js:47:80)
+    at handle (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/version/route.ts:45:27)
+    at GET (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/version/route.ts:32:18)
+    at get (/Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-data-version.test.ts:267:12)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-data-version.test.ts:295:22
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+ ✓ |node| src/lib/__tests__/workspace-profile-backfill.test.ts (13 tests) 9046ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > does nothing at all when there is no legacy file  535ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > copies onto the wiki that lacks a file, leaves the one that has it, and removes the original  1159ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > is idempotent: a second run copies nothing and writes nothing  752ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > does NOT overwrite a wiki's own corrupt profile, and keeps the legacy file  692ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > leaves an UNUSABLE legacy file alone rather than throwing  545ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > copies onto EVERY profile-less wiki in one pass and counts them  1376ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > leaves a schema-REJECTED legacy file alone rather than migrating a husk  599ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > leaves a legacy file that is a JSON ARRAY alone, and does not blank every wiki  534ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > leaves an UNREADABLE legacy address alone too — a directory in its place  471ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > writes and deletes nothing on a read-only deployment  590ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > copies the wikis it can when one fails, and keeps the legacy file for the next scan  1090ms
+   ✓ the legacy Workspace Purpose backfill (DW-137) > renders no guidance for an owner holding a legacy file and no wiki  627ms
+ ✓ |node| src/lib/__tests__/storage-fs.test.ts (53 tests) 11662ms
+   ✓ FilesystemStorageProvider > listFiles > returns files and directories  412ms
+   ✓ FilesystemStorageProvider > writeFileIfMatch > serializes a competing normal write ahead of stale CAS publication  339ms
+   ✓ FilesystemStorageProvider > incrementIndex > stores 1 on the first bump and keeps counting from there  309ms
+   ✓ FilesystemStorageProvider > incrementIndex > never lets concurrent increments collapse  1567ms
+   ✓ FilesystemStorageProvider > upsertEmbedding + queryEmbeddings > returns nearest neighbors sorted by score  407ms
+   ✓ FilesystemStorageProvider > upsertEmbedding + queryEmbeddings > respects topK limit  365ms
+   ✓ FilesystemStorageProvider > removeEmbedding > removes an embedding by id  378ms
+   ✓ FilesystemStorageProvider > atomic whole-file writes > never blends or truncates under concurrent writes to one path  1013ms
+ ✓ |node| src/lib/__tests__/workbench-data-version.test.ts (61 tests) 10202ms
+   ✓ the counter in the config store > stores 1 on the first bump and keeps counting from there  543ms
+   ✓ the counter in the config store > counts forward from whatever was already stored  457ms
+   ✓ the counter in the config store > never lets concurrent bumps collapse into one  1058ms
+   ✓ the counter in the config store > narrows a corrupt stored value to 0 rather than propagating it  1865ms
+   ✓ the counter in the config store > raises the signal by exactly one on a successful kernel write  1738ms
+   ✓ the counter in the config store > raises it by exactly one on a successful kernel delete  1433ms
+   ✓ the counter in the config store > still returns the write's result when the bump itself fails  775ms
+   ✓ the counter in the config store > serves the integer to a signed-in owner, uncacheably  437ms
+ ✓ |node| src/lib/__tests__/wikis.test.ts (79 tests) 63680ms
+   ✓ create a wiki from a scenario template > seeds purpose.md, schema.md, and the workspace profile, and becomes current  394ms
+   ✓ create a wiki from a scenario template > writes the artifacts under wikis/, never under the reconciled wiki/ tree  394ms
+   ✓ create a wiki from a scenario template > produces genuinely different contents per template  903ms
+   ✓ create a wiki from a scenario template > keeps each wiki isolated per tenant  532ms
+   ✓ create a wiki from a scenario template > embeds the engine's own page conventions alongside the scenario's  492ms
+   ✓ wiki ids never reach a storage path unvalidated > answers 'not found' for a traversal-shaped id on the registry lookups  536ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > bumps exactly once per create, not once per seeded file  899ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > bumps exactly once per re-template, which is the only signal a re-apply sends  1323ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > does not bump for an unknown wiki id  569ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > does not bump when a re-template is rejected outright  584ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > bumps exactly once per rename, which is the only signal a rename sends  848ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > does not bump for a rename of an unknown wiki id  581ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > does not bump when a rename is rejected outright  596ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > bumps a rename whose purpose.md retitle failed  749ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > still resolves a create when the counter store rejects putIndex  1033ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > still resolves a re-template when the counter store rejects putIndex  1258ms
+   ✓ create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209) > still resolves a rename when the counter store rejects putIndex  802ms
+   ✓ applying a different scenario template > rewrites purpose, Schema and the profile while leaving Pages and Sources byte-identical  1487ms
+   ✓ applying a different scenario template > rejects the custom scenario  517ms
+   ✓ the active wiki pointer > persists a switch and 404s on an unknown id  1209ms
+   ✓ the active wiki pointer > writes only wikis.json — a switch overwrites no profile (DW-21)  1283ms
+   ✓ the active wiki pointer > keeps a hand-authored purpose when another wiki is created or re-templated (DW-14)  2158ms
+   ✓ the active wiki pointer > makes a Settings save wait on the Wiki lock, not a second key (DW-22)  1517ms
+   ✓ renaming a wiki > trims and collapses the name, bumps updatedAt, and retitles purpose.md only  777ms
+   ✓ renaming a wiki > rejects a blank, non-string or oversized name and writes nothing  604ms
+   ✓ renaming a wiki > returns null for an unknown or traversal-shaped id and writes nothing  599ms
+   ✓ renaming a wiki > still renames when purpose.md is missing or does not open with a heading  1387ms
+   ✓ renaming a wiki > still renames when writing the retitled purpose.md fails  810ms
+   ✓ deleting a wiki > removes the entry and the directory, and leaves the active wiki alone  1309ms
+   ✓ deleting a wiki > refuses the current wiki instead of silently re-pointing current  1035ms
+   ✓ deleting a wiki > refuses the last wiki, which is always the current one  558ms
+   ✓ deleting a wiki > returns null for an unknown or traversal-shaped id and removes nothing  479ms
+   ✓ deleting a wiki > still reports success when removing the directory fails  1332ms
+   ✓ the orphan-directory sweep > removes only unreferenced uuid directories, and counts them  525ms
+   ✓ the orphan-directory sweep > reclaims orphans as a side effect of a delete  1386ms
+   ✓ the orphan-directory sweep > is empty, not an error, when no wiki directory exists at all  534ms
+   ✓ the orphan-directory sweep > refuses to sweep an untombstoned directory against an empty registry  605ms
+   ✓ the orphan-directory sweep > reclaims a tombstoned directory against an empty registry (DW-162)  678ms
+   ✓ the orphan-directory sweep > sweeps an aged orphan and spares a fresh one in the same pass  651ms
+   ✓ the orphan-directory sweep > sweeps an aged orphan that holds no files at all  507ms
+   ✓ the orphan-directory sweep > skips a candidate whose per-file stat throws  655ms
+   ✓ the orphan-directory sweep > skips a candidate whose tombstone probe throws, under an empty registry  588ms
+   ✓ the orphan-directory sweep > does not abort the pass when one removal fails  671ms
+   ✓ the orphan-directory sweep > skips a candidate whose age cannot be read  710ms
+   ✓ the orphan-directory sweep > never fails the delete it runs inside  1130ms
+   ✓ the orphan-directory sweep > considers at most the per-pass cap and defers the rest to the next sweep (DW-289)  2371ms
+   ✓ the orphan-directory sweep > logs no truncation warning when the candidate list is exactly at the cap  2243ms
+   ✓ the orphan-directory sweep > probes at most the cap candidates even when it removes none of them (DW-289)  1876ms
+   ✓ the orphan-directory sweep > still reclaims a tombstoned directory that sorts past the cap against an empty registry  1357ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > discards the fresh wiki directory when create faults on purpose.md  622ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > discards the fresh wiki directory when create faults on schema.md  678ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > discards the fresh wiki directory when create faults on workspace-profile.json  831ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > discards the fresh wiki directory when create faults on wikis.json  1023ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > reclaims an UNTOMBSTONED half-create leftover once the tenant owns a wiki  673ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > restores all three files when a re-template faults on purpose.md  1309ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > restores all three files when a re-template faults on schema.md  1367ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > restores all three files when a re-template faults on workspace-profile.json  1588ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > restores all three files when a re-template faults on wikis.json  1786ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > snapshots exactly the files the seed goes on to write  1296ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > writes NOTHING under the revisions namespace on the CREATE path  606ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > restores the other two files when one file's restore also fails  1055ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > seeds nothing at all when the pre-seed snapshot cannot be read  608ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > deletes the profile again when the wiki had none before the re-template  1090ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > tolerates the missing profile silently when the seed never wrote one  701ms
+   ✓ a half-finished create or re-template leaves no wreckage (DW-20, DW-143) > re-throws the registry error, not the restore error, when the restore also fails  875ms
+stderr | src/lib/__tests__/workbench-tree.test.ts > listWorkbenchFilePaths > logs and carries on when the wiki id cannot become a path
+[workbench-files] could not resolve the wiki artifact dir ClientInputError: Invalid wiki id.
+    at validateWikiId (/Users/christianlee/App-Development/work-wiki/src/lib/wiki-paths.ts:36:11)
+    at wikiDirPath (/Users/christianlee/App-Development/work-wiki/src/lib/wiki-paths.ts:65:47)
+    at wikiArtifactDir (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:119:10)
+    at listWorkbenchFilePaths (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:319:13)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-tree.test.ts:664:29
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+
+stderr | src/lib/__tests__/query-history.test.ts > legacy migration → tenant silo > quarantines an unparseable legacy file instead of probing it forever
+[query-history] legacy wiki/query-history.json unparseable; quarantining: SyntaxError: Unexpected token 'o', "not json!" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at readLegacyHistory (/Users/christianlee/App-Development/work-wiki/src/lib/query-history.ts:116:25)
+    at migrateLegacyHistory (/Users/christianlee/App-Development/work-wiki/src/lib/query-history.ts:198:8)
+    at listQueries (/Users/christianlee/App-Development/work-wiki/src/lib/query-history.ts:273:3)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/query-history.test.ts:264:12
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+ ✓ |node| src/lib/__tests__/query-history.test.ts (21 tests) 66775ms
+   ✓ appendQuery > appends multiple entries in order  573ms
+   ✓ listQueries > returns entries most recent first  552ms
+   ✓ listQueries > respects the limit  2573ms
+   ✓ listQueries > is per-asker: only the owner's entries, none for anonymous  626ms
+   ✓ markSaved > updates savedAs on the matching entry only  917ms
+   ✓ storage placement + isolation > stores history inside the tenant silo, not the shared wiki root  613ms
+   ✓ storage placement + isolation > the cap is per-owner: one owner at 200 doesn't trim another  55926ms
+   ✓ legacy migration → tenant silo > migrates the shared file into per-tenant silo files, dropping owner-less + deleting it  614ms
+   ✓ legacy migration → tenant silo > migrates an interim per-owner file (PR #493) into the silo, then removes it  306ms
+   ✓ legacy migration → tenant silo > a new entry survives migration (appended above the migrated legacy ones)  606ms
+   ✓ legacy migration → tenant silo > is idempotent if a legacy file reappears (dedupe by id, no duplication)  463ms
+   ✓ legacy migration → tenant silo > consolidates BOTH legacy sources for one owner, deduping a shared id (no dup)  486ms
+   ✓ legacy migration → tenant silo > prunes the shared file per-owner: keeps bob until bob migrates  840ms
+   ✓ tenant keying contract > owners that normalize to the same tenant share one silo file (consistent identity)  591ms
+stderr | src/lib/__tests__/workbench-tree.test.ts > listWorkbenchFilePaths > does not fall back to the flat roots when the silo read FAILED
+[workbench-files] listFiles failed for "tenants/yuanhao/wiki" Error: ENOTDIR: not a directory, scandir '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-files-GbsO95/tenants/yuanhao/wiki'
+    at Proxy.readdir (node:internal/fs/promises:956:18)
+    at FilesystemStorageProvider.listFiles (/Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:318:23)
+    at listSafely (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:132:23)
+    at resolveRoot (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:184:18)
+    at listWorkbenchFilePaths (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:377:5)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-tree.test.ts:810:23
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -20,
+  code: 'ENOTDIR',
+  syscall: 'scandir',
+  path: '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-files-GbsO95/tenants/yuanhao/wiki'
+}
+
+ ✓ |node| src/lib/__tests__/query-search.test.ts (42 tests) 8734ms
+   ✓ buildContext — scoped pages > returns context only from specified slugs  424ms
+   ✓ buildContext — scoped pages > skips slugs for pages that don't exist on disk  322ms
+   ✓ buildContext — disputed and supersedes annotations > marks superseded page when a loaded page has supersedes pointing to it  337ms
+   ✓ buildContext — disputed and supersedes annotations > does not add superseded marker when superseding page is not loaded  358ms
+   ✓ buildContext — disputed and supersedes annotations > combines disputed and superseded markers on the same page  323ms
+   ✓ buildContext — disputed and supersedes annotations > combines all four markers (expired, low confidence, disputed, superseded)  308ms
+   ✓ buildContext — disputed and supersedes annotations > does not add NO SOURCES marker when sources JSON field is present  307ms
+   ✓ searchIndex — full-body size gate > reads page bodies for a small corpus (≤ BM25_FULLBODY_MAX_PAGES)  440ms
+ ✓ |node| src/lib/__tests__/settings-runtime-wiring.test.ts (37 tests) 6903ms
+   ✓ the configured LLM timeout reaches the provider call > gives every RETRY its own deadline rather than an already-expired one  1109ms
+   ✓ the stored embedding credential and endpoint are read > passes a stored endpoint to OpenAI and to Google, and omits it when unset  346ms
+   ✓ the stored embedding credential and endpoint are read > refuses a workers-ai deployment with no binding, end to end through the route  412ms
+   ✓ both Settings surfaces answer the substitution question the same way > agrees on the model IN EFFECT and on the overridden flag, for the same config  304ms
+ ✓ |node| src/lib/__tests__/alias-index.test.ts (22 tests) 8432ms
+   ✓ buildAliasIndex > indexes page titles by lowercase  346ms
+   ✓ buildAliasIndex > indexes aliases from frontmatter  321ms
+   ✓ buildAliasIndex > indexes slugified aliases in bySlug  343ms
+   ✓ resolveAlias > resolves via slugified alias (fuzzy slug match)  340ms
+   ✓ resolveAlias > resolves via page title match  328ms
+   ✓ resolveAlias > returns null when no match exists  368ms
+   ✓ resolveAlias > is case-insensitive for alias matching  351ms
+   ✓ updateAliasIndexForPage > updates cached index without full rebuild  427ms
+   ✓ removeAliasForPage > removes title and aliases from cached index  396ms
+   ✓ removeAliasForPage > does not affect entries for other pages  488ms
+   ✓ removeAliasForPage > removes slugified alias entries from bySlug  374ms
+   ✓ findDuplicateEntities > detects overlap when title of one page is alias of another  505ms
+   ✓ findDuplicateEntities > detects overlap when two pages share the same alias  526ms
+   ✓ findDuplicateEntities > detects overlap when slug from alias matches another page slug  542ms
+   ✓ findDuplicateEntities > returns empty for non-overlapping pages  574ms
+   ✓ findDuplicateEntities > does not report self-matches  415ms
+   ✓ ingest with alias resolution > resolveAlias returns existing slug when title matches an alias  400ms
+   ✓ ingest with alias resolution > resolveAlias returns null for genuinely new content  346ms
+ ✓ |node| src/lib/__tests__/ingest-youtube.test.ts (5 tests) 8041ms
+   ✓ YouTube ingest routing > routes YouTube URLs through ingestYouTube when isYouTubeUrl returns true  1307ms
+   ✓ YouTube ingest routing > does NOT route non-YouTube URLs through fetchYouTubeContent  1369ms
+   ✓ YouTube source type verification > records source type as 'youtube' in page frontmatter  1472ms
+   ✓ YouTube ingest dedup > deduplicates a second ingest of the same YouTube URL  2343ms
+   ✓ ingestYouTube direct call > creates a page with youtube provenance when called directly  1549ms
+ ✓ |node| src/lib/__tests__/x-article-teaser-upgrade.test.ts (3 tests) 7883ms
+   ✓ X Article teaser auto-upgrade on re-ingest > re-saving a teaser page rewrites it in place once the full body is available  2956ms
+   ✓ X Article teaser auto-upgrade on re-ingest > re-saving a perma-teaser leaves the page as a teaser (plain attach, no rewrite)  2485ms
+   ✓ X Article teaser auto-upgrade on re-ingest > does not probe non-teaser X pages on re-ingest (already full → plain attach)  2442ms
+stderr | src/lib/__tests__/workbench-tree.test.ts > listWorkbenchFilePaths > degrades one unreadable root to an empty branch, keeping the other
+[workbench-files] listFiles failed for "tenants/yuanhao/raw" Error: ENOTDIR: not a directory, scandir '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-files-GbsO95/tenants/yuanhao/raw'
+    at Proxy.readdir (node:internal/fs/promises:956:18)
+    at FilesystemStorageProvider.listFiles (/Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:318:23)
+    at listSafely (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:132:23)
+    at resolveRoot (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:178:18)
+    at listWorkbenchFilePaths (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:367:5)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-tree.test.ts:1068:23
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -20,
+  code: 'ENOTDIR',
+  syscall: 'scandir',
+  path: '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-files-GbsO95/tenants/yuanhao/raw'
+}
+
+ ✓ |node| src/lib/__tests__/patch-metadata.test.ts (13 tests) 8381ms
+   ✓ patchMetadata — visibility guard > lets the owner set visibility: private with no plan (billing is retired)  909ms
+   ✓ patchMetadata — visibility guard > allows visibility: public  963ms
+   ✓ patchMetadata — visibility guard > still rejects lifecycle keys alongside private visibility  314ms
+   ✓ patchMetadata — the ACL denial sentence > still lets the service principal and an admin patch the same page  1795ms
+   ✓ patchMetadata — the ACL denial sentence > keeps patching pages OUTSIDE the realm — an artifact its owner owns  995ms
+   ✓ patchMetadata — disputed transition > writes the page but opens NO thread when disputed goes false→true  1100ms
+   ✓ patchMetadata — disputed transition > opens no thread when patching an already-disputed page either  1007ms
+ ✓ |node| src/lib/__tests__/workbench-tree.test.ts (69 tests) 6627ms
+   ✓ listWorkbenchFilePaths > shows a source that Intake actually stored, under raw/sources/ (Story 2.1)  527ms
+   ✓ listWorkbenchFilePaths > lists a mirrored folder tree under raw/sources/ (Story 2.2)  639ms
+   ✓ listWorkbenchFilePaths > keeps an un-mirrored source out of an empty silo (DW-40)  386ms
+   ✓ listWorkbenchFilePaths > never lists a wiki path the read gate would refuse  328ms
+   ✓ listWorkbenchFilePaths > reserves budget for wiki/ so a huge raw/ cannot starve it  441ms
+ ✓ |node| src/lib/__tests__/migrate-to-tenants.test.ts (6 tests) 7628ms
+   ✓ migrateToTenants — dry run > reports the plan without writing anything  844ms
+   ✓ migrateToTenants — dry run > dry run is the default (must opt in to write)  842ms
+   ✓ migrateToTenants — live > copies pages into tenant silos, builds per-tenant indexes + commons + redirect map  1617ms
+   ✓ migrateToTenants — live > is idempotent (re-running overwrites, same result)  2331ms
+   ✓ migrateToTenants — live > normalizes the tenant from the owner handle (case-insensitive)  697ms
+   ✓ migrateToTenants — live > copies every per-page artifact (revisions, discuss, assets) into the silo  1298ms
+ ✓ |node| src/lib/__tests__/talk.test.ts (39 tests) 8170ms
+   ✓ talk page data layer > addComment > supports multi-level nested replies  313ms
+   ✓ talk page data layer > addComment > allows comment after reopening a resolved thread  398ms
+   ✓ talk page data layer > resolveThread > reopens a resolved thread by setting status to open  369ms
+   ✓ talk page data layer > resolveThread > reopens a wontfix thread by setting status to open  338ms
+   ✓ talk page data layer > resolveThread > reopened thread counts as open in getDiscussionStatsForSlugs  344ms
+   ✓ talk page data layer > listThreads > returns all threads for a page with multiple threads  376ms
+   ✓ talk page data layer > concurrent writes > withFileLock prevents data corruption on parallel writes  1111ms
+   ✓ talk page data layer > getDiscussionStatsForSlugs > returns a map with correct per-slug stats  483ms
+   ✓ talk page data layer > getDiscussionStatsForSlugs > counts a wontfix thread toward total but not open  492ms
+ ✓ |node| src/lib/__tests__/silo.test.ts (12 tests) 7768ms
+   ✓ syncSiloForPage > mirrors the page md into tenants/<tenant>/wiki  385ms
+   ✓ syncSiloForPage > re-copies the mutable md but SKIPS already-mirrored immutable revisions  1126ms
+   ✓ syncSiloForPage > mirrors a Source from raw/sources/, and removes it again (Story 2.1)  718ms
+   ✓ syncSiloForPage > still mirrors a pre-move Source from the flat raw root  595ms
+   ✓ syncSiloForPage > removeSiloForPage clears the page from its silo  498ms
+   ✓ reconcileSilos > syncs pages that are missing from their tenant silo  770ms
+   ✓ reconcileSilos > skips pages that already have a silo copy  474ms
+   ✓ reconcileSilos > skips infrastructure slugs (index, log)  541ms
+   ✓ reconcileSilos > returns a mix of synced and already-current pages  730ms
+   ✓ reconcileSilos > uses DEFAULT_TENANT for pages without an owner  510ms
+   ✓ reconcileSilos > detects and re-syncs stale silo content  898ms
+   ✓ reconcileSilos > removes ghost silo files that have no index entry  521ms
+ ✓ |node| src/lib/__tests__/edit-raw-alias-forwarding.test.ts (9 tests) 7767ms
+   ✓ /u/<handle>/<slug>/edit alias forwarding for missing slugs > 308s a merged-away slug's edit bookmark to the survivor's EDIT url  732ms
+   ✓ /u/<handle>/<slug>/edit alias forwarding for missing slugs > forwards the owner to their private survivor's editor, never an anonymous viewer  823ms
+   ✓ /u/<handle>/<slug>/edit alias forwarding for missing slugs > keeps the unchanged 'nothing to edit' miss for a slug with no alias  825ms
+   ✓ /u/<handle>/<slug>/edit alias forwarding for missing slugs > does not forward an existing-but-unreadable slug to its own edit url  735ms
+   ✓ /u/<handle>/raw/<slug> alias forwarding for missing slugs > 308s a merged-away slug's raw bookmark to the survivor's RAW url  898ms
+   ✓ /u/<handle>/raw/<slug> alias forwarding for missing slugs > forwards the owner to their private survivor's raw view, never an anonymous viewer  894ms
+   ✓ /u/<handle>/raw/<slug> alias forwarding for missing slugs > keeps the pre-existing 404 miss for a slug with no alias  972ms
+   ✓ /u/<handle>/raw/<slug> alias forwarding for missing slugs > serves an orphaned raw archive at the aliased slug instead of forwarding past it  1191ms
+   ✓ /u/<handle>/raw/<slug> alias forwarding for missing slugs > does not forward an existing-but-unreadable slug (it 404s at the read gate)  696ms
+ ✓ |node| src/lib/__tests__/review-queue.test.ts (50 tests) 40886ms
+   ✓ review queue persistence > keeps pending items across a storage reset and hides skipped ones  613ms
+   ✓ review queue persistence > keeps a legacy unscoped row visible under every explicit Wiki scope  405ms
+   ✓ review queue persistence > round-trips searchQueries and enqueues a lightbulb when that is all analysis has  487ms
+   ✓ review queue persistence > Create Page writes through lifecycle and leaves the queue  1455ms
+   ✓ review queue persistence > lists only the current Wiki's pending cards  614ms
+   ✓ review queue persistence > does not claim a new item was created when the pending cap is full  520ms
+   ✓ review queue persistence > counts creating claims as active capacity and keeps them out of terminal retention  488ms
+   ✓ review queue persistence > retains the newest terminal rows while preserving a live creating claim  530ms
+   ✓ review queue persistence > fails closed on corrupt queue JSON instead of treating it as empty  445ms
+   ✓ review queue persistence > treats one malformed row as store corruption and quarantines the exact bytes  447ms
+   ✓ review queue persistence > does not mutate recovery, outbox, or quarantine state on a read-only list  425ms
+   ✓ review queue persistence > rolls Create Page back to pending and clears the claimed slug  775ms
+   ✓ review queue persistence > does not reuse a reserved or already-written slug  2707ms
+   ✓ review queue persistence > keeps same-title cards on different Wikis and filters counts independently  1033ms
+   ✓ review queue persistence > does not lose concurrent first-creates  588ms
+   ✓ review queue persistence > recovers a creating card without a Page so Create Page can retry  1493ms
+   ✓ review queue persistence > leaves a live Create Page lease claimed and refuses competing actions  645ms
+   ✓ review queue persistence > marks a creating card created when the Page write already landed  1437ms
+   ✓ review queue persistence > does not mistake an unrelated Page for a completed Review operation  675ms
+   ✓ review queue persistence > keeps recovering other creating cards when one claim read throws  510ms
+   ✓ review queue persistence > marks created when the Page landed after recovery reset the claim  2170ms
+   ✓ review queue persistence > converges to created when the Page landed before a later lifecycle failure  1525ms
+   ✓ review queue persistence > renews a live Create Page claim while lifecycle publication is running  920ms
+   ✓ review queue persistence > cannot overwrite a concurrent same-title Create Page  1751ms
+   ✓ review queue persistence > atomically refuses to overwrite an unrelated tenant-primary Page  1091ms
+   ✓ review queue persistence > drains a transient enqueue failure from the outbox without duplicating  726ms
+   ✓ review queue persistence > does not recreate a resolved delivery when an outbox replay arrives  1385ms
+   ✓ review queue persistence > bounds automatic outbox retries and retains a dead-letter record  951ms
+   ✓ review queue persistence > treats sustained queue capacity as backpressure without spending poison attempts  3009ms
+   ✓ review queue persistence > bounds retained dead letters while preserving every active delivery  423ms
+   ✓ review queue persistence > quarantines corrupt outbox bytes deterministically before failing closed  508ms
+   ✓ review queue persistence > rejects a persisted noncanonical queue timestamp  306ms
+   ✓ review queue persistence > rejects a persisted empty queue wikiId  309ms
+   ✓ review queue persistence > rejects a persisted invalid queue pageSlug  336ms
+   ✓ review queue persistence > rejects a persisted invalid outbox row  380ms
+   ✓ review queue persistence > bounds multibyte Review Page slugs before collision suffixes  2507ms
+   ✓ review queue persistence > writes the failed enqueue to the outbox and recovers on the next list  722ms
+   ✓ review queue persistence > serializes concurrent outbox appends and includes wikiId in identity  522ms
+   ✓ review queue persistence > reapplies a queue mutation after CAS loss without dropping the competing value  740ms
+   ✓ review queue persistence > reapplies an outbox append after CAS loss without dropping the competing delivery  499ms
+   ✓ review queue persistence > retains a full-queue delivery in the durable outbox  679ms
+   ✓ review queue persistence > retains Analysis read failures in the durable outbox  406ms
+   ✓ review queue persistence > honors an explicit wikiId and otherwise uses the actual current Wiki  1024ms
+   ✓ review queue persistence > throws unretained when enqueue and outbox both fail  477ms
+ ✓ |node| src/lib/__tests__/x-mention-integration.test.ts (6 tests) 5816ms
+   ✓ X-mention integration > creates wiki page with x-mention source provenance  1647ms
+   ✓ X-mention integration > creates wiki page with system authors on fresh ingest  1519ms
+   ✓ X-mention integration > preserves twitter.com URLs as source provenance  1202ms
+   ✓ X-mention integration > raw source file is saved alongside wiki page  1406ms
+stderr | src/lib/__tests__/workbench-preview.test.ts > readWorkbenchFile > does not fall back to the flat root when the silo read FAILED
+[workbench-files] listFiles failed for "tenants/yuanhao/wiki" Error: ENOTDIR: not a directory, scandir '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-preview-UNHA1d/tenants/yuanhao/wiki'
+    at Proxy.readdir (node:internal/fs/promises:956:18)
+    at FilesystemStorageProvider.listFiles (/Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:318:23)
+    at listSafely (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:132:23)
+    at resolveRoot (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:184:18)
+    at resolveWorkbenchFile (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:534:22)
+    at Module.readWorkbenchFile (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:549:20)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-preview.test.ts:1419:12
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -20,
+  code: 'ENOTDIR',
+  syscall: 'scandir',
+  path: '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-preview-UNHA1d/tenants/yuanhao/wiki'
+}
+
+stderr | src/lib/__tests__/workbench-preview.test.ts > readWorkbenchFile > does not fall back to the flat root when the silo read FAILED
+[workbench-files] readFile failed for "tenants/yuanhao/wiki/alpha.md" Error: ENOTDIR: not a directory, open '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-preview-UNHA1d/tenants/yuanhao/wiki/alpha.md'
+    at open (node:internal/fs/promises:640:25)
+    at Proxy.readFile (node:internal/fs/promises:1290:14)
+    at readSafely (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:456:12)
+    at Module.readWorkbenchFile (/Users/christianlee/App-Development/work-wiki/src/lib/workbench-files.ts:560:19)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-preview.test.ts:1419:12
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  errno: -20,
+  code: 'ENOTDIR',
+  syscall: 'open',
+  path: '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/wb-preview-UNHA1d/tenants/yuanhao/wiki/alpha.md'
+}
+
+ ✓ |node| src/lib/__tests__/integration.test.ts (3 tests) 5350ms
+   ✓ ingest → query integration > ingest text then query retrieves it  1568ms
+   ✓ ingest → query integration > ingesting two sources creates both pages  3756ms
+stderr | src/lib/__tests__/workbench-preview.test.ts > GET /api/workbench/preview > answers a thrown read with its own { error } shape, not a framework 500
+[workbench-preview] preview read failed TypeError: Invalid URL
+    at new URL (node:internal/url:840:25)
+    at handle (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/preview/route.ts:112:18)
+    at GET (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/preview/route.ts:95:12)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-preview.test.ts:1657:22
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20 {
+  code: 'ERR_INVALID_URL',
+  input: 'not a url'
+}
+
+ ✓ |node| src/lib/__tests__/recent-index.test.ts (15 tests) 4828ms
+   ✓ recent-index > after seeding, push prepends newest-first and dedups  340ms
+   ✓ recent-index > removeRecentForSlug drops all events for a slug  317ms
+   ✓ recent-index > pushRecentEvent routes to BOTH the global and the owner's per-tenant index  327ms
+   ✓ recent-index > routes events to the index matching their tenant (owners stay isolated)  724ms
+   ✓ recent-index > removeRecentForSlug(slug, tenants) prunes the global and each per-tenant index  777ms
+   ✓ recent-index > fans an event out to owner AND contributor indexes (a contributor's trail stays fresh)  633ms
+   ✓ recent-index > getTrail serves the index for anonymous reads, capped to limit  380ms
+   ✓ recent-index > getTrail resolves every event to the page's CURRENT title  470ms
+ ✓ |node| src/lib/__tests__/workspace-guidance.test.ts (7 tests) 4291ms
+   ✓ buildWorkspaceGuidance caching > resolves once per owner when a cache handle is passed  485ms
+   ✓ buildWorkspaceGuidance caching > shares one in-flight resolution between concurrent callers  711ms
+   ✓ buildWorkspaceGuidance caching > re-reads on every call when NO cache handle is passed  639ms
+   ✓ buildWorkspaceGuidance caching > caches the fail-soft empty answer and warns only once  601ms
+   ✓ buildWorkspaceGuidance caching > keeps two owners apart under one shared handle  1163ms
+   ✓ buildWorkspaceGuidance caching > hands out a FRESH handle each time, so a new one re-reads  678ms
+ ✓ |node| src/lib/__tests__/agent-ingest-route.test.ts (24 tests) 4356ms
+   ✓ POST /api/agents/[id]/ingest > ingests text  313ms
+   ✓ POST /api/agents/[id]/ingest > system token (the @yoyoevolve loop) > asOwner: derives sourceType 'x-mention' for twitter.com URLs  320ms
+   ✓ POST /api/agents/[id]/ingest > vault filing > skips vault filing when neither vaultId nor defaultVault exist  308ms
+ ✓ |node| src/lib/__tests__/workbench-preview.test.ts (206 tests) 4523ms
+   ✓ capPreviewBody > never cuts through a surrogate pair  603ms
+ ✓ |node| src/lib/__tests__/workbench-lint.test.ts (8 tests) 4470ms
+   ✓ inbound-wikilink orphans > lists a page with no inbound wikilink and excludes bookkeeping pages  741ms
+   ✓ inbound-wikilink orphans > does not count a self-link as inbound reachability  310ms
+   ✓ inbound-wikilink orphans > counts an alias inbound link toward the canonical page  440ms
+   ✓ inbound-wikilink orphans > does not count an alias-resolved self-link as inbound reachability  314ms
+   ✓ runWorkbenchLint > omits semantic LLM classes when the toggle is off  650ms
+   ✓ runWorkbenchLint > promotes a leftover renamed-slug link instead of calling it broken  718ms
+   ✓ runWorkbenchLint > only offers a dangling-link fix for a real prose wikilink  661ms
+   ✓ runWorkbenchLint > points semantic gaps at Graph Insights instead of listing them  636ms
+ ✓ |node| src/lib/__tests__/ingest-jobs.test.ts (19 tests) 4880ms
+   ✓ ingest-jobs > lists only one owner's email jobs, newest first  310ms
+   ✓ ingest-jobs > cancel of queued becomes failed; cancel of processing stays processing  469ms
+   ✓ ingest-jobs > cancel of a retrying job becomes failed immediately  468ms
+   ✓ ingest-jobs > does not overwrite an existing failed error with cancelled copy  403ms
+   ✓ purgeStaleIngestJobs (GC) > deletes terminal jobs older than the TTL  528ms
+   ✓ purgeStaleIngestJobs (GC) > keeps jobs younger than the TTL regardless of status  525ms
+   ✓ purgeStaleIngestJobs (GC) > keeps non-terminal jobs even if older than the TTL  476ms
+   ✓ purgeStaleIngestJobs (GC) > handles a mix of keep and delete in the same scan  607ms
+ ✓ |node| src/lib/__tests__/monitor-digests.test.ts (4 tests) 4782ms
+   ✓ source-monitor digests > groups proposals, failures, recoveries, and routine checks into owner history  1211ms
+   ✓ source-monitor digests > discovers due owners and advances an empty digest window without creating noise  490ms
+   ✓ source-monitor digests > delivers email once and persists the provider receipt  1598ms
+   ✓ source-monitor digests > persists failed delivery for a later retry  1483ms
+ ✓ |node| src/lib/__tests__/backlink-index.test.ts (11 tests) 4329ms
+   ✓ removeBacklinksForSlug (after seeding) > drops the slug as a target key and as a source everywhere  418ms
+   ✓ rebuildBacklinkIndex > builds the full reverse map in one pass  1058ms
+   ✓ findBacklinks read parity (fast path vs fallback) > empty index falls back to scan; populated fast path gives same set  914ms
+   ✓ findBacklinks read parity (fast path vs fallback) > private linkers are filtered on READ (visibility never stored in index)  831ms
+ ✓ |node| src/lib/__tests__/vault-multi.test.ts (10 tests) 4552ms
+   ✓ multi-vault model > adds/removes page refs (idempotent) and reports membership  619ms
+   ✓ multi-vault model > renames (id stays stable) and deletes  416ms
+   ✓ multi-vault model > removeSlugFromAllVaults strips the slug from vaults across owners  733ms
+   ✓ multi-vault model > removeSlugFromAllVaults discovers cross-tenant vaults without owner hints  600ms
+   ✓ multi-vault model > page deletion via lifecycle removes slug from all vaults  1419ms
+ ✓ |node| src/lib/__tests__/revert-attribution.test.ts (3 tests) 3991ms
+   ✓ POST /api/wiki/[slug]/revisions — revert attribution > revision sidecar carries the authenticated user's handle as author  1393ms
+   ✓ POST /api/wiki/[slug]/revisions — revert attribution > revision sidecar carries the service principal's handle when no session  1269ms
+   ✓ POST /api/wiki/[slug]/revisions — revert attribution > contributor index reflects the reverter's edit  1329ms
+ ✓ |node| src/lib/__tests__/owner-page-route.test.ts (7 tests) 5499ms
+   ✓ /u/<handle>/<slug> canonical-handle redirect > 308s a slug-only link addressed through DEFAULT_TENANT to the real owner  836ms
+   ✓ /u/<handle>/<slug> canonical-handle redirect > 308s an agent-owned page to its agent tenant  786ms
+   ✓ /u/<handle>/<slug> canonical-handle redirect > does not redirect when the handle already matches the page's tenant  881ms
+   ✓ /u/<handle>/<slug> alias forwarding for missing slugs > 308s a merged-away slug once, directly to the survivor's canonical URL  801ms
+   ✓ /u/<handle>/<slug> alias forwarding for missing slugs > 404s a missing slug with no alias  717ms
+   ✓ /u/<handle>/<slug> alias forwarding for missing slugs > forwards the owner to their private survivor but 404s anonymous viewers  734ms
+   ✓ /u/<handle>/<slug> alias forwarding for missing slugs > 404s an existing-but-unreadable page instead of self-redirecting  744ms
+ ✓ |node| src/lib/__tests__/stale-index-lifecycle.test.ts (10 tests) 6941ms
+   ✓ pruneStaleIndexEntry > uses a fresh Page read before deleting an index membership  416ms
+   ✓ pruneStaleIndexEntry > removes authoritative and derived membership and bumps dataVersion  687ms
+   ✓ pruneStaleIndexEntry > keeps a successful authoritative prune when derived page-index cleanup fails  736ms
+   ✓ pruneStaleIndexEntry > does not remove an index row when the Page read is indeterminate  375ms
+   ✓ pruneStaleIndexEntry > rejects a stale lifecycle transform without overwriting newer Page bytes  652ms
+   ✓ pruneStaleIndexEntry > creates a missing flat copy after a successful silo expected-content CAS  1039ms
+   ✓ pruneStaleIndexEntry > promotes a flat-only Page through expected-content CAS  1089ms
+   ✓ pruneStaleIndexEntry > refuses to rewrite index.md when a createOnly index read fails  934ms
+   ✓ pruneStaleIndexEntry > fixBrokenLink cannot overwrite a competing edit after its fresh read  783ms
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > records a Graphify failure only on the final queue delivery
+[tasks] task "extract-knowledge" failed Error: provider unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:281:46
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > records a Graphify failure only on the final queue delivery
+[tasks] task "extract-knowledge" failed Error: provider unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:281:46
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+
+ ✓ |node| src/lib/__tests__/contributor-index.test.ts (5 tests) 3576ms
+   ✓ incremental maintenance (seeded index) > recordEditForAuthor bumps editCount + pagesEdited  594ms
+   ✓ incremental maintenance (seeded index) > reverseEditForAuthor decrements editCount + drops the slug  542ms
+   ✓ incremental maintenance (seeded index) > recordTalkForAuthor bumps comment / thread counts  354ms
+   ✓ rebuildContributorIndex + read parity > rebuild serializes the scan; listContributors fast path == fallback scan  1203ms
+   ✓ rebuildContributorIndex + read parity > profilesFromIndex applies the trust formula and sorts by editCount  882ms
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > learning-page attach failure is fail-soft (the ingest still completes)
+[tasks] learning-page attach failed for agent="alice--yoyo" slug="k": storage down
+
+ ✓ |node| src/lib/__tests__/discuss-stats-index.test.ts (12 tests) 2867ms
+   ✓ syncDiscussStatsForSlug / removeDiscussStatsForSlug (after seeding) > updates in place on re-sync  318ms
+   ✓ syncDiscussStatsForSlug / removeDiscussStatsForSlug (after seeding) > remove drops the entry  323ms
+   ✓ talk mutations maintain the index (after seeding) > createThread / addComment / resolveThread keep stats fresh  626ms
+   ✓ talk mutations maintain the index (after seeding) > deleteDiscussions removes the slug entry  512ms
+   ✓ rebuildDiscussStatsIndex > scans the discuss dir and rebuilds all entries  378ms
+ ✓ |node| src/lib/__tests__/source-monitors.test.ts (3 tests) 2551ms
+   ✓ source monitors > stores owner-scoped monitors and schedules only active due entries  631ms
+   ✓ source monitors > initializes a baseline, then creates an evidence-backed review proposal  1250ms
+   ✓ source monitors > scores identical text as unchanged and records fetch failures for retry  669ms
+ ✓ |node| src/lib/__tests__/fetch.test.ts (43 tests) 2665ms
+   ✓ downloadImages > limits to 20 images max  1716ms
+ ✓ |node| src/lib/__tests__/memory-proposals.test.ts (4 tests) 2986ms
+   ✓ reviewable memory proposals > does not change a page until the owner accepts the proposal  1334ms
+   ✓ reviewable memory proposals > fails closed when the page changed after proposal creation  423ms
+   ✓ reviewable memory proposals > keeps rejected proposals auditable and unapplied  622ms
+   ✓ reviewable memory proposals > keeps a bounded draft history when the owner revises before accepting  607ms
+ ✓ |node| src/lib/__tests__/commons.test.ts (14 tests) 3321ms
+   ✓ rebuildCommonsIndex > indexes public pages only (excludes private + agent)  906ms
+   ✓ rebuildCommonsIndex > listCommonsPages derives the public, non-agent set from the flat index  847ms
+   ✓ rebuildCommonsIndex > ignores a populated (stale) commons index and still sees a new page  371ms
+   ✓ rebuildCommonsIndex > keeps a page visible after the stored index entry is pruned  472ms
+ ✓ |node| src/lib/__tests__/read-isolation.test.ts (3 tests) 2613ms
+   ✓ listReadableWikiPages — read isolation > hides private pages from anonymous readers  874ms
+   ✓ listReadableWikiPages — read isolation > hides another user's private pages  880ms
+   ✓ listReadableWikiPages — read isolation > shows the owner their own private pages, incl. their agent's  859ms
+ ✓ |node| src/lib/__tests__/todos.test.ts (9 tests) 3631ms
+   ✓ todo candidates > replaces pending for a Source and keeps decided rows  554ms
+   ✓ todo candidates > stores none-found by clearing pending and leaving the list empty  415ms
+   ✓ HITL decisions > stores decision, timestamp, and actor; rejected never appear in Open  658ms
+   ✓ HITL decisions > edits title and due after approve without breaking links, and delete is owner-only persist  1021ms
+   ✓ HITL decisions > marks source-missing on cascade identity without deleting the Todo  350ms
+   ✓ extract error persist > records a retryable extract failure on the store  425ms
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > keeps a staged blob when a transient ingest failure should be retried
+[tasks] task "ingest" failed Error: R2 read flaked
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:606:43
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/owner-index.test.ts (12 tests) 3404ms
+   ✓ syncOwnerIndexForPage (after seeding) > removes the slug from a stale bucket when owner/contributors change  346ms
+   ✓ rebuildOwnerIndex > builds all buckets in one pass over frontmatter  947ms
+   ✓ slugsForOwner read parity (fast path vs fallback) > empty index → falls back to scan, same result as populated fast path  665ms
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > records a tracked ingest job as failed when ingest throws
+[tasks] task "ingest" failed Error: LLM timeout
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:677:43
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > maps a 'not found' failure to 422 (poison), other failures to 500 (retry)
+[tasks] task "maintain" failed Error: LLM timeout
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:706:42
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > does not enqueue extract-todo-candidates when ingest fails
+[tasks] task "ingest" failed Error: LLM timeout
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:821:40
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/integration-outbox.test.ts (3 tests) 2398ms
+   ✓ integration outbox > stages deterministic events once for each enabled destination  718ms
+   ✓ integration outbox > renders an iCalendar task and records a durable delivery receipt  781ms
+   ✓ integration outbox > sends webhooks with a stable idempotency key  900ms
+ ✓ |node| src/lib/__tests__/ingest-dedup-ledger.test.ts (1 test) 2451ms
+   ✓ dedup'd ingests write a ledger entry > ingest same content twice → both appear in ledger, second marked deduped  2450ms
+ ✓ |node| src/lib/__tests__/graph-insight-dismissals.test.ts (13 tests) 4297ms
+   ✓ insight dismissal kernel persist > keeps a dismissal across a storage reset until the fingerprint changes  457ms
+   ✓ insight dismissal kernel persist > quarantines the bytes read once without accumulating copies  414ms
+   ✓ insight dismissal kernel persist > does not drop concurrent dismissals  344ms
+   ✓ insight dismissal kernel persist > reapplies a dismissal after CAS loss without dropping the competing value  502ms
+   ✓ insight dismissal kernel persist > retains the newest 500 dismissals  343ms
+   ✓ insight dismissal kernel persist > migrates the committed legacy format for surprise:a:b:cross-community,cross-type exactly once  389ms
+   ✓ insight dismissal kernel persist > migrates the committed legacy format for isolated:alone exactly once  323ms
+   ✓ insight dismissal kernel persist > migrates the committed legacy format for sparse:1 exactly once  342ms
+   ✓ insight dismissal kernel persist > migrates the committed legacy format for bridge:hub exactly once  349ms
+   ✓ insight dismissal kernel persist > rewrites a stored long Insight id to the bounded live id  355ms
+ ✓ |node| src/lib/__tests__/lifecycle.test.ts (63 tests) 80512ms
+   ✓ writeWikiPageWithSideEffects > creates the wiki page file with correct content  490ms
+   ✓ writeWikiPageWithSideEffects > creates an index entry with slug, title, and summary  681ms
+   ✓ writeWikiPageWithSideEffects > updates existing index entry without creating duplicates  1604ms
+   ✓ writeWikiPageWithSideEffects > embeds a normal page but SKIPS embedding for an html artifact  1381ms
+   ✓ writeWikiPageWithSideEffects > does not embed when vector search is off  849ms
+   ✓ writeWikiPageWithSideEffects > appends an entry to log.md with correct operation  941ms
+   ✓ writeWikiPageWithSideEffects > appends log with different operations  917ms
+   ✓ writeWikiPageWithSideEffects > skips cross-referencing when crossRefSource is null  1042ms
+   ✓ writeWikiPageWithSideEffects > returns empty updatedSlugs when crossRefSource is null  886ms
+   ✓ writeWikiPageWithSideEffects > uses logDetails callback and includes its return value in the log  881ms
+   ✓ writeWikiPageWithSideEffects > logDetails receives updatedSlugs from cross-ref phase  921ms
+   ✓ writeWikiPageWithSideEffects > returns the correct slug  936ms
+   ✓ writeWikiPageWithSideEffects > handles multiple pages in index correctly  1495ms
+   ✓ writeWikiPageWithSideEffects > preserves existing index entries when adding new pages  1403ms
+   ✓ writeWikiPageWithSideEffects > crossRefSource defaults to content when undefined  903ms
+   ✓ deleteWikiPage > removes the wiki page file from disk  1051ms
+   ✓ deleteWikiPage > removes the slug from index.md  1164ms
+   ✓ deleteWikiPage > returns removedFromIndex: true when slug was in index  1077ms
+   ✓ deleteWikiPage > returns removedFromIndex: false when slug was not in index  1069ms
+   ✓ deleteWikiPage > strips backlinks to the deleted page from other pages  1499ms
+   ✓ deleteWikiPage > returns strippedBacklinksFrom with correct slugs  1738ms
+   ✓ deleteWikiPage > creates a revision with author 'system' when stripping backlinks  1496ms
+   ✓ deleteWikiPage > throws when the page file does not exist  300ms
+   ✓ deleteWikiPage > cleans up revision files for the deleted slug  1275ms
+   ✓ deleteWikiPage > appends a delete entry to the log  1055ms
+   ✓ deleteWikiPage > log details include stripped backlinks count  1510ms
+   ✓ deleteWikiPage > returns the correct slug in the result  961ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > removes [text](slug.md) links from other pages  1513ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > removes empty See also line when the only link is deleted  1502ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > collapses orphaned commas when middle link is removed  1521ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > collapses 3+ blank lines into 2  1500ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > cleans up when the first link is removed from See also  1619ms
+   ✓ stripBacklinksTo (via deleteWikiPage) > handles multiple backlinks across different pages  1595ms
+   ✓ lifecycle write triggers alias index update > page with aliases is resolvable via resolveAlias after write  860ms
+   ✓ lifecycle write triggers alias index update > page without aliases still registers title in alias index  767ms
+   ✓ lifecycle write triggers alias index update > page without frontmatter still registers title in alias index  878ms
+   ✓ per-tenant silo mirror > mirrors a written page into its owner's silo (tenants/<tenant>/wiki)  798ms
+   ✓ per-tenant silo mirror > ownerless pages mirror into the yopedia silo  833ms
+   ✓ per-tenant silo mirror > deleting a page removes it from its silo  1291ms
+   ✓ per-tenant silo mirror > backlink-strip syncs the stripped page's silo copy  2564ms
+   ✓ recent trail action labeling > labels a first ingest 'ingested' and a re-ingest 're-ingested'  2227ms
+   ✓ recent trail action labeling > folds an automation author (lint-fix) into the agent on the incremental push  951ms
+   ✓ recent trail action labeling > labels a manual edit 'edited', not re-ingested  1987ms
+   ✓ recent trail action labeling > a delete prunes the page from BOTH the global and the owner's per-tenant index  2054ms
+   ✓ recent trail action labeling > fans a write out to a CONTRIBUTOR's index, not just the owner's  1415ms
+   ✓ agent page cleanup on delete > removes a deleted slug from an agent's learningPages  1656ms
+   ✓ agent page cleanup on delete > removes a slug from multiple page lists and multiple agents  1699ms
+   ✓ Stories 2.4–2.12 compile remnants > regenerates overview.md and writes a Source summary that cites the Source  2117ms
+   ✓ Stories 2.4–2.12 compile remnants > keeps disputed true when rewriting an existing source summary  3795ms
+   ✓ Stories 2.4–2.12 compile remnants > bookkeeping cites options.sourcePath when ingest is given one  2299ms
+   ✓ Stories 2.4–2.12 compile remnants > loadIngestAnalysis returns null on invalid JSON  329ms
+   ✓ Stories 2.4–2.12 compile remnants > cascades Source delete: summary first, sole page gone, shared page kept, prose ignored  6026ms
+   ✓ Stories 2.4–2.12 compile remnants > retries a failed job without storing Source bytes again  658ms
+   ✓ Stories 2.4–2.12 compile remnants > deletes a folder-imported Source by stored path, not by leaf name  4175ms
+   ✓ Stories 2.4–2.12 compile remnants > does not offer Retry while a job is automatically retrying  438ms
+   ✓ Stories 2.4–2.12 compile remnants > fails a tracked compile when Analysis is not valid JSON  324ms
+stderr | src/lib/__tests__/tasks-route.test.ts > POST /api/tasks/run > records a visible extract error when extract-todo-candidates throws
+[tasks] task "extract-todo-candidates" failed Error: no key
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/tasks-route.test.ts:1010:46
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/tasks-route.test.ts (51 tests) 3245ms
+   ✓ POST /api/tasks/run > 401s without the service token (no other side effects)  492ms
+ ✓ |node| src/lib/__tests__/system-health.test.ts (2 tests) 2343ms
+   ✓ system health > summarizes verified recovery and retrieval checks  1076ms
+   ✓ system health > surfaces a failed source check as requiring attention  1266ms
+ ✓ |node| src/lib/__tests__/page-index.test.ts (5 tests) 1931ms
+   ✓ page-index > listWikiPages fast-path (seeded) equals the per-page scan  647ms
+   ✓ page-index > after seeding, sync upserts and remove drops an entry  467ms
+ ✓ |node| src/lib/__tests__/backups.test.ts (2 tests) 1591ms
+   ✓ owner backups > copies text and binary tenant data and verifies an isolated restore  1078ms
+   ✓ owner backups > reports whether the daily backup interval has elapsed  512ms
+ ✓ |node| src/lib/__tests__/raw-source-search.test.ts (5 tests) 1937ms
+   ✓ original-source retrieval context > uses raw snapshots, preserves line ranges, and never adds generated page text  445ms
+   ✓ original-source retrieval context > supports legacy latest-raw blobs without inventing a snapshot id  511ms
+   ✓ original-source retrieval context > keeps citation line numbers aligned when a raw source starts with blank lines  472ms
+   ✓ original-source retrieval context > returns only page slugs whose raw links the answer actually cites  374ms
+ ✓ |node| src/lib/__tests__/names-terms.test.ts (14 tests) 1566ms
+   ✓ owner names and terms dictionary > supports updates and deletion  371ms
+ ✓ |node| src/lib/__tests__/graphify-jobs.test.ts (5 tests) 1852ms
+   ✓ Graphify jobs > tracks per-page progress, errors, and targeted retries  884ms
+   ✓ Graphify jobs > treats a delivered completed page as an idempotent replay  475ms
+ ✓ |node| src/lib/__tests__/export.test.ts (15 tests) 1743ms
+   ✓ GET /api/wiki/export — scoped vault > scopes the vault to one owner and excludes others' private pages  635ms
+   ✓ GET /api/wiki/export — scoped vault > converts internal links to wikilinks in the exported markdown  383ms
+   ✓ GET /api/wiki/export — scoped vault > bundles a page's binary assets into the vault under assets/<slug>/  428ms
+ ✓ |node| src/lib/__tests__/agent-workspaces.test.ts (4 tests) 2319ms
+   ✓ agent run workspaces > persists hashed artifacts and keeps them owner scoped  673ms
+   ✓ agent run workspaces > validates a typed interaction before resuming  301ms
+   ✓ agent run workspaces > keeps sandbox commands pending until an owner decision and stores the receipt  1043ms
+   ✓ agent run workspaces > rejects a pending sandbox command without exposing its payload  301ms
+ ✓ |node| src/lib/__tests__/portable-archive.test.ts (3 tests) 2140ms
+   ✓ portable owner archive > round-trips tenant files with checksums and rebuilds compatibility paths  1696ms
+   ✓ portable owner archive > generates .obsidian/ and keeps the frozen format string  338ms
+ ✓ |node| src/lib/__tests__/illustration.test.ts (13 tests) 763ms
+ ✓ |node| src/lib/__tests__/vault-pages-route.test.ts (4 tests) 905ms
+ ✓ |node| src/lib/__tests__/ingest-staging.test.ts (8 tests) 638ms
+ ✓ |node| src/lib/__tests__/document-sources.test.ts (1 test) 1102ms
+   ✓ document source preservation > stores the original under an owner scope and appends embedded figures once  1102ms
+ ✓ |node| src/lib/__tests__/structured-knowledge.test.ts (5 tests) 1286ms
+   ✓ structured knowledge > uses a dedicated provider, accepts nullable optional fields, and anchors evidence  451ms
+ ✓ |node| src/lib/__tests__/storage-fs-fault-identity.test.ts (3 tests) 377ms
+ ✓ |node| src/lib/__tests__/research-projects.test.ts (5 tests) 626ms
+ ✓ |node| src/lib/__tests__/action-items.test.ts (2 tests) 486ms
+   ✓ owner action items > supports approval, completion, filtering, and deletion  376ms
+ ✓ |node| src/lib/__tests__/chat-store.test.ts (6 tests) 1287ms
+   ✓ owner chat conversations > creates, updates, lists, and isolates conversations  316ms
+ ✓ |node| src/lib/__tests__/agent-skills.test.ts (2 tests) 443ms
+ ✓ |node| src/lib/__tests__/knowledge-compilation.test.ts (1 test) 598ms
+   ✓ two-pass knowledge compilation > tracks source contributions and proposes separate structured pages  597ms
+ ✓ |node| src/lib/__tests__/retrieval-evals.test.ts (2 tests) 443ms
+ ✓ |node| src/lib/__tests__/evidence.test.ts (2 tests) 220ms
+ ✓ |node| src/lib/__tests__/vault-explorer-routes.test.ts (4 tests) 589ms
+stderr | src/lib/__tests__/ingest-pdf-route.test.ts > POST /api/ingest/pdf > maps an unexpected error (e.g. storage outage) to 500, not 400
+[ingest] PDF ingest error Error: R2 unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/ingest-pdf-route.test.ts:85:39
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/schema.test.ts (10 tests) 223ms
+ ✓ |node| src/lib/__tests__/ingest-pdf-route.test.ts (12 tests) 228ms
+ ✓ |node| src/lib/__tests__/pnpm-workspace-root.test.ts (10 tests) 177ms
+ ✓ |node| src/lib/__tests__/lock.test.ts (13 tests) 309ms
+ ✓ |node| src/lib/__tests__/lint-fix-route.test.ts (7 tests) 136ms
+ ✓ |node| src/lib/__tests__/retired-surfaces.test.ts (47 tests) 329ms
+ ✓ |node| src/lib/__tests__/local-sync-clients.test.ts (1 test) 134ms
+stderr | src/lib/__tests__/ingest-image-route.test.ts > POST /api/ingest/image > maps an unexpected error (e.g. storage outage) to 500, not 400
+[ingest] Image ingest error Error: R2 unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/ingest-image-route.test.ts:74:41
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/email-ingest.test.ts (3 tests) 68ms
+ ✓ |node| src/lib/__tests__/ingest-image-route.test.ts (9 tests) 100ms
+ ✓ |node| src/lib/__tests__/single-ia.test.ts (4 tests) 157ms
+ ✓ |node| src/lib/__tests__/single-main-landmark-scan.test.ts (18 tests) 160ms
+ ✓ |node| src/lib/__tests__/email-ingest-route.test.ts (19 tests) 211ms
+ ✓ |node| src/lib/__tests__/vision.test.ts (9 tests) 50ms
+ ✓ |node| src/lib/__tests__/brand-copy.test.ts (18 tests) 602ms
+ ✓ |node| src/lib/__tests__/scan-route.test.ts (20 tests) 193ms
+ ✓ |node| src/lib/__tests__/storage-r2.test.ts (53 tests) 130ms
+ ✓ |node| src/lib/__tests__/workbench-left-column.test.ts (49 tests) 183ms
+ ✓ |node| src/lib/__tests__/vault-explorer.test.ts (1 test) 53ms
+ ✓ |node| src/hooks/__tests__/useSlugTenants.test.ts (14 tests) 45ms
+ ✓ |node| src/lib/__tests__/read-only-door-coverage.test.ts (3 tests) 86ms
+ ✓ |node| src/lib/__tests__/english-only.test.ts (6 tests) 622ms
+ ✓ |node| src/lib/__tests__/concurrency.test.ts (6 tests) 41ms
+ ✓ |node| src/lib/__tests__/rebuild-embeddings-route.test.ts (4 tests) 31ms
+stderr | src/lib/__tests__/workbench-intake.test.ts > POST /api/workbench/intake — files > stores BEFORE it enqueues, and answers 202 when only the queue failed
+[intake] stored "raw/sources/notes/abc.md" but could not queue Ingest Error: queue unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-intake.test.ts:553:13
+    at mockCall (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+spy@3.2.4/node_modules/@vitest/spy/dist/index.js:96:15)
+    at spy (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/tinyspy@4.0.4/node_modules/tinyspy/dist/index.js:47:80)
+    at storeAndQueue (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/intake/route.ts:486:22)
+    at intakeFile (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/intake/route.ts:154:10)
+    at Module.POST (/Users/christianlee/App-Development/work-wiki/src/app/api/workbench/intake/route.ts:90:9)
+    at post (/Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-intake.test.ts:458:20)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-intake.test.ts:556:30
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20
+
+stderr | src/lib/__tests__/workbench-intake.test.ts > POST /api/workbench/intake — files > answers 202 when store succeeded and the job record failed
+[intake] stored "raw/sources/notes/fd0c5087fd0c5087.md" but could not queue Ingest Error: jobs unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-intake.test.ts:570:37
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+stderr | src/lib/__tests__/workbench-intake.test.ts > POST /api/workbench/intake — files > answers 202 when store succeeded and staging the queue payload failed
+[intake] stored "raw/sources/huge/b0085487b0085487.md" but could not queue Ingest Error: stage full
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/workbench-intake.test.ts:581:39
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runFiles (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1787:3)
+
+ ✓ |node| src/lib/__tests__/email-ingest-worker.test.ts (18 tests) 37ms
+stdout | src/lib/__tests__/cli.test.ts
+work-wiki CLI
+
+Usage: pnpm cli <command> [args]
+
+Commands:
+  ingest <url>         Ingest a URL into the wiki
+  ingest --text        Ingest text from stdin (pipe or type, then Ctrl-D)
+  reingest <slug>      Re-fetch and update a page from its original source URL
+  query <question>     Query the wiki
+  search <query>       Search wiki pages by content
+  read <slug>          Read a wiki page by slug
+  create <slug>        Create a new wiki page (reads body from stdin)
+  update <slug>        Update an existing wiki page (reads body from stdin)
+  delete <slug>        Delete a wiki page and clean up side effects
+  lint                 Run wiki lint checks
+  lint --fix           Run lint and auto-fix issues
+  list                 List all wiki pages (slug + title)
+  list --raw           List raw sources instead of wiki pages
+  history              Show recent ingest history
+  status               Show wiki health summary
+  help                 Show this help
+
+Search flags:
+  --fuzzy              Enable typo-tolerant fuzzy matching
+  --scope agent:<id>   Restrict results to an agent's pages
+  --limit N            Max results (default: 10)
+
+Create flags:
+  --title <title>      Page title (required)
+  --tags tag1,tag2     Comma-separated tags (optional)
+
+Update flags:
+  --title <title>      New page title (optional — preserves existing if omitted)
+  --tags tag1,tag2     Comma-separated tags (optional — preserves existing if omitted)
+
+History flags:
+  --limit N            Max entries to show (default: 20)
+
+Examples:
+  pnpm cli ingest https://example.com/article
+  echo "Some text" | pnpm cli ingest --text
+  pnpm cli reingest attention-mechanisms
+  pnpm cli query "What is attention in transformers?"
+  pnpm cli search "attention mechanism"
+  pnpm cli search "atention" --fuzzy
+  pnpm cli search "identity" --scope agent:yoyo --limit 5
+  pnpm cli read attention-mechanisms
+  pnpm cli delete attention-mechanisms
+  echo "Page body content" | pnpm cli create my-page --title "My Page"
+  echo "Tagged page" | pnpm cli create my-page --title "My Page" --tags ai,ml
+  echo "new content" | pnpm cli update my-page
+  echo "new content" | pnpm cli update my-page --title "New Title"
+  echo "new content" | pnpm cli update my-page --title "New Title" --tags ai,ml
+  pnpm cli lint
+  pnpm cli lint --fix
+  pnpm cli list
+  pnpm cli list --raw
+  pnpm cli history
+  pnpm cli history --limit 10
+  pnpm cli status
+
+ ✓ |node| src/lib/__tests__/ingest-document-route.test.ts (4 tests) 47ms
+ ✓ |node| src/lib/__tests__/workbench-intake.test.ts (80 tests) 94ms
+ ✓ |node| src/lib/__tests__/cli.test.ts (83 tests) 34ms
+ ✓ |node| src/lib/__tests__/workbench-split.test.ts (113 tests) 33ms
+ ✓ |node| src/lib/__tests__/email-settings-route.test.ts (9 tests) 39ms
+ ✓ |node| src/lib/__tests__/settings-route.test.ts (53 tests) 26ms
+ ✓ |node| src/lib/__tests__/mermaid.test.ts (15 tests) 85ms
+ ✓ |node| src/lib/__tests__/workbench-chrome.test.ts (42 tests) 50ms
+ ✓ |node| src/lib/__tests__/html-parse.test.ts (54 tests) 23ms
+ ✓ |node| src/lib/__tests__/workbench-epic3.test.ts (19 tests) 53ms
+ ✓ |node| src/lib/__tests__/write-precondition.test.ts (43 tests) 23ms
+ ✓ |node| src/lib/__tests__/chat-routes.test.ts (12 tests) 41ms
+ ✓ |node| src/lib/__tests__/article-actions-gate.test.ts (10 tests) 13ms
+ ✓ |node| src/lib/__tests__/llm.test.ts (37 tests) 26ms
+ ✓ |node| src/lib/__tests__/ingest-routes.test.ts (57 tests) 31ms
+ ✓ |node| src/lib/__tests__/graph-surprise.test.ts (11 tests) 16ms
+ ✓ |node| src/lib/__tests__/bulk-document-import.test.ts (18 tests) 14ms
+ ✓ |node| src/lib/__tests__/context-route.test.ts (5 tests) 22ms
+ ✓ |node| src/components/__tests__/markdown-math.test.ts (1 test) 19ms
+ ✓ |node| src/lib/__tests__/sidecar.test.ts (9 tests) 16ms
+ ✓ |node| src/lib/__tests__/email-ingest-worker-normalization.test.ts (8 tests) 16ms
+ ✓ |node| src/lib/__tests__/create-wiki-ui.test.ts (22 tests) 13ms
+ ✓ |node| src/lib/__tests__/document-extract.test.ts (10 tests) 19ms
+ ✓ |node| src/lib/__tests__/lint-fix.test.ts (65 tests) 11ms
+ ✓ |node| src/lib/__tests__/mcp-annotations.test.ts (45 tests) 23ms
+ ✓ |node| src/lib/__tests__/workspace-profile-routes.test.ts (20 tests) 13ms
+ ✓ |node| src/lib/__tests__/ingest-history-delete-route.test.ts (14 tests) 15ms
+ ✓ |node| src/lib/__tests__/prose-inventory-parity.test.ts (16 tests) 17ms
+ ✓ |node| src/lib/__tests__/seed-route.test.ts (21 tests) 12ms
+ ✓ |node| src/lib/__tests__/wikis-routes.test.ts (20 tests) 13ms
+ ✓ |node| src/lib/__tests__/frontmatter.test.ts (119 tests) 9ms
+ ✓ |node| src/lib/__tests__/document-extract-parity.test.ts (3 tests) 15ms
+ ✓ |node| src/lib/__tests__/pdf-extraction.test.ts (12 tests) 14ms
+ ✓ |node| src/lib/__tests__/mcp-error-wrap.test.ts (2 tests) 15ms
+ ✓ |node| src/lib/__tests__/workbench-epic2-routes.test.ts (12 tests) 11ms
+ ✓ |node| src/lib/__tests__/x-mention-route.test.ts (18 tests) 10ms
+stderr | src/app/api/__tests__/mcp-route.test.ts > POST /api/mcp — auth resolution > 500s (not 401) when the agent store errors — outage isn't masked as a bad token
+[mcp] remote MCP request failed Error: R2 down
+    at /Users/christianlee/App-Development/work-wiki/src/app/api/__tests__/mcp-route.test.ts:89:38
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+
+ ✓ |node| src/app/api/__tests__/mcp-route.test.ts (14 tests) 12ms
+stderr | src/lib/__tests__/assets-route.test.ts > GET /api/assets/[...path] > 500s on a real storage failure (not ENOENT) so an outage isn't masked as 404
+[assets] readAsset failed for raw/assets/alice/x.png Error: R2 service unavailable
+    at /Users/christianlee/App-Development/work-wiki/src/lib/__tests__/assets-route.test.ts:75:24
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:155:11
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:752:26
+    at file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1897:20
+    at new Promise (<anonymous>)
+    at runWithTimeout (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1863:10)
+    at runTest (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1574:12)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+    at runSuite (file:///Users/christianlee/App-Development/work-wiki/node_modules/.pnpm/@vitest+runner@3.2.4/node_modules/@vitest/runner/dist/chunk-hooks.js:1729:8)
+
+ ✓ |node| src/lib/__tests__/assets-route.test.ts (13 tests) 10ms
+ ✓ |node| src/lib/__tests__/middleware-write-gate.test.ts (14 tests) 10ms
+ ✓ |node| src/lib/__tests__/query-save-route.test.ts (11 tests) 9ms
+stderr | src/lib/__tests__/task-consumer.test.ts > task consumer email receipts > sends a failure receipt for a permanently rejected email ingest
+task-consumer: poison message-1 (422): {"error":"The attachment is corrupt"}
+
+stderr | src/lib/__tests__/task-consumer.test.ts > task consumer email receipts > sends the final failure receipt before the last transient retry reaches the DLQ
+task-consumer: transient message-1 (503) — retry
+
+ ✓ |node| src/lib/__tests__/task-consumer.test.ts (5 tests) 8ms
+ ✓ |node| src/lib/__tests__/wiki-routes.test.ts (74 tests) 83821ms
+   ✓ POST /api/wiki — yopedia metadata > sets default yopedia frontmatter on new page  1027ms
+   ✓ POST /api/wiki — yopedia metadata > sets default expiry to ~90 days from creation date  758ms
+   ✓ POST /api/wiki — yopedia metadata > attributes the authenticated principal, ignoring any client-supplied author  743ms
+   ✓ POST /api/wiki — yopedia metadata > ignores a client-supplied empty author and uses the session principal  830ms
+   ✓ POST /api/wiki — yopedia metadata > accepts optional tags from request body  772ms
+   ✓ POST /api/wiki — yopedia metadata > ignores non-string-array tags and defaults to empty  740ms
+   ✓ POST /api/wiki — yopedia metadata > pages created via POST do not trigger unmigrated-page lint  860ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > sets updated timestamp on edit  1789ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > appends the authenticated editor to contributors on edit  1894ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > does not duplicate contributors on repeated edits  2864ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > preserves existing contributors when adding new one  1859ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > preserves existing frontmatter fields on edit  1910ms
+   ✓ PUT /api/wiki/[slug] — contributors and updated > adds the authenticated editor to contributors (writes are always authed)  1981ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > updates confidence without changing body  1957ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > adds tags to existing page  1863ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > bumps updated timestamp on metadata change  2018ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > rejects lifecycle-managed field: created  776ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > rejects lifecycle-managed field: sources  759ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > rejects lifecycle-managed field: authors  909ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > returns 400 when metadata is missing  771ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > returns 400 when metadata is not an object  880ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > appends author to contributors  1828ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > updates multiple metadata fields at once  1773ms
+   ✓ PATCH /api/wiki/[slug] — metadata updates > clears a field when null is sent  1686ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > cloaks a non-owner editing a private page (PUT 404, no oracle); body unchanged  784ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > cloaks a non-owner deleting a private page (DELETE 404)  799ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > cloaks a non-owner patching a private page's metadata (PATCH 404)  707ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > allows the owner to edit their own private page (PUT 200)  1892ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > allows a private agent-owned page to be edited by the agent's human owner  1774ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > blocks body writes by a human on a PUBLIC commons page (PUT 403)  794ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > blocks deletion by a human on a PUBLIC commons page (DELETE 403)  748ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > blocks metadata patches by a human on a PUBLIC commons page (PATCH 403)  704ms
+   ✓ realm-aware write ACL — /api/wiki/[slug] > still patches a page OUTSIDE the realm (PATCH 200)  1754ms
+   ✓ GET /api/wiki — agent-identity filtering > excludes agent-identity pages from default response  1371ms
+   ✓ GET /api/wiki — agent-identity filtering > includes agent-identity pages when includeAgentPages=true  1358ms
+   ✓ GET /api/wiki — agent-identity filtering > enriches type field in index entries  764ms
+   ✓ GET /api/wiki — agent-identity filtering > does not add type field for normal pages  783ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > 404s a non-owner creating a discussion on a private page  953ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > 404s the owner creating a discussion on their private page  795ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > 404s a signed-in user creating a discussion on a public page  730ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > 404s resolving a discussion — talk is retired  738ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > 404s commenting on a discussion — talk is retired  778ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > cloaks a non-owner reverting a private page (POST revert 404)  795ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > allows the owner to revert their own private page  1874ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > allows a service principal to revert a private page  1830ms
+   ✓ realm-aware ACL — discussion and revision-revert routes > blocks human revert on a PUBLIC commons page (POST revert 403)  940ms
+   ✓ PATCH /api/wiki/[slug] — service-token auth > allows a service principal to PATCH metadata when Clerk session is absent  1794ms
+   ✓ PATCH /api/wiki/[slug] — service-token auth > still works with a normal Clerk session (no service token needed)  1773ms
+   ✓ POST /api/wiki — service-token auth > allows a service principal to create a page when Clerk session is absent  706ms
+   ✓ POST /api/wiki — service-token auth > still works with a normal Clerk session (no service token needed)  734ms
+   ✓ read-only deployment — the page write doors > refuses a body write and leaves the bytes alone (PUT 403)  741ms
+   ✓ read-only deployment — the page write doors > refuses a metadata write and leaves the frontmatter alone (PATCH 403)  724ms
+   ✓ read-only deployment — the page write doors > refuses a delete and leaves the page in place (DELETE 403)  840ms
+   ✓ read-only deployment — the page write doors > answers the same 403 for a slug that does not exist — no existence oracle  774ms
+   ✓ read-only deployment — the page write doors > still answers 409 for a slug that already exists — the conflict is true either way  814ms
+   ✓ read-only deployment — the page write doors > refuses a revert and leaves the stored bytes alone (POST revisions 403)  1009ms
+   ✓ read-only deployment — the page write doors > still answers 404 for a revision that was never stored  889ms
+   ✓ read-only deployment — the page write doors > creates and reverts exactly as before on a writable deployment  2437ms
+   ✓ read-only deployment — the page write doors > changes nothing on a writable deployment — the control case  2974ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > lands the write when the precondition matches, and answers the NEW version  1733ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > refuses a STALE save with 412 and writes nothing  1565ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > refuses a save with NO precondition with 428, and writes nothing  686ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > treats `*`, an unquoted version and an empty header as absent  750ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > lets the SAME surface save twice without a reload  2373ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > refuses a body save after another actor PATCHed the frontmatter  1161ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > still cloaks before it ever mentions a version  323ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > checks against storage while a stale page cache is open  460ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > refuses a service-token write with a STALE If-Match — 412, page unchanged  430ms
+   ✓ PUT /api/wiki/[slug] — the write precondition > lands a service-token write with a MATCHING If-Match, and answers the new version  354ms
+ ✓ |node| src/lib/__tests__/agents-route.test.ts (5 tests) 10ms
+ ✓ |node| src/lib/__tests__/url-safety.test.ts (30 tests) 7ms
+ ✓ |node| src/lib/__tests__/query-history-route.test.ts (5 tests) 7ms
+ ✓ |node| src/lib/__tests__/epic5-routes.test.ts (10 tests) 10ms
+ ✓ |node| src/lib/__tests__/page-types.test.ts (10 tests) 8ms
+ ✓ |node| src/lib/__tests__/workbench-request.test.ts (25 tests) 8ms
+ ✓ |node| src/lib/__tests__/graph-insights.test.ts (2 tests) 7ms
+ ✓ |node| src/lib/__tests__/query-stream-route.test.ts (5 tests) 6ms
+ ✓ |node| src/lib/__tests__/graph-relevance.test.ts (5 tests) 7ms
+ ✓ |node| src/lib/__tests__/agent-token-route.test.ts (10 tests) 7ms
+ ✓ |node| src/lib/__tests__/ingest-async.test.ts (13 tests) 9ms
+ ✓ |node| src/lib/__tests__/chat-save-route.test.ts (2 tests) 8ms
+ ✓ |node| src/lib/__tests__/agents-id-route.test.ts (9 tests) 10ms
+ ✓ |node| src/lib/__tests__/workspace-purpose-save-guard.test.ts (5 tests) 14ms
+ ✓ |node| src/lib/__tests__/graph-camera-fit.test.ts (4 tests) 5ms
+ ✓ |node| src/lib/__tests__/graphify-route.test.ts (5 tests) 6ms
+ ✓ |node| src/lib/__tests__/e2e-identity.test.ts (7 tests) 7ms
+ ✓ |node| src/lib/__tests__/youtube.test.ts (29 tests) 6ms
+ ✓ |node| src/lib/__tests__/ingest-status-route.test.ts (9 tests) 7ms
+ ✓ |node| src/lib/__tests__/research-providers.test.ts (4 tests) 6ms
+ ✓ |node| src/lib/__tests__/monitor-digests-routes.test.ts (5 tests) 5ms
+ ✓ |node| src/lib/__tests__/query-route.test.ts (4 tests) 6ms
+ ✓ |node| src/lib/__tests__/html.test.ts (49 tests) 5ms
+ ✓ |node| src/lib/__tests__/logger.test.ts (15 tests) 4ms
+ ✓ |node| src/lib/__tests__/auth.test.ts (21 tests) 8ms
+ ✓ |node| src/lib/__tests__/x-post.test.ts (35 tests) 6ms
+ ✓ |node| src/lib/__tests__/sandbox-service.test.ts (3 tests) 9ms
+ ✓ |node| src/lib/__tests__/names-terms-routes.test.ts (8 tests) 7ms
+ ✓ |node| src/lib/__tests__/providers.test.ts (34 tests) 4ms
+ ✓ |node| src/lib/__tests__/todo-routes.test.ts (4 tests) 7ms
+ ✓ |node| src/lib/__tests__/sources.test.ts (32 tests) 6ms
+ ✓ |node| src/lib/__tests__/tasks.test.ts (28 tests) 6ms
+ ✓ |node| src/lib/__tests__/links.test.ts (37 tests) 5ms
+ ✓ |node| src/lib/__tests__/research-route.test.ts (7 tests) 6ms
+ ✓ |node| src/lib/__tests__/document-formats-client-safety.test.ts (2 tests) 5ms
+ ✓ |node| src/lib/__tests__/toast.test.ts (8 tests) 7ms
+ ✓ |node| src/app/wiki/new/__tests__/new-wiki-page-seam.test.ts (3 tests) 4ms
+ ✓ |node| src/lib/__tests__/keyboard-shortcuts.test.ts (36 tests) 4ms
+ ✓ |node| src/lib/__tests__/browse.test.ts (14 tests) 5ms
+ ✓ |node| src/lib/__tests__/trail.test.ts (9 tests) 4ms
+ ✓ |node| src/lib/__tests__/bm25.test.ts (30 tests) 6ms
+ ✓ |node| src/lib/__tests__/read-only-copy-parity.test.ts (16 tests) 10ms
+ ✓ |node| src/lib/__tests__/tenant-paths.test.ts (11 tests) 4ms
+ ✓ |node| src/lib/__tests__/format.test.ts (19 tests) 4ms
+ ✓ |node| src/lib/__tests__/todo-dispatch.test.ts (4 tests) 3ms
+ ✓ |node| src/lib/__tests__/graph-render.test.ts (11 tests) 4ms
+ ✓ |node| src/lib/__tests__/research-prefill.test.ts (6 tests) 4ms
+ ✓ |node| src/lib/__tests__/share-target.test.ts (20 tests) 7ms
+ ✓ |node| src/lib/__tests__/workbench-lint-fix.test.ts (7 tests) 4ms
+ ✓ |node| src/lib/__tests__/ensure-route.test.ts (3 tests) 4ms
+ ✓ |node| src/lib/__tests__/write-denial.test.ts (37 tests) 4ms
+ ✓ |node| src/lib/__tests__/graph-louvain.test.ts (4 tests) 3ms
+ ✓ |node| src/lib/__tests__/todo-extract.test.ts (6 tests) 5ms
+ ✓ |node| src/lib/__tests__/llm-deepseek.test.ts (2 tests) 4ms
+ ✓ |node| src/lib/__tests__/authz.test.ts (40 tests) 5ms
+ ✓ |node| src/lib/__tests__/illustration-render.test.ts (16 tests) 3ms
+ ✓ |node| src/lib/__tests__/citations.test.ts (9 tests) 3ms
+ ✓ |node| src/lib/__tests__/workbench-modes.test.ts (8 tests) 4ms
+ ✓ |node| src/lib/__tests__/graph.test.ts (9 tests) 3ms
+ ✓ |node| src/lib/__tests__/document-lineage.test.ts (2 tests) 4ms
+ ✓ |node| src/lib/__tests__/llm-ollama-cloud.test.ts (1 test) 3ms
+ ✓ |node| src/lib/__tests__/workbench-state.test.ts (16 tests) 5ms
+ ✓ |node| src/lib/__tests__/workbench-url.test.ts (16 tests) 3ms
+ ✓ |node| src/lib/__tests__/smoke.test.ts (2 tests) 2ms
+ ✓ |node| src/lib/__tests__/source-delete.test.ts (2 tests) 5ms
+ ✓ |node| src/lib/__tests__/slugify.test.ts (13 tests) 3ms
+ ✓ |node| src/lib/__tests__/live-region.test.ts (9 tests) 2ms
+ ✓ |node| src/lib/__tests__/mermaid-fallback.test.ts (2 tests) 3ms
+ ✓ |node| src/lib/__tests__/error-hints.test.ts (15 tests) 3ms
+ ✓ |node| src/lib/__tests__/storage.test.ts (6 tests) 2ms
+ ✓ |node| src/lib/__tests__/chat-hermes.test.ts (4 tests) 4ms
+ ✓ |node| src/lib/__tests__/errors.test.ts (13 tests) 2ms
+ ✓ |node| src/lib/__tests__/untrusted.test.ts (7 tests) 2ms
+ ✓ |node| src/lib/__tests__/discuss-route.test.ts (5 tests) 2ms
+ ✓ |node| src/lib/__tests__/chat-citations.test.ts (3 tests) 2ms
+ ✓ |node| src/lib/__tests__/ask-yoyo-route.test.ts (1 test) 1ms
+ ✓ |node| src/lib/__tests__/email-ingest-allowlist-parity.test.ts (13 tests) 3ms
+ ✓ |node| src/lib/__tests__/vault-explorer-view.test.ts (4 tests) 2ms
+ ✓ |node| src/lib/__tests__/ingest-embed.test.ts (1 test) 2ms
+ ✓ |node| src/lib/__tests__/agent-handle.test.ts (6 tests) 2ms
+ ✓ |node| src/lib/__tests__/browse-route.test.ts (2 tests) 2ms
+ ✓ |node| src/lib/__tests__/agent-publish-route.test.ts (2 tests) 2ms
+ ✓ |node| src/components/__tests__/markdown-url-transform.test.ts (6 tests) 2ms
+ ✓ |node| src/lib/__tests__/rate-limit.test.ts (4 tests) 2ms
+ ✓ |node| src/lib/__tests__/query-demo.test.ts (2 tests) 2ms
+ ✓ |node| src/lib/__tests__/lint-helpers.test.ts (10 tests) 2ms
+ ✓ |node| src/lib/__tests__/wiki-option-label.test.ts (4 tests) 2ms
+ ✓ |node| src/lib/__tests__/markdown.test.ts (4 tests) 1ms
+ ✓ |node| src/lib/__tests__/ingest-helpers.test.ts (14 tests) 2ms
+ ✓ |node| src/lib/__tests__/browse-explorer-view.test.ts (3 tests) 2ms
+ ✓ |node| src/lib/__tests__/share-url.test.ts (6 tests) 1ms
+ ✓ |node| src/lib/__tests__/review-count.test.ts (2 tests) 1ms
+stderr | src/app/__tests__/app-shell.test.tsx > RootLayout, mounted > puts the children on the page through Clerk and the client providers
+In HTML, <html> cannot be a child of <div>.
+This will cause a hydration error.
+
+ ✓ |dom| src/components/workbench/__tests__/settings-read-only.test.tsx (26 tests) 486ms
+ ✓ |dom| src/components/__tests__/create-wiki-flow.test.tsx (23 tests) 704ms
+ ✓ |dom| src/app/__tests__/app-shell.test.tsx (21 tests) 590ms
+ ✓ |dom| src/components/workbench/__tests__/graph-lint-review-canvas.test.tsx (27 tests) 757ms
+ ✓ |dom| src/components/workbench/__tests__/workbench-sheet.test.tsx (10 tests) 609ms
+ ✓ |dom| src/components/workbench/__tests__/workbench-mode-url.test.tsx (14 tests) 776ms
+ ✓ |dom| src/components/__tests__/wiki-switcher-lifecycle.test.tsx (59 tests) 1138ms
+ ✓ |dom| src/components/__tests__/owner-scoped-anchors.test.tsx (12 tests) 526ms
+ ✓ |dom| src/components/workbench/__tests__/wiki-canvas-duplication.test.tsx (17 tests) 921ms
+ ✓ |dom| src/components/workbench/__tests__/wiki-canvas-persistence.test.tsx (8 tests) 953ms
+   ✓ an open Create Wiki dialog survives a mode switch (DW-26) > keeps the typed name and the shown error across Chat and back  335ms
+ ✓ |dom| src/components/__tests__/workspace-purpose-settings.test.tsx (46 tests) 1152ms
+ ✓ |dom| src/components/__tests__/dialog-busy-gate.test.tsx (6 tests) 340ms
+stderr | src/components/__tests__/page-write-read-only.test.tsx > Re-ingest, on a read-only deployment > re-ingests as before on a writable deployment
+Not implemented: navigation to another Document
+
+ ✓ |dom| src/components/__tests__/lint-check-parity.test.tsx (29 tests) 288ms
+ ✓ |dom| src/components/__tests__/page-write-read-only.test.tsx (18 tests) 397ms
+ ✓ |dom| src/components/workbench/__tests__/workbench-split-wiring.test.tsx (10 tests) 452ms
+ ✓ |dom| src/app/settings/__tests__/settings-page-legacy-surface-parity.test.tsx (14 tests) 306ms
+ ✓ |dom| src/components/workbench/__tests__/settings-vector-namespace.test.tsx (27 tests) 274ms
+ ✓ |dom| src/hooks/__tests__/useDialogA11y.test.tsx (16 tests) 239ms
+ ✓ |dom| src/components/workbench/__tests__/icon-rail.test.tsx (10 tests) 289ms
+ ✓ |dom| src/components/__tests__/article-actions-delete-gate.test.tsx (27 tests) 329ms
+ ✓ |dom| src/components/workbench/__tests__/settings-shortcut.test.tsx (5 tests) 278ms
+ ✓ |dom| src/components/workbench/__tests__/workbench-read-only-seam.test.tsx (3 tests) 254ms
+ ✓ |dom| src/components/workbench/__tests__/chat-search-contracts.test.tsx (5 tests) 243ms
+ ✓ |dom| src/hooks/__tests__/useLint.test.tsx (6 tests) 204ms
+ ✓ |dom| src/components/workbench/__tests__/todos-canvas.test.tsx (9 tests) 208ms
+ ✓ |dom| src/components/workbench/__tests__/preview-dirty-guard.test.tsx (19 tests) 2432ms
+   ✓ a pick made while the editor is dirty is held (DW-36) > changes nothing at all and opens the discard confirm  302ms
+ ✓ |dom| src/app/settings/__tests__/settings-page-read-only-controls.test.tsx (7 tests) 214ms
+ ✓ |dom| src/components/__tests__/renderer-slug-tenant-adoption.test.tsx (7 tests) 179ms
+ ✓ |dom| src/hooks/__tests__/useSettings.test.tsx (6 tests) 163ms
+ ✓ |dom| src/components/__tests__/recent-ingests-read-only.test.tsx (5 tests) 183ms
+ ✓ |dom| src/components/workbench/__tests__/settings-embedding-provider-switch.test.tsx (8 tests) 123ms
+ ✓ |dom| src/components/__tests__/new-wiki-form-read-only.test.tsx (6 tests) 131ms
+ ✓ |dom| src/components/workbench/__tests__/wiki-canvas-read-only.test.tsx (7 tests) 111ms
+ ✓ |dom| src/components/workbench/__tests__/review-badge.test.tsx (8 tests) 140ms
+ ✓ |dom| src/components/__tests__/status-badge.test.tsx (3 tests) 86ms
+ ✓ |dom| src/components/__tests__/single-main-landmark-mounted.test.tsx (6 tests) 77ms
+ ✓ |dom| src/components/__tests__/structured-knowledge-settings.test.tsx (13 tests) 61ms
+ ✓ |dom| src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (31 tests) 3202ms
+   ✓ an open Create Wiki dialog survives Settings, opened via 'the rail control' (DW-373) > keeps the typed name and the shown error across Settings and back  334ms
+ ✓ |dom| src/components/workbench/__tests__/data-version-watcher.test.tsx (19 tests) 71ms
+ ✓ |dom| src/app/wiki/log/__tests__/log-slug-tenant-gate.test.tsx (3 tests) 96ms
+ ✓ |dom| src/components/workbench/__tests__/preview-announcements.test.tsx (43 tests) 3361ms
+ ✓ |dom| src/components/__tests__/embedding-settings-override.test.tsx (7 tests) 37ms
+ ✓ |dom| src/app/settings/__tests__/settings-page-embedding-wiring.test.tsx (2 tests) 55ms
+ ✓ |dom| src/components/__tests__/provider-form.test.tsx (12 tests) 48ms
+ ✓ |dom| src/components/__tests__/bulk-document-accept-parity.test.tsx (2 tests) 31ms
+ ✓ |dom| src/hooks/__tests__/useSidecarStatus.test.tsx (9 tests) 33ms
+ ✓ |node| src/lib/__tests__/mcp.test.ts (226 tests) 89759ms
+   ✓ MCP write tools > create_page > creates a new page  618ms
+   ✓ MCP write tools > create_page > includes all yopedia schema fields in frontmatter  662ms
+   ✓ MCP write tools > create_page > rejects duplicate slug  668ms
+   ✓ MCP write tools > create_page > accepts tags and includes them in frontmatter  692ms
+   ✓ MCP write tools > create_page > defaults tags to empty array when not provided  653ms
+   ✓ MCP write tools > create_page > strips H1 heading from summary  730ms
+   ✓ MCP write tools > create_page > strips caller frontmatter to prevent double frontmatter  658ms
+   ✓ MCP write tools > update_page > updates existing page  1602ms
+   ✓ MCP write tools > update_page > preserves frontmatter  947ms
+   ✓ MCP write tools > update_page > author attribution  1660ms
+   ✓ MCP write tools > update_page > strips H1 heading from summary on update  1576ms
+   ✓ MCP write tools > update_page > strips caller frontmatter to prevent double frontmatter  1580ms
+   ✓ MCP write tools on a read-only deployment > update_page is rejected and leaves the stored bytes alone  736ms
+   ✓ MCP write tools on a read-only deployment > update_metadata is rejected and leaves the frontmatter alone  807ms
+   ✓ MCP write tools on a read-only deployment > delete_page is rejected and the page survives  730ms
+   ✓ MCP write tools on a read-only deployment > all four still work with the flag unset — the control case  3179ms
+   ✓ MCP cross-referencing > create_page triggers cross-ref update on related pages  2609ms
+   ✓ MCP cross-referencing > update_page triggers cross-ref update on related pages  3229ms
+   ✓ seed_agent tool > creates agent and returns profile  1990ms
+   ✓ seed_agent tool > is idempotent — re-seeding updates existing pages  1953ms
+   ✓ update_metadata > updates frontmatter without changing body  1527ms
+   ✓ update_metadata > patches a PRIVATE page's metadata via the trusted MCP path (realm-aware ACL)  1470ms
+   ✓ update_metadata > rejects lifecycle-managed fields  633ms
+   ✓ update_metadata > silently ignores unknown fields  1327ms
+   ✓ update_metadata > tracks contributor attribution  1749ms
+   ✓ update_metadata > bumps updated timestamp  887ms
+   ✓ update_metadata > updates multiple patchable fields at once  1521ms
+   ✓ delete_page > deletes an existing page and returns confirmation  1193ms
+   ✓ delete_page > strips backlinks from other pages when deleting  2369ms
+   ✓ merge_pages > merges one page into another, recording a slug alias, and deletes the absorbed page  2880ms
+   ✓ merge_pages > attributes merge to the given author, not 'system'  2782ms
+   ✓ merge_pages > throws when merging a page into itself  708ms
+   ✓ batch_ingest_urls > ingests valid URLs and returns per-URL results  2946ms
+   ✓ batch_ingest_urls > files each successfully ingested page into the provided vault  3612ms
+   ✓ ingest_text > ingests valid text content and creates a wiki page  1627ms
+   ✓ ingest_text > auto-generates title from content when title is omitted  1596ms
+   ✓ ingest_text > attributes author from owner instead of defaulting to system  1595ms
+   ✓ ingest_text > falls back to system when owner is not provided  1285ms
+   ✓ ingest_text > passes sourceUrl through to the page frontmatter  1485ms
+   ✓ ingest_text > defaults sourceType to text when not provided with sourceUrl  1488ms
+   ✓ ingest_text > without sourceUrl continues to work as before  1527ms
+   ✓ ingest_pdf > passes owner and triggeredBy through to ingestPdf  1725ms
+   ✓ ingest_pdf > works without owner/triggeredBy (backward-compatible)  1442ms
+   ✓ ingest_pdf > files the ingested page into the provided vault  1587ms
+   ✓ ingest_image > ingests an image URL and returns slug and title  1549ms
+   ✓ ingest_image > passes owner and triggeredBy through to ingestImage  1409ms
+   ✓ ingest_image > files the ingested page into the provided vault  1436ms
+   ✓ ingest_image > forwards tags to ingestImage  1405ms
+   ✓ ingest_x_mention > accepts valid x.com URL and returns result shape  1519ms
+   ✓ ingest_x_mention > accepts valid twitter.com URL and returns result shape  1095ms
+   ✓ ingest_x_mention > accepts www.x.com URL and returns result shape  773ms
+   ✓ reingest > re-ingests an X post via the syndication path, pinned to its slug  360ms
+   ✓ MCP write ACL > handleUpdatePage > allows body write when no principal provided (stdio MCP fallback)  386ms
+   ✓ MCP write ACL > handleUpdatePage > allows body write on own private page  351ms
+ ✓ |dom| src/app/u/[handle]/[slug]/edit/__tests__/edit-denial-copy.test.tsx (20 tests) 10ms
+ ✓ |dom| src/components/workbench/__tests__/preview-revision-history.test.tsx (34 tests) 3992ms
+stderr | src/lib/__tests__/ingest.test.ts > ingest ledger > ledger write failure does not break ingest
+[ingest] Failed to write ledger entry: Error: EEXIST: file already exists, mkdir '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/ledger-test-ANJzmK/data'
+    at Proxy.mkdir (node:internal/fs/promises:859:10)
+    at FilesystemStorageProvider.ensureParent (/Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:208:5)
+    at /Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:349:7
+    at /Users/christianlee/App-Development/work-wiki/src/lib/storage/filesystem.ts:110:14 {
+  errno: -17,
+  code: 'EEXIST',
+  syscall: 'mkdir',
+  path: '/var/folders/1j/zwprw7450vn2072k51s7vt_h0000gn/T/ledger-test-ANJzmK/data'
+}
+
+ ✓ |node| src/lib/__tests__/ingest.test.ts (242 tests) 98795ms
+   ✓ ingest — title derivation > derives the title/slug from the content when the title is empty  1464ms
+   ✓ ingest — title derivation > derives from a markdown H1 when the title is empty  1530ms
+   ✓ ingest — title derivation > a title-less paste with an LLM CONCEPT lands on the concept slug + records the derived title as an alias  1742ms
+   ✓ ingest — title derivation > a title-less paste derives its slug from the synthesized CONCEPT (no fork)  1439ms
+   ✓ ingest > creates wiki page and index entry  1550ms
+   ✓ ingest > writes the pageType to frontmatter.type on a new page (agent-scoping)  1521ms
+   ✓ ingest > does not change an existing page's scope on re-ingest  3312ms
+   ✓ ingest > updates existing entry on re-ingest instead of duplicating  3275ms
+   ✓ ingest > updates title on re-ingest when slug matches but title differs  3373ms
+   ✓ ingest > uses extractSummary for index entries (not bare period split)  1613ms
+   ✓ ingest — auto tags > keeps caller-supplied tags when the synthesis emits no TAGS line  1719ms
+   ✓ ingest — auto tags > merges freshly synthesized tags with an existing page's on-disk tags on re-ingest  3303ms
+   ✓ ingest — auto tags > persists LLM-synthesized TAGS to the page frontmatter  1728ms
+   ✓ ingest — auto tags > always tags the page with its own concept, and caps the set at MAX_AUTO_TAGS  1571ms
+   ✓ ingest — auto tags > caps the tag union on re-ingest and keeps established tags over fresh facets (sprawl fix)  2958ms
+   ✓ ingest — auto tags > dedupes the concept tag against an identical synthesized facet (no wasted slot)  1453ms
+   ✓ ingest — auto tags > tags a CJK-titled page with its own concept (CJK tags preserved, not stripped)  1377ms
+   ✓ ingest — auto tags > merges synthesized tags with caller-supplied tags (deduped)  1724ms
+   ✓ ingest — auto tags > collectTagVocabulary reflects tags across ingested pages, most-used first  2855ms
+   ✓ ingest — auto tags > buildIngestSystemPrompt injects the existing tag vocabulary for reuse  1511ms
+   ✓ ingest — YAML frontmatter > prepends a frontmatter block to new pages  1583ms
+   ✓ ingest — YAML frontmatter > increments source_count and preserves created on re-ingest  3305ms
+   ✓ ingest — Phase 1 frontmatter fields > new page gets confidence, disputed, authors, expiry  1459ms
+   ✓ ingest — Phase 1 frontmatter fields > re-ingest preserves authors, aliases, disputed and adds system to contributors  3167ms
+   ✓ ingest — Phase 1 frontmatter fields > re-ingest does not duplicate system in contributors  3141ms
+   ✓ ingest — Phase 1 frontmatter fields > re-ingest recomputes confidence from signals (ignores a manually-set value)  3509ms
+   ✓ ingest — source URL tracking > stores source_url in frontmatter when sourceUrl option is provided  1542ms
+   ✓ ingest — source URL tracking > does NOT add source_url when no sourceUrl option is provided (text paste)  1453ms
+   ✓ ingest — source URL tracking > preserves existing source_url on re-ingest without a new URL  2816ms
+   ✓ ingest — source URL tracking > stores a per-source raw snapshot with a distinct raw_id per source  3061ms
+   ✓ ingest — source URL tracking > overwrites source_url on re-ingest with a new URL  3157ms
+   ✓ ingest — source URL tracking > ingestUrl passes the URL through to frontmatter  1144ms
+   ✓ ingest — structured sources[] provenance > new URL ingest creates sources[] with a url-type entry  1389ms
+   ✓ ingest — structured sources[] provenance > new text ingest creates sources[] with a text-type entry  1548ms
+   ✓ ingest — structured sources[] provenance > re-ingest with different URL appends to sources[]  2886ms
+   ✓ ingest — structured sources[] provenance > re-ingest with same URL updates fetched date instead of duplicating  2828ms
+   ✓ ingest — structured sources[] provenance > re-ingest of the same URL with a new body mints a new raw snapshot (FR-2)  2196ms
+   ✓ ingest — structured sources[] provenance > re-ingest of text-paste over existing URL preserves both entries  862ms
+   ✓ ingest — structured sources[] provenance > backward compat: source_url still set alongside sources[]  396ms
+   ✓ ingestUrl > fetches URL and creates wiki page  359ms
+   ✓ cross-referencing > updateRelatedPages > handles multiple related pages  352ms
+   ✓ cross-referencing > ingest with cross-referencing > returns multiple wikiPages when cross-refs are updated  530ms
+   ✓ ingest — concept-slug convergence > converges two differently-titled sources of one concept onto a single page  575ms
+   ✓ ingest — concept resolver (adjudicated merge) > merges a differently-worded source into the candidate the adjudicator confirms  539ms
+   ✓ ingest — concept resolver (adjudicated merge) > forks when no candidate clears the retrieval floor (no adjudication call)  618ms
+   ✓ ingest — concept resolver (adjudicated merge) > never folds into an artifact / agent-scoped candidate even at the same scope  540ms
+   ✓ ingest — concept resolver (adjudicated merge) > forks when the adjudicator judges the candidate a DIFFERENT concept  609ms
+   ✓ ingest — concept resolver (adjudicated merge) > forks when the adjudicator returns a slug that wasn't offered (hallucination guard)  613ms
+   ✓ ingest — concept resolver (adjudicated merge) > merges via the BM25 fallback when embeddings are unavailable (the pre-backfill prod path)  489ms
+   ✓ ingest — reconcile on merge > re-synthesizes existing + new into the merged body (not an overwrite)  305ms
+   ✓ ingest — reconcile on merge > flags the page disputed when reconcile reports a contradiction  330ms
+   ✓ ingest — reconcile on merge > degrades to the new body (ingest still succeeds) when reconcile throws  328ms
+   ✓ reingest > succeeds when page has source_url — re-fetches and updates  302ms
+   ✓ reingest > re-ingesting a plain URL stays on the page's slug even when the concept differs (no fork)  323ms
+   ✓ reingest > re-synthesizes the page in place — a renamed concept doesn't fork the slug  337ms
+   ✓ reingest > dedups a re-ingested source by URL even when the type differs  307ms
+   ✓ ingest resolves workspace guidance once per document > shares a CALLER-SUPPLIED handle across two whole documents  372ms
+   ✓ ingest resolves workspace guidance once per document > still picks up a dictionary entry saved BETWEEN two ingests  382ms
+   ✓ ingest resolves workspace guidance once per document > shares the same handle with reconcile-on-merge  366ms
+   ✓ ingest resolves workspace guidance once per document > still picks up a Purpose saved BETWEEN two ingests  381ms
+
+ Test Files  302 passed (302)
+      Tests  6648 passed (6648)
+   Start at  10:22:53
+   Duration  100.05s (transform 7.98s, setup 7.82s, collect 54.31s, tests 1424.55s, environment 26.33s, prepare 10.40s)
+
+exit: 0
+finished: 2026-08-24T15:24:33Z

@@ -13,8 +13,8 @@ export default function WikiPageError({
     <PageError
       title="Page error"
       description="Something went wrong loading this wiki page."
-      backHref="/wiki"
-      backLabel="← Back to wiki"
+      backHref="/"
+      backLabel="← Home"
       error={error}
       reset={reset}
     />

@@ -93,7 +93,7 @@ export async function describeImage(
   }
 
   // 1. Preferred: the configured LLM's multimodal vision (DeepSeek etc.).
-  if (hasLLMKey()) {
+  if (await hasLLMKey()) {
     try {
       const text = (
         await callVisionLLM(prompt, image, {

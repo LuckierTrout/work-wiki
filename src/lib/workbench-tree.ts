@@ -1,0 +1,912 @@
+/**
+ * The Workbench left column's tree vocabulary and shaping rules (Story 1.4),
+ * plus the Wiki CANVAS CARD's sentences that answer them.
+ *
+ * Pure and client-safe on purpose, exactly like `workbench-modes.ts`: the tree
+ * component imports it in the browser, `page.tsx` imports it on the server to
+ * shape what it loaded, and the node-environment test imports it to pin every
+ * ordering, label and count rule. Nothing here touches storage, auth or the
+ * DOM, so "why is this group first?" has one answer in one file.
+ *
+ * ONE OWNER PER WORDING. Every sentence these surfaces can render is a constant
+ * here rather than a literal in the component, for the same reason
+ * `workbench-modes.ts` owns the mode empty states: the UX handoff fixes the
+ * wording, so a second copy is drift — between the render site and the tests
+ * that pin it, and between two surfaces that meant to say the same thing.
+ *
+ * The `WIKI_*` family is here for the second half of that rule rather than
+ * because the card is part of the tree. The column and the card sit side by
+ * side in one viewport and answer the same questions about the same registry,
+ * so which surface may make which claim is a decision about the PAIR: the card
+ * owns "no Wiki exists yet" because it owns the action that ends the state
+ * (DW-176), and the card's failure sentence is COMPOSED from the column's so
+ * the shared half cannot drift (DW-285). Neither fact is expressible from
+ * inside one component, and both are executable from here.
+ */
+
+import { isAgentScopedType } from "./page-types";
+import type { IndexEntry } from "./types";
+import type { WorkbenchModeId } from "./workbench-modes";
+
+// ---------------------------------------------------------------------------
+// Walk limits
+// ---------------------------------------------------------------------------
+//
+// The caps live here, not in the server-only walker, because the truncation
+// SENTENCE is derived from one of them and this is the module a client
+// component may import. `workbench-files.ts` re-exports both for server
+// callers, so there is still one definition of each number.
+
+/** Hard cap on nodes in one file listing. Reaching it sets `truncated`. */
+export const WORKBENCH_FILE_LIMIT = 2000;
+
+/** First-paint window for the Sources tree — grow on scroll, do not remount. */
+export const SOURCES_WINDOW_INITIAL = 80;
+export const SOURCES_WINDOW_STEP = 80;
+
+/** SSR file walk budget so first paint does not wait on every row. */
+export const WORKBENCH_FIRST_PAINT_LIMIT = 80;
+
+/**
+ * Deepest level the walk descends to, counting the root directory as level 1:
+ * `wiki/` is 1, `wiki/a.md` is 2, `raw/sources/` is 2, a hashed Intake key
+ * (`raw/sources/<slug>/<hash>.md`, Story 2.1) is 4, and a mirrored folder
+ * arrival (`raw/sources/<seg>/<seg>/file.md`, Story 2.2) is 5.
+ *
+ * It was 4 while folder import stored nothing. A cap of 4 lists
+ * `raw/sources/papers/energy/` and then stops one level above `note.md`: the
+ * Files tab would show an empty folder for every nested Source, and
+ * `isListablePath` would refuse the leaf even when it was named directly.
+ */
+export const WORKBENCH_FILE_MAX_DEPTH = 5;
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+export type TreeTabId = "knowledge" | "files";
+
+export const DEFAULT_TREE_TAB: TreeTabId = "knowledge";
+
+export interface TreeTab {
+  id: TreeTabId;
+  label: string;
+}
+
+/** Tab order, left → right. `DESIGN.md:259` and the mockup fix this sequence. */
+export const TREE_TABS: readonly TreeTab[] = [
+  { id: "knowledge", label: "Knowledge" },
+  { id: "files", label: "Files" },
+] as const;
+
+/**
+ * Runtime narrowing for a value read back from storage. A tab id from an older
+ * build (or a hand-edited one) must not select a panel that does not exist —
+ * the tablist would render with nothing selected.
+ */
+export function isTreeTabId(value: unknown): value is TreeTabId {
+  return TREE_TABS.some((tab) => tab.id === value);
+}
+
+// ---------------------------------------------------------------------------
+// Copy — every user-visible sentence the tree and the Wiki canvas card can show
+// ---------------------------------------------------------------------------
+
+/**
+ * The tree's row when there is no Wiki to describe — deliberately QUIETER than
+ * the canvas card's {@link WIKI_EMPTY_COPY}, and deliberately not the same
+ * sentence (DW-176).
+ *
+ * In the zero-Wiki wiki-mode viewport this row and the card are on screen at
+ * the same moment, and both used to read the card's sentence word for word: one
+ * claim said twice, which reads as two separate findings and forced every
+ * mounted assertion about the card to scope itself away from the column. The
+ * card is the one surface that says a Wiki does not exist yet, because it is
+ * the one offering the action that ends the state.
+ *
+ * This row therefore makes NO registry claim at all. It reports only that this
+ * panel has nothing of a Wiki's to list — true on either tab, true whether the
+ * owner can create a Wiki or not, and never a second answer to the question the
+ * card has already answered beside it.
+ */
+export const TREE_NO_WIKI_COPY = "Nothing to show yet.";
+
+/**
+ * A read the column depends on failed, so it can make no claim about what is
+ * there. Deliberately the same OPENING SENTENCE `WikiWorkbench` shows for the
+ * same state, because two wordings for one failure read as two different
+ * failures.
+ *
+ * Since DW-285 that shared opening is a FACT rather than a coincidence: the
+ * card's {@link WIKI_UNAVAILABLE_COPY} is COMPOSED from this constant and only
+ * adds the recovery half. Rewording here carries the card with it, and no edit
+ * can leave the two surfaces disagreeing about what failed.
+ */
+export const TREE_UNAVAILABLE_COPY = "Your wikis couldn’t be loaded.";
+
+/**
+ * What a Wiki switch actually swaps into view, said at the switcher.
+ *
+ * A Wiki is a LENS, not a partition: `src/lib/wikis.ts:16-17` is the storage
+ * fact — Pages and Sources stay in the one tenant silo, and creating or
+ * re-templating a Wiki writes only `purpose.md`, `schema.md` and that Wiki's
+ * own `workspace-profile.json`. So switching leaves the Knowledge and Files
+ * trees showing the same pages and sources, which without this sentence reads
+ * as a broken switcher rather than as the design.
+ *
+ * "shows", never "changes": this same surface already uses the changing verbs
+ * for WRITES — the rename dialog's "Pages and Sources are not changed", the
+ * canvas card's "This overwrites purpose.md, Schema…" — so "switching changes
+ * purpose.md" reads as a warning that the switch rewrites the owner's file.
+ * A switch writes nothing; it re-points what is displayed.
+ *
+ * It lives here with every other left-column sentence for the reason the module
+ * docstring gives: one owner per wording, so the claim cannot drift between the
+ * render site and the tests that pin it. It renders as a plain muted note, not
+ * `role="alert"` — nothing failed, and the switcher's real error already owns
+ * that channel.
+ */
+export const WIKI_SCOPE_COPY =
+  "Switching wikis shows that wiki’s purpose.md and Schema. Pages and Sources are shared across your wikis.";
+
+/**
+ * The deployment refuses every Wiki write, so the switcher, New Wiki, Rename and
+ * Delete are all `aria-disabled` (DW-37). The sentence is what makes that state
+ * READABLE: an `aria-disabled` control announces "dimmed" and nothing about why,
+ * and a control the owner can still focus and still activate with no visible
+ * result is worse than one that says up front it will refuse.
+ *
+ * "cannot be" and "while this deployment is read-only" match the sentence
+ * `WorkspacePurposeSettings` already shows for the same fact, so one deployment
+ * does not describe itself two ways. It lives here with every other left-column
+ * sentence for the reason the module docstring gives: one owner per wording, so
+ * the claim cannot drift between the render site and the tests that pin it. Not
+ * `role="alert"` — nothing failed; this is the deployment's standing state.
+ */
+export const WIKI_READ_ONLY_COPY =
+  "Wikis cannot be created, switched, renamed or deleted while this deployment is read-only.";
+
+/**
+ * The Wiki canvas card's refusal for `Change template` (DW-189).
+ *
+ * `WIKI_READ_ONLY_COPY` above does NOT cover templates — it names creating,
+ * switching, renaming and deleting — so the canvas cannot borrow it and say
+ * something true about four other actions instead of the one the owner is
+ * standing in front of. Character-identical to what
+ * `POST /api/wikis/[id]/template` answers, which is what
+ * `read-only-copy-parity.test.ts` pins: the button opens onto a destructive
+ * confirm, and a sentence before the press that differs from the 403 body after
+ * it is exactly the drift that file exists to catch.
+ *
+ * TWO constants rather than one merged sentence, for the reason the canvas's
+ * own branches give: `Change template` renders only WITH a current wiki and
+ * `Create Wiki` only WITHOUT one, so a sentence naming both would always name
+ * an action the owner cannot see beside either. Not `role="alert"` — nothing
+ * failed; this is the deployment's standing state.
+ */
+export const WIKI_TEMPLATE_READ_ONLY_COPY =
+  "Templates cannot be applied while this deployment is read-only.";
+
+/**
+ * The Wiki canvas card's refusal for the empty state's `Create Wiki` (DW-282).
+ *
+ * The sibling of {@link WIKI_TEMPLATE_READ_ONLY_COPY}, mirroring
+ * `POST /api/wikis` character-for-character. Narrower than
+ * {@link WIKI_READ_ONLY_COPY} on purpose: the header switcher refuses four
+ * actions at once and says so, while the empty state offers exactly one.
+ */
+export const WIKI_CREATE_READ_ONLY_COPY =
+  "Wikis cannot be created while this deployment is read-only.";
+
+/**
+ * The Wiki canvas card's empty state — the ONE surface that says a Wiki does
+ * not exist yet (DW-176, DW-285).
+ *
+ * `WikiWorkbench` renders it beside the `Create Wiki` button that ends the
+ * state; {@link TREE_NO_WIKI_COPY} records why the left column's row no longer
+ * repeats it. It lives here rather than inline in the card for the reason the
+ * module docstring gives: the mounted card suites and the e2e canvas pin all
+ * quote this wording, and a literal in the component is a second definition
+ * every one of them can drift away from.
+ */
+export const WIKI_EMPTY_COPY = "No wiki yet.";
+
+/**
+ * The Wiki canvas card's registry-read failure, in its `role="alert"` (DW-285).
+ *
+ * DERIVED from {@link TREE_UNAVAILABLE_COPY}, never retyped: the column and the
+ * card open with the same sentence on purpose, and composition is what makes
+ * that a shared fact instead of two literals that happen to match today. The
+ * card adds the half the column has no room for — the reload is the whole
+ * recovery, and a one-line tree row cannot spend a sentence naming it.
+ */
+export const WIKI_UNAVAILABLE_COPY = `${TREE_UNAVAILABLE_COPY} Reload to try again.`;
+
+/**
+ * The page index — not the registry — is what failed. Named separately because
+ * the registry sentence would be a false statement here: the switcher above the
+ * tree is at that moment happily listing the wikis it claims could not load.
+ */
+export const KNOWLEDGE_UNAVAILABLE_COPY = "Your pages couldn’t be loaded.";
+
+/** Same distinction for the file walk (and for the gate it reads). */
+export const FILES_UNAVAILABLE_COPY = "Your files couldn’t be loaded.";
+
+/** The Knowledge tab has no readable pages. */
+export const KNOWLEDGE_EMPTY_COPY = "No pages yet. Ingest a source to compile one.";
+
+/** The Files tab has nothing under either root. */
+export const FILES_EMPTY_COPY = "No files yet.";
+
+/**
+ * The bounded walk hit its cap; the tree below is real but incomplete. The
+ * numeral is derived from {@link WORKBENCH_FILE_LIMIT} rather than typed, so
+ * the sentence cannot outlive the cap it describes. The locale is pinned
+ * because this build is English-only and the string must not vary by runtime.
+ */
+export const FILES_TRUNCATED_COPY = `File list truncated at ${new Intl.NumberFormat(
+  "en-US",
+).format(WORKBENCH_FILE_LIMIT)} entries.`;
+
+/**
+ * The group untyped pages fall into. Named rather than left blank: a disclosure
+ * with no label is a control the owner cannot describe to themselves.
+ */
+export const UNTYPED_GROUP_LABEL = "Pages";
+
+// ---------------------------------------------------------------------------
+// Selection
+// ---------------------------------------------------------------------------
+
+/**
+ * What the shell remembers when a tree row is picked. A discriminated union
+ * rather than a bare string so a page slug and a file path can never be
+ * confused for one another — Story 1.5 reads exactly this to decide what to
+ * fetch into the Preview body.
+ */
+export type KernelSelection =
+  | { kind: "page"; slug: string }
+  | { kind: "file"; path: string };
+
+/**
+ * A file the Chat Agent wrote under the sidecar's `agent-workspace/`
+ * (Story 8.8).
+ *
+ * A THIRD KIND rather than a `file` pick with a prefix, because the two are read
+ * from different machines: a `file` pick is fetched from the kernel through
+ * `/api/workbench/preview`, and this one is on the owner's local disk behind the
+ * sidecar. A workspace path smuggled in as a `file` would 404 against the wiki
+ * tree, and the column that renders it must not offer Edit, History or Revert —
+ * none of which exist for a file the kernel has never seen.
+ */
+export type WorkspaceSelection = { kind: "workspace"; path: string };
+
+export type TreeSelection = KernelSelection | WorkspaceSelection;
+
+/** Narrow to the two picks the kernel-backed Preview column can render. */
+export function isKernelSelection(
+  selection: TreeSelection | null,
+): selection is KernelSelection {
+  return selection !== null && selection.kind !== "workspace";
+}
+
+/** The pick an output chip docks. */
+export function workspaceSelection(path: string): WorkspaceSelection {
+  return { kind: "workspace", path };
+}
+
+/**
+ * Do two picks name the same row? The shell uses this to make a second click on
+ * the selected row DESELECT it — without that there is no way to undock the
+ * Preview short of leaving Wiki mode.
+ */
+export function isSameSelection(
+  a: TreeSelection | null,
+  b: TreeSelection | null,
+): boolean {
+  if (!a || !b || a.kind !== b.kind) return false;
+  return a.kind === "page"
+    ? a.slug === (b as { slug: string }).slug
+    : a.path === (b as { path: string }).path;
+}
+
+/**
+ * Is this pick still a row the trees on screen actually contain? (Story 1.6.)
+ *
+ * A selection restored from browser storage may name a page that was deleted, a
+ * file the walk no longer lists, or a row that belonged to a Wiki the owner has
+ * since switched away from. Restoring it anyway docks a Preview that answers
+ * `This file couldn’t be loaded.` and puts `aria-current` on nothing — a shell
+ * that looks broken rather than one that forgot. Built on the two lookups the
+ * Preview column already uses, so "is this row in the tree?" has one answer.
+ *
+ * A directory is not a row: the file tree renders directories as disclosures,
+ * never as selectable buttons, so restoring one would dock a column with no
+ * bytes behind it.
+ */
+export function selectionExists(
+  selection: TreeSelection | null,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): boolean {
+  if (!selection) return false;
+  if (selection.kind === "page") {
+    return findKnowledgePage(knowledge, selection.slug) !== null;
+  }
+  // A WORKSPACE pick is never in these trees — the file is on the sidecar's disk,
+  // not in the wiki — so asking the wiki tree about it would drop every output
+  // chip the moment the shell re-validated a restored selection. Whether the file
+  // still exists is the sidecar's answer, and its column asks for it directly.
+  if (selection.kind === "workspace") return true;
+  const node = findFileNode(files, selection.path);
+  return node !== null && !node.isDirectory;
+}
+
+/**
+ * What to CALL this pick — the name the Preview header prints and the name the
+ * shell's dock announcement speaks (DW-34).
+ *
+ * Lifted out of `PreviewColumn` because the shell now needs it too, and two
+ * derivations of one name is how the spoken sentence starts naming something
+ * other than what the column shows. The rule is exactly the one the column
+ * already spelled:
+ *
+ * - a page is its title, and its SLUG when the trees no longer carry it. A
+ *   selection can outlive its page (a refresh that dropped it), and the slug is
+ *   still a true statement about what the owner picked;
+ * - a file is its node's name, else the last non-empty path segment, else the
+ *   whole path. `||` and not `??` at both steps: `"a/b/".split("/").at(-1)` is
+ *   the EMPTY STRING, not `undefined`, so a nullish fallback would leave the
+ *   header blank and the announcement reading `Preview, `.
+ */
+export function selectionName(
+  selection: TreeSelection,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): string {
+  if (selection.kind === "page") {
+    return findKnowledgePage(knowledge, selection.slug)?.title ?? selection.slug;
+  }
+  if (selection.kind === "workspace") {
+    // Its basename, and never a tree lookup: the wiki trees do not contain it,
+    // so `findFileNode` would answer `null` and the header would print the whole
+    // relative path where every other pick prints a name.
+    return selection.path.split("/").filter(Boolean).at(-1) || selection.path;
+  }
+  const node = findFileNode(files, selection.path);
+  return node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;
+}
+
+/**
+ * What a refreshed server render should do with the selected row (DW-53).
+ *
+ * THREE answers, not two, because clearing and announcing are separate acts:
+ *
+ * - `keep` — the pick is still real, or nothing here can prove it is not;
+ * - `clear` — the pick is stale and must not survive, but no column is on
+ *   screen, so there is nothing for a sentence to be about;
+ * - `report` — clear it AND say so. The Preview was visible and is about to
+ *   vanish mid-read, which is indistinguishable from a bug unless it is spoken.
+ *
+ * `docked` is what separates the last two, and it is not the same question as
+ * "is there a selection". Settings takes the left column, so the shell holds a
+ * live pick with `previewOpen === false` for the whole time it is open —
+ * announcing `Preview closed — that item was removed.` there would report the
+ * disappearance of a panel the owner cannot see.
+ */
+export type SelectionRefreshAction = "keep" | "clear" | "report";
+
+/**
+ * The refusals, each a different way of being wrong about a deletion:
+ *
+ * - a read that FAILED hands its tree down empty, and treating that as "every
+ *   row was deleted" would close the Preview after one bad minute on the
+ *   server. Matched to the selection's own kind: a failed file walk says
+ *   nothing at all about whether a PAGE still exists, and suppressing
+ *   reconciliation for both would leave a genuinely deleted page docked for as
+ *   long as the unrelated read stays broken;
+ * - a TRUNCATED walk listed real files and then stopped at
+ *   {@link WORKBENCH_FILE_LIMIT}. The selected file may be one of the ones it
+ *   never reached, so "absent from this list" is not evidence of removal —
+ *   only for a file selection, since the cap is the file walk's alone;
+ * - `layoutMoved` — a Wiki, mode or tab change and a server re-render can land
+ *   in the SAME commit, and the reset effect owns the clear in that case.
+ *   Clearing again, with a sentence about removal, would report something that
+ *   did not happen. Passed in rather than compared here so the shell holds no
+ *   condition of its own;
+ * - no selection at all — nothing was lost.
+ */
+export function selectionRefreshAction(input: {
+  selection: TreeSelection | null;
+  knowledge: readonly KnowledgeGroup[];
+  files: readonly FileNode[];
+  /** Is a Preview column actually on screen for this pick? */
+  docked: boolean;
+  knowledgeUnavailable: boolean;
+  filesUnavailable: boolean;
+  filesTruncated: boolean;
+  layoutMoved: boolean;
+}): SelectionRefreshAction {
+  const selection = input.selection;
+  if (selection === null) return "keep";
+  if (input.layoutMoved) return "keep";
+  if (selection.kind === "page") {
+    if (input.knowledgeUnavailable) return "keep";
+  } else if (input.filesUnavailable || input.filesTruncated) {
+    return "keep";
+  }
+  if (selectionExists(selection, input.knowledge, input.files)) return "keep";
+  return input.docked ? "report" : "clear";
+}
+
+/**
+ * WHICH tab can put `aria-current` on this row (DW-46).
+ *
+ * Not a preference and not a default: a page row exists only in the Knowledge
+ * tree and a file row only in the Files tree, so this names the one tab on which
+ * the pick is a visible, markable row. On the other one the selection is a
+ * Preview describing something the tree on screen cannot point at — exactly the
+ * state the shell's reset effect exists to prevent, and exactly what the mount
+ * restore was able to create on its own before this existed.
+ */
+export function selectionTab(selection: TreeSelection): TreeTabId {
+  return selection.kind === "page" ? "knowledge" : "files";
+}
+
+/**
+ * A restore the shell may actually perform: the row AND the tab that can mark
+ * it.
+ *
+ * The pair travels together because the two halves are one decision. A row
+ * restored onto the wrong tab is not half-restored — it is a Preview docked over
+ * a tree with nothing current in it, and the mount effect's restore signature
+ * then arms the reset effect's guard so that nothing will ever clear the
+ * mismatch. Returning the tab is what lets the caller arm that signature with
+ * the tab it is actually switching to.
+ */
+export interface RestorableSelection {
+  selection: TreeSelection;
+  tab: TreeTabId;
+}
+
+/**
+ * The whole restore decision for a stored pick (Story 1.6): the row to select on
+ * mount together with the TAB that can mark it, or `null` for "restore nothing".
+ *
+ * Three conditions have to hold together, and spelling them inline in the mount
+ * effect would leave them where only a grep could reach them — the Wiki half in
+ * particular, whose failure (another Wiki's row restored over the current one) is
+ * invisible until the Preview loads somebody else's page. `stored` is typed
+ * structurally rather than imported from `workbench-state`, which imports THIS
+ * module; the shape is `StoredSelection`.
+ *
+ * The stored TAB is deliberately not a parameter and never a veto (DW-46). A
+ * page/Files pairing is a state the live shell produces on purpose —
+ * {@link wikilinkSelection} resolves a link to a PAGE row while the Files tab is
+ * showing whenever the file form does not exist — so rejecting the row would
+ * forget a pick the owner legitimately made. The tab is CORRECTED instead, by
+ * {@link selectionTab}, which is a pure function of the row: a reload reproduces
+ * the same correction with nothing written down, so the owner's last explicit
+ * tab choice survives in storage untouched.
+ */
+export function restorableSelection(
+  stored: { wikiId: string; selection: TreeSelection } | null,
+  currentWikiId: string | null,
+  knowledge: readonly KnowledgeGroup[],
+  files: readonly FileNode[],
+): RestorableSelection | null {
+  if (!stored || currentWikiId === null) return null;
+  if (stored.wikiId !== currentWikiId) return null;
+  if (!selectionExists(stored.selection, knowledge, files)) return null;
+  return { selection: stored.selection, tab: selectionTab(stored.selection) };
+}
+
+/**
+ * Whether the Preview column docks — the story's headline behaviour, lifted out
+ * of JSX so it is executed by a test rather than grepped for in a source scan.
+ *
+ * Wiki, Chat citations, Search hits, Todos meeting links, and Graph / Lint /
+ * Review page picks dock Preview.
+ */
+export function shouldDockPreview(
+  mode: WorkbenchModeId,
+  selection: TreeSelection | null,
+): boolean {
+  if (selection === null) return false;
+  return (
+    mode === "wiki" ||
+    mode === "chat" ||
+    mode === "search" ||
+    mode === "todos" ||
+    mode === "graph" ||
+    mode === "lint" ||
+    mode === "review"
+  );
+}
+
+/**
+ * Map a retrieve / Search path onto the Preview pick the column already loads.
+ * Flat `wiki/<slug>.md` pages stay page selections; Sources and nested wiki
+ * files are file picks so Preview reads the stored path.
+ */
+export function selectionFromContentPath(path: string): TreeSelection {
+  const normalized = path.replace(/^\//, "");
+  if (normalized.startsWith("wiki/") && normalized.endsWith(".md")) {
+    const rest = normalized.slice("wiki/".length, -".md".length);
+    if (rest && !rest.includes("/")) {
+      return { kind: "page", slug: rest };
+    }
+    if (rest.startsWith("queries/") && !rest.slice("queries/".length).includes("/")) {
+      return { kind: "page", slug: rest };
+    }
+  }
+  return { kind: "file", path: normalized };
+}
+
+/**
+ * What following a `[[wikilink]]` should select (Story 1.5).
+ *
+ * The link names a PAGE, but the tree showing is whichever tab the owner left
+ * open — so on the Files tab the equivalent row is `wiki/<slug>.md`, and picking
+ * the page instead would leave `aria-current` on a row that tab does not render.
+ * Switching the tab for them is not the alternative it looks like: the shell's
+ * reset effect undocks the Preview whenever `treeTab` changes, so the jump would
+ * clear the selection it just made.
+ *
+ * The file form is used only when that node actually exists — a page whose file
+ * the walk did not list (truncated, gated, or a legacy flat-tree page) still
+ * resolves to a page selection rather than to a row nobody can point at.
+ *
+ * That fallback is what makes the LIVE shell able to hold a page selection while
+ * the Files tab is showing, and it is why the RESTORE path corrects the tab
+ * rather than rejecting the row (DW-46): see {@link restorableSelection} and
+ * {@link selectionTab}. Nothing here changes — this function never switches the
+ * tab, because the shell's reset effect would clear the selection it just made.
+ */
+export function wikilinkSelection(
+  tab: TreeTabId,
+  files: readonly FileNode[],
+  slug: string,
+): TreeSelection {
+  if (tab === "files") {
+    const path = `wiki/${slug}.md`;
+    if (findFileNode(files, path)) return { kind: "file", path };
+  }
+  return { kind: "page", slug };
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge tree
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of an `IndexEntry` the left column and the Preview frontmatter
+ * strip actually read. Narrowed on the server so the client payload carries the
+ * page index's browse fields and not its whole read model.
+ */
+export interface KnowledgePage {
+  slug: string;
+  title: string;
+  type?: string;
+  updated?: string;
+  sourceCount?: number;
+}
+
+export interface KnowledgeGroup {
+  /** The raw `type` this group collects; `""` for the untyped group. */
+  id: string;
+  label: string;
+  count: number;
+  pages: KnowledgePage[];
+}
+
+/**
+ * Ordering is `Intl.Collator`-based, matching `vault-explorer-view.ts`: a plain
+ * `<` comparison sorts by code unit, which puts every capitalised title ahead of
+ * every lower-cased one and reads as random to the owner.
+ */
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+/**
+ * Human label for a page `type`. `type` is a free string in `IndexEntry` — there
+ * is no union to switch on — so this is a formatting rule, not a lookup table:
+ * separators become spaces and only the first letter is capitalised, leaving
+ * `agent-identity` → `Agent identity` rather than Title Case.
+ */
+export function knowledgeGroupLabel(type?: string): string {
+  const spaced = (type ?? "").replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!spaced) return UNTYPED_GROUP_LABEL;
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function toKnowledgePage(entry: IndexEntry): KnowledgePage {
+  // The slug backstops a blank or whitespace-only title. A tree row is a button
+  // whose only content is this string, so an empty one is an unlabelled control
+  // — and the Preview header beside it would render blank. Done here rather
+  // than at each reader so the row, the sort and the Preview agree.
+  const page: KnowledgePage = {
+    slug: entry.slug,
+    title: entry.title?.trim() || entry.slug,
+  };
+  const type = entry.type?.trim();
+  if (type) page.type = type;
+  if (entry.updated) page.updated = entry.updated;
+  if (typeof entry.sourceCount === "number") page.sourceCount = entry.sourceCount;
+  return page;
+}
+
+/**
+ * Group the readable page index by `type`, untyped first.
+ *
+ * Agent-scoped pages are dropped here rather than at the call site so the rule
+ * cannot be forgotten by a second caller: this matches `/api/wiki`'s default,
+ * which is the browse contract the Knowledge tab is a view of.
+ *
+ * The index this groups is TENANT-WIDE, not per-Wiki (`src/lib/wikis.ts:16-17`,
+ * DW-30), so the same pages appear under every Wiki and a switch leaves this
+ * tab looking untouched. That is the storage fact, not a grouping bug — the
+ * left column says so (`WIKI_SCOPE_COPY`). Repartitioning the index per Wiki is
+ * DW-17's migration. Note the artifacts a switch DOES swap — `purpose.md` and
+ * `schema.md` — are deliberately kept out of the page index and so never reach
+ * this function; only the Files tab lists them.
+ */
+export function buildKnowledgeTree(entries: readonly IndexEntry[]): KnowledgeGroup[] {
+  const groups = new Map<string, KnowledgePage[]>();
+  for (const entry of entries) {
+    if (isAgentScopedType(entry.type)) continue;
+    // Trimmed, so a frontmatter `type: "  "` cannot open a SECOND group that
+    // also labels itself `Pages` — the label collapses whitespace, the key
+    // would not.
+    const id = (entry.type ?? "").trim();
+    const bucket = groups.get(id);
+    if (bucket) bucket.push(toKnowledgePage(entry));
+    else groups.set(id, [toKnowledgePage(entry)]);
+  }
+
+  return Array.from(groups, ([id, pages]) => ({
+    id,
+    label: knowledgeGroupLabel(id),
+    count: pages.length,
+    // Title order, slug as the tie-break — two pages may legitimately share a
+    // title, and an unstable order would reshuffle the tree between reloads.
+    pages: pages.sort(
+      (a, b) => collator.compare(a.title, b.title) || collator.compare(a.slug, b.slug),
+    ),
+  })).sort((a, b) => {
+    // The untyped group is not "the group whose label sorts to P": it is the
+    // catch-all, and it leads regardless of what the typed groups are called.
+    if (a.id === "") return -1;
+    if (b.id === "") return 1;
+    return collator.compare(a.label, b.label);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// File tree
+// ---------------------------------------------------------------------------
+
+export interface FileNode {
+  /** Full path from the tree root — unique, and the selection's identity. */
+  path: string;
+  /** The final segment: what the row renders. */
+  name: string;
+  isDirectory: boolean;
+  children: FileNode[];
+}
+
+/**
+ * Nest a flat list of `/`-separated paths into a tree.
+ *
+ * A trailing `/` means "this is a directory" — that is how an EMPTY directory
+ * survives the flattening at all (`raw/` with nothing in it yet still has to
+ * appear, or the owner cannot tell an empty silo from a missing one).
+ * Intermediate segments are materialised as directories whether or not the
+ * walk emitted them explicitly.
+ */
+export function buildFileTree(paths: readonly string[]): FileNode[] {
+  const roots: FileNode[] = [];
+  const byPath = new Map<string, FileNode>();
+
+  for (const raw of paths) {
+    const isDirectory = raw.endsWith("/");
+    const segments = raw.split("/").filter(Boolean);
+    if (segments.length === 0) continue;
+
+    let parent: FileNode[] = roots;
+    let prefix = "";
+    for (let i = 0; i < segments.length; i += 1) {
+      const name = segments[i];
+      prefix = prefix ? `${prefix}/${name}` : name;
+      const last = i === segments.length - 1;
+      const existing = byPath.get(prefix);
+      if (existing) {
+        // A path listed both as a parent segment and in its own right — the
+        // directory wins, because a file can never have children.
+        if (!last) existing.isDirectory = true;
+        parent = existing.children;
+        continue;
+      }
+      const node: FileNode = {
+        path: prefix,
+        name,
+        isDirectory: last ? isDirectory : true,
+        children: [],
+      };
+      byPath.set(prefix, node);
+      parent.push(node);
+      parent = node.children;
+    }
+  }
+
+  sortNodes(roots);
+  return roots;
+}
+
+/** Directories before files, each alphabetically — the mockup's own order. */
+function sortNodes(nodes: FileNode[]): void {
+  nodes.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+    return collator.compare(a.name, b.name);
+  });
+  for (const node of nodes) sortNodes(node.children);
+}
+
+/** Children of `raw/sources/` — the Sources-mode tree. */
+export function sourcesTreeFromFiles(files: readonly FileNode[]): FileNode[] {
+  const raw = files.find((node) => node.name === "raw" && node.isDirectory);
+  const sources = raw?.children.find(
+    (node) => node.name === "sources" && node.isDirectory,
+  );
+  return sources?.children ?? [];
+}
+
+export function countSourceLeaves(nodes: readonly FileNode[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    if (node.isDirectory) n += countSourceLeaves(node.children);
+    else n += 1;
+  }
+  return n;
+}
+
+/**
+ * Keep the first `limit` leaves, preserving ancestor directories so a window
+ * increase only appends rows — the tree root is not remounted.
+ */
+/** Grow the Sources window when first paint does not overflow. */
+export function nextSourceWindowLimit(
+  current: number,
+  leafCount: number,
+  overflows: boolean,
+  step: number = SOURCES_WINDOW_STEP,
+): number {
+  if (overflows || current >= leafCount) return current;
+  return Math.min(leafCount, current + step);
+}
+
+export function windowSourceTree(
+  nodes: readonly FileNode[],
+  limit: number,
+): FileNode[] {
+  let remaining = limit;
+  function take(list: readonly FileNode[]): FileNode[] {
+    const out: FileNode[] = [];
+    for (const node of list) {
+      if (remaining <= 0) break;
+      if (!node.isDirectory) {
+        remaining -= 1;
+        out.push(node);
+        continue;
+      }
+      const children = take(node.children);
+      if (children.length > 0 || node.children.length === 0) {
+        out.push({ ...node, children });
+      }
+    }
+    return out;
+  }
+  return take(nodes);
+}
+
+/** Depth-first lookup by path — the Preview column's only read of the tree. */
+export function findFileNode(
+  nodes: readonly FileNode[],
+  path: string,
+): FileNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const found = findFileNode(node.children, path);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The slug set the Files tab is gated on — read off the RENDERED tree, never
+ * off the index it was built from.
+ *
+ * `buildKnowledgeTree` narrows the readable index further (agent-scoped pages
+ * are dropped), so a set derived from the entries would let the Files tab name
+ * a page the Knowledge tab hides, and a filename is the same disclosure as a
+ * title. A function rather than a `flatMap` typed at the call site because that
+ * call site is a server component: inline, the story's privacy rule could only
+ * ever be grepped for in source text, and a rewrite that kept the prose and
+ * changed the expression would ship the disclosure with a green suite.
+ */
+export function readableSlugsFromKnowledge(
+  groups: readonly KnowledgeGroup[],
+): Set<string> {
+  const slugs = new Set<string>();
+  for (const group of groups) {
+    for (const page of group.pages) slugs.add(page.slug);
+  }
+  return slugs;
+}
+
+/**
+ * The two slug sets every workbench file door is gated on, derived together.
+ *
+ * `readableSlugs` is what the `wiki/` root admits; `hiddenSlugs` is what the
+ * `raw/` root REFUSES — the slugs the principal's own index named that
+ * {@link buildKnowledgeTree} did not show. `raw/` paths are slug-derived
+ * (`raw/sources/<slug>/<sha>.md`, the silo-mirrored binary tree
+ * `raw/assets/<slug>/<file>` (DW-491), and the legacy flat `raw/<slug>.md`), so
+ * without the second set the Files tree spells the filename of a page the
+ * Knowledge tab hides (DW-32) — the same disclosure `readableSlugs` exists to
+ * stop under `wiki/`.
+ *
+ * NOT "everything not readable": a `raw/` path whose spelled slug names no
+ * index entry at all is an ORPHANED source in the owner's own silo, and
+ * refusing it would hide real data to protect nothing. So the refusal set is
+ * derived from the ENTRIES, not from the universe of possible slugs.
+ */
+export interface WorkbenchSlugGate {
+  /** Slugs the Knowledge tab shows — the `wiki/` root's admissible set. */
+  readableSlugs: ReadonlySet<string>;
+  /**
+   * Slugs the principal's index named that the Knowledge tab does NOT show —
+   * the `raw/` root's refusal set.
+   */
+  hiddenSlugs: ReadonlySet<string>;
+}
+
+/**
+ * Produce both sets from the ONE `(entries, groups)` pair every door already
+ * holds.
+ *
+ * A function, and the only one, for the reason {@link readableSlugsFromKnowledge}
+ * gives and one more: the pair must not be spellable two ways. Eight doors build
+ * this gate (SSR first paint, three `/api/workbench/*` routes, three `/api/v1`
+ * routes, and `/api/assets/[...path]` — which is neither, but serves the same
+ * per-page binary tree and so has to refuse the same slugs, DW-536), and a call
+ * site that derived `hiddenSlugs` from a DIFFERENT knowledge tree than
+ * `readableSlugs` would produce a gate that both hides a readable page's
+ * sources and shows a hidden one's — exactly the drift DW-41 found between the
+ * listing filter and the read gate.
+ *
+ * `groups` must be `buildKnowledgeTree(entries)`; passing both is what keeps
+ * this module free of the storage read the entries came from.
+ */
+export function workbenchSlugGate(
+  entries: readonly IndexEntry[],
+  groups: readonly KnowledgeGroup[],
+): WorkbenchSlugGate {
+  const readableSlugs = readableSlugsFromKnowledge(groups);
+  const hiddenSlugs = new Set<string>();
+  for (const entry of entries) {
+    if (!readableSlugs.has(entry.slug)) hiddenSlugs.add(entry.slug);
+  }
+  return { readableSlugs, hiddenSlugs };
+}
+
+/** Flat lookup by slug across every group — the Preview column's page read. */
+export function findKnowledgePage(
+  groups: readonly KnowledgeGroup[],
+  slug: string,
+): KnowledgePage | null {
+  for (const group of groups) {
+    const found = group.pages.find((page) => page.slug === slug);
+    if (found) return found;
+  }
+  return null;
+}

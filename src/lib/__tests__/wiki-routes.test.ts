@@ -10,15 +10,45 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import {
+  beginPageCache,
   ensureDirectories,
+  readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
+  tenantForOwner,
+  wikiRelPath,
+  writeWikiPage,
   writeWikiPageWithSideEffects,
 } from "../wiki";
+import { withDurableLock } from "../lock";
+import { getStorage } from "../storage";
+import {
+  WRITE_CONFLICT_COPY,
+  WRITE_PRECONDITION_REQUIRED_COPY,
+  contentVersion,
+  formatIfMatch,
+} from "../write-precondition";
 import type { Frontmatter } from "../frontmatter";
 import { getPrincipal } from "@/lib/auth";
+import { WRITE_DENIAL_REALM } from "../write-denial";
 
 const mockedGetPrincipal = vi.mocked(getPrincipal);
+
+/**
+ * The write precondition `PUT /api/wiki/[slug]` now REQUIRES (DW-38, DW-51).
+ *
+ * Read from the page's own current bytes, which is exactly what every real
+ * caller does: the read that seeds an editor hashes the whole stored file, and
+ * the write checks the header against the same string. A test that hard-coded a
+ * version would pin the hash rather than the guard.
+ *
+ * A slug with no page answers `undefined` so the 404 and 403 cases can still be
+ * exercised with a well-formed header.
+ */
+async function currentIfMatch(slug: string): Promise<Record<string, string>> {
+  const page = await readWikiPageWithFrontmatter(slug);
+  return page ? { "If-Match": formatIfMatch(contentVersion(page.content)) } : {};
+}
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors lifecycle.test.ts approach
@@ -27,11 +57,19 @@ const mockedGetPrincipal = vi.mocked(getPrincipal);
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+// Since DW-37, `PUT`/`PATCH`/`DELETE /api/wiki/[slug]` all answer 403 while
+// `YOPEDIA_READONLY=1`. Every describe below except the read-only one asserts
+// what an ORDINARY deployment does, so the variable is cleared per test rather
+// than inherited: exported in the shell it would turn ~20 assertions red on one
+// developer's machine and nowhere else. The read-only block sets it explicitly.
+let originalReadOnly: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wiki-routes-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalReadOnly = process.env.YOPEDIA_READONLY;
+  delete process.env.YOPEDIA_READONLY;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   await ensureDirectories();
@@ -47,6 +85,11 @@ afterEach(async () => {
     delete process.env.RAW_DIR;
   } else {
     process.env.RAW_DIR = originalRawDir;
+  }
+  if (originalReadOnly === undefined) {
+    delete process.env.YOPEDIA_READONLY;
+  } else {
+    process.env.YOPEDIA_READONLY = originalReadOnly;
   }
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -106,6 +149,56 @@ describe("POST /api/wiki — yopedia metadata", () => {
     expect(expiryStr).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // Verify expiry is in the future
     expect(new Date(expiryStr).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("refuses a create that links to a same-owner slug claimed as a merged alias", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const common = {
+      created: today,
+      owner: "test-user",
+      visibility: "private",
+      authors: ["test-user"],
+      contributors: ["test-user"],
+    };
+    await writeWikiPageWithSideEffects({
+      slug: "post-create-survivor",
+      title: "Survivor",
+      content: serializeFrontmatter(
+        { ...common, aliases: ["post-create-retired"] },
+        "# Survivor\n\nCanonical Page.",
+      ),
+      summary: "canonical",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "post-create-retired",
+      title: "Replacement",
+      content: serializeFrontmatter(common, "# Replacement\n\nUnrelated replacement."),
+      summary: "replacement",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    const response = await callPost({
+      slug: "post-create-linker",
+      content: "# Linker\n\nSee [the old Page](post-create-retired.md).",
+    });
+
+    expect(response.status).not.toBe(201);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/missing|replaced/i),
+    });
+    expect(await readWikiPage("post-create-linker")).toBeNull();
+  });
+
+  it("creates a page that wikilinks a slug that does not exist yet", async () => {
+    const res = await callPost({
+      slug: "hub",
+      content: "# Hub\n\nSee [[spoke]].",
+    });
+    expect(res.status).toBe(201);
+    expect((await readWikiPage("hub"))?.content).toContain("[[spoke]]");
   });
 
   it("sets default expiry to ~90 days from creation date", async () => {
@@ -211,7 +304,7 @@ describe("PUT /api/wiki/[slug] — contributors and updated", () => {
     const mod = await import("@/app/api/wiki/[slug]/route");
     const req = new Request(`http://localhost:3000/api/wiki/${slug}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
       body: JSON.stringify(body),
     });
     return mod.PUT(req, { params: Promise.resolve({ slug }) });
@@ -363,13 +456,24 @@ describe("PATCH /api/wiki/[slug] — metadata updates", () => {
     return mod.PATCH(req, { params: Promise.resolve({ slug }) });
   }
 
-  /** Create a page with full work-wiki metadata so PATCH has something to edit. */
+  /**
+   * Create a page with full work-wiki metadata so PATCH has something to edit.
+   *
+   * PRIVATE and owned by "test-user" — the same convention the PUT suite above
+   * uses, and for the same reason. Since DW-121 the commons realm refuses a
+   * human's metadata patch on a public knowledge page exactly as it refuses a
+   * body write, so a public seed would make every case here a 403 about
+   * authorization rather than a test of the patch mechanics. The realm's answer
+   * for PATCH is pinned on its own in the realm-ACL suite below.
+   */
   async function seedPage(slug: string, fm: Frontmatter = {}) {
     const today = new Date().toISOString().slice(0, 10);
     const defaults: Frontmatter = {
       created: today,
       confidence: 0.5,
       authors: ["original-author"],
+      owner: "test-user",
+      visibility: "private",
       contributors: [],
       expiry: "2099-01-01",
       sources: [],
@@ -574,7 +678,7 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     return PUT(
       new Request(`http://localhost/api/wiki/${slug}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
         body: JSON.stringify({ content: `# ${slug}\n\nEdited.` }),
       }),
       { params: Promise.resolve({ slug }) },
@@ -605,6 +709,15 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     // can't read is 404 (indistinguishable from missing), not a 403 oracle.
     const res = await put("alice-secret");
     expect(res.status).toBe(404);
+    // The cloak is a BODY as much as a status: it must read exactly like a
+    // missing page, and — since DW-122 gave the sibling 403 a sentence naming
+    // the page's realm — must carry none of that wording. A realm word here
+    // would tell a viewer who may not read this page what kind of page it is,
+    // and that it exists at all.
+    const body = await res.json();
+    expect(body.error).toBe("page not found: alice-secret");
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     const page = await readWikiPageWithFrontmatter("alice-secret");
     expect(page!.body).toContain("Original secret.");
   });
@@ -613,6 +726,10 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     await seed("alice-secret-del", { owner: "alice", visibility: "private" });
     const res = await del("alice-secret-del");
     expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("page not found: alice-secret-del");
+    expect(body.error).not.toMatch(/public knowledge/i);
+    expect(body.error).not.toMatch(/agent-maintained/i);
     expect(await readWikiPageWithFrontmatter("alice-secret-del")).not.toBeNull();
   });
 
@@ -642,20 +759,49 @@ describe("realm-aware write ACL — /api/wiki/[slug]", () => {
     await seed("shared-public", { owner: "alice", visibility: "public" });
     const res = await put("shared-public"); // principal = test-user (non-owner)
     expect(res.status).toBe(403);
+    // …and the caller is told WHY (DW-122). A 403 whose body says only
+    // "You don't have permission" leaves a page owner hunting a permission
+    // they do not lack; this deny is the commons realm, and the sentence names
+    // it. Read from the shared table rather than retyped, so this pin tracks
+    // the copy every other surface answers instead of freezing one snapshot
+    // of it.
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.edit);
   });
 
   it("blocks deletion by a human on a PUBLIC commons page (DELETE 403)", async () => {
     await seed("shared-public-del", { owner: "alice", visibility: "public" });
     const res = await del("shared-public-del");
     expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.delete);
     // Page should still exist.
     expect(await readWikiPageWithFrontmatter("shared-public-del")).not.toBeNull();
   });
 
-  it("keeps PUBLIC commons pages collectively patchable by any signed-in user (PATCH 200)", async () => {
-    // Metadata patches remain allowed on commons pages — only body/delete are gated.
+  it("blocks metadata patches by a human on a PUBLIC commons page (PATCH 403)", async () => {
+    // DW-121. This door used to answer 200: the realm gated `body` and `delete`
+    // but admitted `metadata`, while the edit page — the only screen that
+    // reaches the toggles — refused the whole page on `body`. The API agrees
+    // with the screen now, and answers the SAME realm sentence the PUT above
+    // does, because both refusals come from the one resolver.
     await seed("shared-public-patch", { owner: "alice", visibility: "public" });
     const res = await patch("shared-public-patch");
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.edit);
+    // Nothing was written.
+    const page = await readWikiPageWithFrontmatter("shared-public-patch");
+    expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+
+  it("still patches a page OUTSIDE the realm (PATCH 200)", async () => {
+    // The bound: an artifact fails `belongsInCommons`, so the realm never
+    // touches it and an ordinary signed-in caller patches as before. Without
+    // this, a gate that refused every PATCH would satisfy the case above.
+    await seed("shared-artifact-patch", {
+      owner: "alice",
+      visibility: "public",
+      type: "html",
+    });
+    const res = await patch("shared-artifact-patch");
     expect(res.status).toBe(200);
   });
 });
@@ -772,54 +918,42 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
   // --- Discussion: create thread ---
 
-  async function postDiscuss(slug: string) {
+  async function postDiscuss(_slug: string) {
     const { POST } = await import("@/app/api/wiki/[slug]/discuss/route");
-    return POST(
-      new Request(`http://localhost/api/wiki/${slug}/discuss`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Question", body: "Is this right?" }),
-      }),
-      { params: Promise.resolve({ slug }) },
-    );
+    return POST();
   }
 
-  it("cloaks a non-owner creating a discussion on a private page (POST discuss 404)", async () => {
+  // Talk is retired (AD-21): the realm ACL no longer applies here because the
+  // route never runs — every caller, on every page, gets the same 404.
+  it("404s a non-owner creating a discussion on a private page", async () => {
     await seed("alice-priv-disc", { owner: "alice", visibility: "private" });
     const res = await postDiscuss("alice-priv-disc");
     expect(res.status).toBe(404);
   });
 
-  it("allows the owner to create a discussion on their private page", async () => {
+  it("404s the owner creating a discussion on their private page", async () => {
     await seed("alice-own-disc", { owner: "alice", visibility: "private" });
     mockedGetPrincipal.mockResolvedValueOnce({ id: "u_alice", handle: "alice" });
     const res = await postDiscuss("alice-own-disc");
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(404);
   });
 
-  it("allows any signed-in user to create a discussion on a public page", async () => {
+  it("404s a signed-in user creating a discussion on a public page", async () => {
     await seed("pub-disc", { owner: "alice", visibility: "public" });
     const res = await postDiscuss("pub-disc");
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(404);
   });
 
   // --- Discussion: resolve/reopen thread ---
 
-  async function patchDiscuss(slug: string) {
+  async function patchDiscuss(_slug: string) {
     const { PATCH } = await import(
       "@/app/api/wiki/[slug]/discuss/[threadIndex]/route"
     );
-    return PATCH(
-      new Request(`http://localhost/api/wiki/${slug}/discuss/0`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "resolved" }),
-      }),
-      { params: Promise.resolve({ slug, threadIndex: "0" }) },
-    );
+    return PATCH();
   }
 
-  it("cloaks a non-owner resolving a discussion on a private page (PATCH discuss 404)", async () => {
+  it("404s resolving a discussion — talk is retired", async () => {
     await seed("alice-priv-resolve", { owner: "alice", visibility: "private" });
     const res = await patchDiscuss("alice-priv-resolve");
     expect(res.status).toBe(404);
@@ -827,21 +961,14 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
   // --- Discussion: add comment ---
 
-  async function postComment(slug: string) {
+  async function postComment(_slug: string) {
     const { POST } = await import(
       "@/app/api/wiki/[slug]/discuss/[threadIndex]/comments/route"
     );
-    return POST(
-      new Request(`http://localhost/api/wiki/${slug}/discuss/0/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: "Nice page!" }),
-      }),
-      { params: Promise.resolve({ slug, threadIndex: "0" }) },
-    );
+    return POST();
   }
 
-  it("cloaks a non-owner commenting on a private page (POST comment 404)", async () => {
+  it("404s commenting on a discussion — talk is retired", async () => {
     await seed("alice-priv-comment", { owner: "alice", visibility: "private" });
     const res = await postComment("alice-priv-comment");
     expect(res.status).toBe(404);
@@ -911,6 +1038,9 @@ describe("realm-aware ACL — discussion and revision-revert routes", () => {
 
     const res = await postRevert("pub-revert", revs[0].timestamp);
     expect(res.status).toBe(403);
+    // The revert door's own sentence from the shared table (DW-122): the same
+    // realm deny as PUT, worded for the verb the caller actually used.
+    expect((await res.json()).error).toBe(WRITE_DENIAL_REALM.revert);
   });
 });
 
@@ -935,6 +1065,12 @@ describe("PATCH /api/wiki/[slug] — service-token auth", () => {
       created: today,
       confidence: 0.5,
       authors: ["original-author"],
+      // A public ARTIFACT: outside `belongsInCommons`, so the DW-121 realm gate
+      // does not refuse the ordinary Clerk-session PATCH below. The service
+      // principal passes above the realm branch either way, so this seed keeps
+      // both cases about the AUTH SOURCE — session vs. service token — rather
+      // than about the page's realm.
+      type: "html",
       owner: "svc-user",
       contributors: [],
       expiry: "2099-01-01",
@@ -1038,5 +1174,1569 @@ describe("POST /api/wiki — service-token auth", () => {
     const page = await readWikiPageWithFrontmatter("clerk-created-page");
     expect(page).not.toBeNull();
     expect(page!.frontmatter.owner).toBe("test-user");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Read-only deployment — the page write doors (DW-37, DW-187, DW-188)
+// ---------------------------------------------------------------------------
+//
+// DW-37 gated `PUT`/`PATCH`/`DELETE /api/wiki/[slug]` at the route. DW-187 adds
+// the two doors it left open on this surface — `POST /api/wiki` (create) and
+// `POST /api/wiki/[slug]/revisions {action:"revert"}` — which are refused by the
+// KERNEL writer (DW-188) and mapped back to 403 by each route's catch. So the
+// create and revert cases below are also what pins that the mapping exists at
+// all: without it both would answer 500 with the same sentence.
+
+describe("read-only deployment — the page write doors", () => {
+  // `isReadOnly()` reads `process.env.YOPEDIA_READONLY` at CALL time, so the
+  // flag is flipped per test rather than at import — and cleared after each, or
+  // every suite that runs later in this file would inherit a read-only world.
+  let originalDataDir: string | undefined;
+  beforeEach(async () => {
+    // The outer `beforeEach` has already cleared `YOPEDIA_READONLY` and will
+    // put the shell's own value back, so each case here simply sets what it
+    // needs.
+    // `readDataVersion` reads the CONFIG store, which the outer setup does not
+    // isolate — and the assertions below are before/after comparisons, so a
+    // shared store would let another suite's write land between the two reads.
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmpDir;
+    const { _resetStorage } = await import("../storage");
+    _resetStorage();
+  });
+  afterEach(async () => {
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    const { _resetStorage } = await import("../storage");
+    _resetStorage();
+  });
+
+  /** The Workbench's refresh counter — see `data-version.ts`. */
+  async function dataVersion(): Promise<number> {
+    const { readDataVersion } = await import("../data-version");
+    return readDataVersion();
+  }
+
+  const SEEDED_BODY = "Original content.";
+
+  /** A private page the mocked principal ("test-user") owns and may write. */
+  async function seed(slug: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\n${SEEDED_BODY}`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function put(slug: string) {
+    const { PUT } = await import("@/app/api/wiki/[slug]/route");
+    return PUT(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await currentIfMatch(slug)) },
+        body: JSON.stringify({ content: `# ${slug}\n\nRewritten.` }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  async function patch(slug: string) {
+    const { PATCH } = await import("@/app/api/wiki/[slug]/route");
+    return PATCH(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { confidence: 0.99 } }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  /** `POST /api/wiki` — create, DW-187's first named door. */
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+  /** `POST /api/wiki/[slug]/revisions {action:"revert"}` — a full body rewrite. */
+  async function revert(slug: string, timestamp: number) {
+    const { POST } = await import("@/app/api/wiki/[slug]/revisions/route");
+    return POST(
+      new Request(`http://localhost/api/wiki/${slug}/revisions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert", timestamp }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+  /** Store one revision of `slug` and hand back its timestamp. */
+  async function stashRevision(slug: string): Promise<number> {
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision(slug, `# ${slug}\n\nAn older body.`);
+    const revisions = await listRevisions(slug);
+    expect(revisions.length).toBeGreaterThan(0);
+    return revisions[0].timestamp;
+  }
+
+  it("refuses a body write and leaves the bytes alone (PUT 403)", async () => {
+    await seed("ro-put");
+    process.env.YOPEDIA_READONLY = "1";
+
+    const before = await dataVersion();
+
+    const response = await put("ro-put");
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(typeof body.error).toBe("string");
+    // The refusal NAMES the deployment state; "forbidden" alone would leave the
+    // owner hunting a permission they do not lack.
+    expect(String(body.error)).toContain("read-only");
+
+    const page = await readWikiPageWithFrontmatter("ro-put");
+    expect(page!.body).toContain(SEEDED_BODY);
+    expect(page!.body).not.toContain("Rewritten.");
+    // The refresh counter is the observable a stale shell shows up in: a bump
+    // with no write behind it would send every open Workbench re-rendering for
+    // a change that never happened.
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("refuses a metadata write and leaves the frontmatter alone (PATCH 403)", async () => {
+    await seed("ro-patch");
+    const before = await readWikiPageWithFrontmatter("ro-patch");
+    const beforeVersion = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await patch("ro-patch");
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    const after = await readWikiPageWithFrontmatter("ro-patch");
+    expect(after!.frontmatter).toEqual(before!.frontmatter);
+    expect(after!.frontmatter.confidence).not.toBe(0.99);
+    expect(await dataVersion()).toBe(beforeVersion);
+  });
+
+  it("refuses a delete and leaves the page in place (DELETE 403)", async () => {
+    await seed("ro-delete");
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await del("ro-delete");
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+    expect(await readWikiPageWithFrontmatter("ro-delete")).not.toBeNull();
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("answers the same 403 for a slug that does not exist — no existence oracle", async () => {
+    await seed("ro-real");
+    process.env.YOPEDIA_READONLY = "1";
+
+    // The gate runs BEFORE the existence read, so a caller cannot learn what is
+    // stored here by comparing a known slug against an unknown one.
+    const [real, ghost] = await Promise.all([put("ro-real"), put("ro-ghost")]);
+    expect(real.status).toBe(403);
+    expect(ghost.status).toBe(403);
+    expect(await real.json()).toEqual(await ghost.json());
+  });
+
+  it("refuses a page create and stores nothing (POST /api/wiki 403)", async () => {
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await create("ro-create");
+    // 403, not the 500 the create route's catch answers everything else with —
+    // the kernel's `ReadOnlyError` has to be classified on the way out.
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    expect(await readWikiPageWithFrontmatter("ro-create")).toBeNull();
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("still answers 409 for a slug that already exists — the conflict is true either way", async () => {
+    await seed("ro-conflict");
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await create("ro-conflict");
+    // The existence read costs nothing and its answer does not depend on the
+    // flag, so the caller gets the accurate reason rather than a refusal that
+    // would send them off to re-check the deployment.
+    expect(response.status).toBe(409);
+    expect(String((await response.json()).error)).toContain("already exists");
+  });
+
+  it("refuses a revert and leaves the stored bytes alone (POST revisions 403)", async () => {
+    await seed("ro-revert");
+    const timestamp = await stashRevision("ro-revert");
+    const before = await dataVersion();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await revert("ro-revert", timestamp);
+    expect(response.status).toBe(403);
+    expect(String((await response.json()).error)).toContain("read-only");
+
+    const page = await readWikiPageWithFrontmatter("ro-revert");
+    expect(page!.body).toContain(SEEDED_BODY);
+    expect(page!.body).not.toContain("An older body.");
+    expect(await dataVersion()).toBe(before);
+  });
+
+  it("still answers 404 for a revision that was never stored", async () => {
+    await seed("ro-no-revision");
+    process.env.YOPEDIA_READONLY = "1";
+
+    // Same reasoning as the 409 above: a read the flag does not change.
+    const response = await revert("ro-no-revision", 1_000_000);
+    expect(response.status).toBe(404);
+  });
+
+  it("creates and reverts exactly as before on a writable deployment", async () => {
+    // The control for the two NEW doors. Without it, every "403 / unchanged"
+    // assertion above would also pass against a route that simply stopped
+    // working.
+    delete process.env.YOPEDIA_READONLY;
+
+    expect((await create("rw-create")).status).toBe(201);
+    expect(await readWikiPageWithFrontmatter("rw-create")).not.toBeNull();
+
+    await seed("rw-revert");
+    const timestamp = await stashRevision("rw-revert");
+    const response = await revert("rw-revert", timestamp);
+    expect(response.status).toBe(200);
+    expect((await readWikiPageWithFrontmatter("rw-revert"))!.body).toContain(
+      "An older body.",
+    );
+  });
+
+  it("changes nothing on a writable deployment — the control case", async () => {
+    // The flag is UNSET here, which is the ordinary deployment: every existing
+    // status code and ACL outcome has to survive the three new gates.
+    delete process.env.YOPEDIA_READONLY;
+    await seed("rw-page");
+    const before = await dataVersion();
+
+    expect((await put("rw-page")).status).toBe(200);
+    expect((await patch("rw-page")).status).toBe(200);
+    expect((await readWikiPageWithFrontmatter("rw-page"))!.body).toContain(
+      "Rewritten.",
+    );
+    expect((await del("rw-page")).status).toBe(200);
+    expect(await readWikiPageWithFrontmatter("rw-page")).toBeNull();
+
+    // And the counter DID move — which is what makes the three "unchanged"
+    // assertions above evidence of the gate rather than of a counter that never
+    // moves in this fixture.
+    expect(await dataVersion()).toBeGreaterThan(before);
+
+    // And the 404 the write route answers for an unknown slug is still a 404 —
+    // the new gate must not have swallowed it.
+    expect((await put("rw-ghost")).status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/wiki/[slug] — the write precondition (DW-38, DW-51)
+// ---------------------------------------------------------------------------
+//
+// The page write is a read-then-write across two requests, and the Workbench's
+// Story 1.7 refresh deliberately leaves an open editor alone — so a draft can
+// knowingly be minutes stale. These run the route against real bytes for each
+// of the three outcomes, and assert what is on DISK afterwards: a refused save
+// that still wrote would pass a status check and lose the other actor's work.
+
+describe("PUT /api/wiki/[slug] — the write precondition", () => {
+  const ORIGINAL = "# Precondition\n\nwhat the other actor stored.\n";
+
+  async function seedSameOwnerRetiredAlias(prefix: string): Promise<string> {
+    const retired = `${prefix}-retired`;
+    const today = new Date().toISOString().slice(0, 10);
+    const common = {
+      created: today,
+      owner: "test-user",
+      visibility: "private",
+      authors: ["test-user"],
+      contributors: ["test-user"],
+    };
+    await writeWikiPageWithSideEffects({
+      slug: `${prefix}-survivor`,
+      title: "Survivor",
+      content: serializeFrontmatter(
+        { ...common, aliases: [retired] },
+        "# Survivor\n\nCanonical Page.",
+      ),
+      summary: "canonical",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: "test-user",
+    });
+    await writeWikiPageWithSideEffects({
+      slug: retired,
+      title: "Replacement",
+      content: serializeFrontmatter(common, "# Replacement\n\nUnrelated replacement."),
+      summary: "replacement",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: "test-user",
+    });
+    return retired;
+  }
+
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["original-author"],
+          owner: "test-user",
+          visibility: "private",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        },
+        ORIGINAL,
+      ),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  /** The route, with whatever `If-Match` the caller wants — or none. */
+  async function put(slug: string, ifMatch: string | null, body = "# Mine\n\nmy draft.\n") {
+    const { PUT } = await import("@/app/api/wiki/[slug]/route");
+    return PUT(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(ifMatch === null ? {} : { "If-Match": ifMatch }),
+        },
+        body: JSON.stringify({ content: body }),
+      }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function storedBody(slug: string): Promise<string> {
+    return (await readWikiPageWithFrontmatter(slug))!.body;
+  }
+
+  it("lands the write when the precondition matches, and answers the NEW version", async () => {
+    await seed("pc-match");
+    const before = (await readWikiPageWithFrontmatter("pc-match"))!.content;
+
+    const response = await put("pc-match", formatIfMatch(contentVersion(before)));
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { slug: string; version: string };
+    expect(body.slug).toBe("pc-match");
+    expect(await storedBody("pc-match")).toContain("my draft.");
+    // The version of what LANDED — not of what was read. It is the file the
+    // route actually wrote, so a surface that stays open can save again.
+    const after = (await readWikiPageWithFrontmatter("pc-match"))!.content;
+    expect(body.version).toBe(contentVersion(after));
+    expect(body.version).not.toBe(contentVersion(before));
+  });
+
+  it("refuses a new link to a same-owner slug already claimed as a merged alias", async () => {
+    const retired = await seedSameOwnerRetiredAlias("put-link");
+    await seed("put-linker");
+    const before = (await readWikiPageWithFrontmatter("put-linker"))!.content;
+
+    const response = await put(
+      "put-linker",
+      formatIfMatch(contentVersion(before)),
+      `# Linker\n\nSee [the old Page](${retired}.md).`,
+    );
+
+    expect(response.status).not.toBe(200);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/changed|conflict|missing|replaced/i),
+    });
+    expect((await readWikiPageWithFrontmatter("put-linker"))!.content).toBe(before);
+  });
+
+  it("refuses a revert that restores a same-owner merged-alias link", async () => {
+    const retired = await seedSameOwnerRetiredAlias("route-revert");
+    await seed("route-revert-linker");
+    const before = (await readWikiPageWithFrontmatter("route-revert-linker"))!.content;
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision(
+      "route-revert-linker",
+      serializeFrontmatter(
+        {
+          owner: "test-user",
+          visibility: "private",
+          authors: ["test-user"],
+        },
+        `# Linker\n\nSee [the old Page](${retired}.md).`,
+      ),
+      "test-user",
+      "stale link snapshot",
+    );
+    const timestamp = (await listRevisions("route-revert-linker"))[0].timestamp;
+    const { POST } = await import("@/app/api/wiki/[slug]/revisions/route");
+    const response = await POST(
+      new Request("http://localhost/api/wiki/route-revert-linker/revisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert", timestamp }),
+      }),
+      { params: Promise.resolve({ slug: "route-revert-linker" }) },
+    );
+
+    expect(response.status).not.toBe(200);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/missing|replaced/i),
+    });
+    expect((await readWikiPageWithFrontmatter("route-revert-linker"))!.content).toBe(before);
+  });
+
+  it("refuses a STALE save with 412 and writes nothing", async () => {
+    await seed("pc-stale");
+    // The version the editor was seeded with…
+    const seeded = contentVersion((await readWikiPageWithFrontmatter("pc-stale"))!.content);
+    // …and then another actor saves.
+    expect((await put("pc-stale", formatIfMatch(seeded), "# Theirs\n\ntheirs.\n")).status).toBe(
+      200,
+    );
+
+    const response = await put("pc-stale", formatIfMatch(seeded));
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    // The other actor's bytes survive: the draft is refused, never merged and
+    // never silently dropped on top.
+    expect(await storedBody("pc-stale")).toContain("theirs.");
+    expect(await storedBody("pc-stale")).not.toContain("my draft.");
+  });
+
+  it("maps a Page change after the header check to the same 412 conflict", async () => {
+    const slug = "pc-race";
+    await seed(slug);
+    const before = (await readWikiPageWithFrontmatter(slug))!.content;
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let sawRouteRead!: () => void;
+    const routeRead = new Promise<void>((resolve) => { sawRouteRead = resolve; });
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (filePath) => {
+      const content = await originalRead(filePath);
+      if (filePath.endsWith(`/${slug}.md`)) sawRouteRead();
+      return content;
+    });
+
+    let response!: Promise<Response>;
+    await withDurableLock(`page-lifecycle:${slug}`, async () => {
+      response = put(slug, formatIfMatch(contentVersion(before)));
+      await routeRead;
+      const newer = before.replace(ORIGINAL, "# Theirs\n\nnewer owner edit.\n");
+      await writeWikiPage(slug, newer, "other-editor", undefined, tenantForOwner("test-user"));
+      await writeWikiPage(slug, newer, "other-editor");
+    });
+
+    const result = await response;
+    expect(result.status).toBe(412);
+    expect(await result.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await storedBody(slug)).toContain("newer owner edit.");
+    readSpy.mockRestore();
+  });
+
+  it("refuses a save with NO precondition with 428, and writes nothing", async () => {
+    await seed("pc-absent");
+
+    const response = await put("pc-absent", null);
+
+    expect(response.status).toBe(428);
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await storedBody("pc-absent")).toContain("what the other actor stored.");
+  });
+
+  it("treats `*`, an unquoted version and an empty header as absent", async () => {
+    await seed("pc-malformed");
+    const version = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-malformed"))!.content,
+    );
+    // The wildcard is the unconditional write itself; it must never match.
+    for (const header of ["*", version, "", "   "]) {
+      const response = await put("pc-malformed", header);
+      expect(response.status).toBe(428);
+    }
+    expect(await storedBody("pc-malformed")).toContain("what the other actor stored.");
+  });
+
+  it("lets the SAME surface save twice without a reload", async () => {
+    await seed("pc-again");
+    const first = await put(
+      "pc-again",
+      formatIfMatch(contentVersion((await readWikiPageWithFrontmatter("pc-again"))!.content)),
+      "# One\n\nfirst.\n",
+    );
+    expect(first.status).toBe(200);
+    const { version } = (await first.json()) as { version: string };
+
+    // The version the FIRST save answered with — no second read anywhere.
+    const second = await put("pc-again", formatIfMatch(version), "# Two\n\nsecond.\n");
+
+    expect(second.status).toBe(200);
+    expect(await storedBody("pc-again")).toContain("second.");
+  });
+
+  it("refuses a body save after another actor PATCHed the frontmatter", async () => {
+    // Conservative by design: the whole stored file is the merge base, and the
+    // frontmatter this request is about to merge is exactly what changed.
+    await seed("pc-metadata");
+    const seeded = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-metadata"))!.content,
+    );
+    const { PATCH } = await import("@/app/api/wiki/[slug]/route");
+    const patched = await PATCH(
+      new Request("http://localhost/api/wiki/pc-metadata", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { confidence: 0.9 } }),
+      }),
+      { params: Promise.resolve({ slug: "pc-metadata" }) },
+    );
+    // PATCH is deliberately NOT gated — it carried no `If-Match` and still
+    // landed.
+    expect(patched.status).toBe(200);
+
+    expect((await put("pc-metadata", formatIfMatch(seeded))).status).toBe(412);
+    expect(await storedBody("pc-metadata")).toContain("what the other actor stored.");
+  });
+
+  it("still cloaks before it ever mentions a version", async () => {
+    // A caller who may not write this page must not be able to learn its
+    // version, or whether it exists, by comparing a 412 against a 404.
+    await seed("pc-cloaked");
+    const seeded = contentVersion(
+      (await readWikiPageWithFrontmatter("pc-cloaked"))!.content,
+    );
+    mockedGetPrincipal.mockResolvedValueOnce({ id: "mallory", handle: "mallory" });
+    const denied = await put("pc-cloaked", formatIfMatch(seeded));
+    expect(denied.status).toBe(404);
+
+    // …and an unknown slug is a 404 whatever the header says.
+    expect((await put("pc-ghost", null)).status).toBe(404);
+    expect((await put("pc-ghost", formatIfMatch(seeded))).status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // The merge base is the STORED file, not a cached one (DW-195)
+  // -------------------------------------------------------------------------
+
+  it("checks against storage while a stale page cache is open", async () => {
+    // `pageCache` is module-global and ref-counted around bulk scans, so one
+    // can be holding a superseded entry open when this request arrives.
+    // Checking `If-Match` against that entry accepts a save whose merge base is
+    // gone — clobbering the stored file and merging the new body into
+    // frontmatter that is no longer there — and refuses one that matches what
+    // is actually stored.
+    await seed("pc-cached");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("pc-cached"))!;
+      const cachedVersion = contentVersion(cached.content);
+
+      // The file moves underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about. (In production the same state arises from a
+      // scan that re-read the entry after an invalidation.)
+      const stored = cached.content.replace(
+        "what the other actor stored.",
+        "what the other actor stored, LATER.",
+      );
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old bytes.
+      expect((await readWikiPage("pc-cached"))!.content).toBe(cached.content);
+
+      // THE CACHED VERSION IS TRIED FIRST, while the entry is still stale —
+      // this is the assertion that fails without the fresh read, where the
+      // merge base is the cached copy, the header matches it, and the save
+      // lands 200 on top of bytes it never saw.
+      const refused = await put("pc-cached", formatIfMatch(cachedVersion), "# Clobber\n\nclobber.\n");
+      expect(refused.status).toBe(412);
+      expect(await refused.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+      // Nothing was written: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+
+      // The entry is STILL stale — a refused save writes nothing, so nothing
+      // invalidated it — and the version of the STORED bytes lands against it.
+      expect((await readWikiPage("pc-cached"))!.content).toBe(cached.content);
+      const landed = await put(
+        "pc-cached",
+        formatIfMatch(contentVersion(stored)),
+        "# Mine\n\nmine.\n",
+      );
+      expect(landed.status).toBe(200);
+      expect(
+        (await readWikiPageWithFrontmatter("pc-cached", { fresh: true }))!.content,
+      ).toContain("mine.");
+      // The merge base was the LATER file, so what it carried survived the
+      // merge rather than being reverted to the cached copy's frontmatter.
+      expect(
+        (await readWikiPageWithFrontmatter("pc-cached", { fresh: true }))!.content,
+      ).not.toContain("clobber.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // An UNREADABLE page is not an ABSENT one (DW-378)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The merge-base read answered `null` for a storage failure as well as for a
+   * missing file, and the `!existing` branch below it turns `null` into
+   * `page not found: <slug>`. So a transient provider blip told the caller
+   * their page had been deleted — the one answer that makes a human stop
+   * retrying and start recovering. `strict: true` rethrows instead, and the
+   * route's existing catch classifies it as a 500.
+   */
+  it("answers 5xx — NOT `page not found` — when the merge-base read blips", async () => {
+    await seed("pc-blip");
+    const before = await storedBody("pc-blip");
+    const ifMatch = formatIfMatch(
+      contentVersion((await readWikiPageWithFrontmatter("pc-blip"))!.content),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // A non-ENOENT failure: the file is there, the provider is not.
+        if (filePath.endsWith("pc-blip.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-blip", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      // The whole point: the caller is told the store failed, not that their
+      // page is gone.
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // And nothing was written.
+    expect(await storedBody("pc-blip")).toBe(before);
+  });
+
+  it("still answers 404 for a slug that genuinely has no stored file", async () => {
+    // The companion row. `strict` must not turn a real absence into a 500 —
+    // ENOENT stays `null`, so the 404 below now means only what it claims.
+    const response = await put("pc-never-existed", null);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: pc-never-existed",
+    });
+  });
+
+  it("answers 500 for stored bytes whose frontmatter block will not parse", async () => {
+    // DW-494. The Workbench Preview route's `frontmatterOf` documents its
+    // relationship to THIS route, and for two releases that prose claimed the
+    // 403 it produces for an unparseable block was "the same answer
+    // `PUT /api/wiki/[slug]` gives" — a claim about a different route with
+    // nothing pinning it, which is exactly how it survived being false.
+    //
+    // What this route actually does: `readWikiPageWithFrontmatter(slug,
+    // { fresh: true, strict: true })` runs BEFORE the If-Match check and before
+    // the write ACL, `parseFrontmatter` throws on the unclosed `---`, and the
+    // outer catch classifies it 500 (400 only for `invalid slug`). No ACL runs,
+    // so no 403. Preview deliberately DIVERGES: it catches the same throw,
+    // yields `{}` and closes the affordance rather than reporting a fault.
+    //
+    // Ordinary deployment only — `YOPEDIA_READONLY` is cleared per test, and
+    // under it this route refuses every slug with a 403 before any of this.
+    await fs.writeFile(
+      path.join(process.env.WIKI_DIR!, "pc-unparseable.md"),
+      "---\ntitle: broken\ntype: concept\n\n# Broken\n\nbody\n",
+      "utf-8",
+    );
+
+    // No `If-Match`: the read that throws happens before the precondition is
+    // ever consulted, so a valid header is not needed to reach it.
+    const response = await put("pc-unparseable", null);
+
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: string };
+    // Not cloaked as an absence, and not an ACL refusal — the PARSE is what
+    // reached the catch, which is what makes the 500 the honest classification
+    // rather than an incidental one.
+    expect(body.error).not.toContain("page not found");
+    expect(body.error).toMatch(/frontmatter/i);
+  });
+
+  /**
+   * `strict` reaches FURTHER than the Page file. `readWikiPage` forwards it to
+   * `getPageIndex({ strict })`, which rethrows where the default logs
+   * "read failed; falling back to scan" and returns `null`. So the main save
+   * door now fails closed when only `derived-indexes/pages.json` is unreadable
+   * and the Page file itself is perfectly fine — a real widening, and the
+   * intended one: the index is what resolves a Page to its silo, so a silent
+   * fallback there can hand back a DIFFERENT Page's bytes as the merge base.
+   * Failing the save is the only safe answer; a 404 would be the wrong one.
+   *
+   * NOTE the deliberate asymmetry with `lifecycle.test.ts`, which pins that a
+   * NON-strict `{ fresh: true }` read still succeeds through an index outage.
+   * Both are correct: a plain read may fall back to the scan, a read that is
+   * about to authorize a write may not. Neither test may be "fixed" to match
+   * the other.
+   */
+  const INDEX_PATH = "derived-indexes/pages.json";
+
+  it("fails closed when only the PAGE INDEX read blips, not the page file", async () => {
+    await seed("pc-index-blip");
+    const before = await storedBody("pc-index-blip");
+    const ifMatch = formatIfMatch(
+      contentVersion((await readWikiPageWithFrontmatter("pc-index-blip"))!.content),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // ONLY the index fails. The page file reads fine throughout, which is
+        // what separates this row from the `pc-blip` one above.
+        if (filePath === INDEX_PATH) throw new Error("page index unavailable");
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-index-blip", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // Not a silent success either: the stored bytes are untouched.
+    expect(await storedBody("pc-index-blip")).toBe(before);
+  });
+
+  it("fails closed when the PAGE INDEX is present but malformed JSON", async () => {
+    // The other half of `getPageIndex`'s strict branch: the read SUCCEEDS and
+    // `JSON.parse` is what throws. Not ENOENT, so it is rethrown rather than
+    // treated as an unseeded index.
+    await seed("pc-index-garbage");
+    const before = await storedBody("pc-index-garbage");
+    const ifMatch = formatIfMatch(
+      contentVersion(
+        (await readWikiPageWithFrontmatter("pc-index-garbage"))!.content,
+      ),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath === INDEX_PATH) return "{ this is not json";
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-index-garbage", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(await storedBody("pc-index-garbage")).toBe(before);
+  });
+
+  // -------------------------------------------------------------------------
+  // The service token is not exempt (DW-194)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The caller `src/middleware.ts` lets past the Clerk gate: no session, a
+   * bearer token resolved IN-ROUTE by `getServicePrincipal`.
+   *
+   * `canWriteFrontmatter` returns true for any `service:`-prefixed principal,
+   * so this caller reaches the precondition with no ACL detour — which is
+   * exactly why the header requirement has to be asserted for it rather than
+   * inferred from the browser cases above.
+   */
+  async function asService(): Promise<void> {
+    mockedGetPrincipal.mockResolvedValueOnce(null);
+    const { getServicePrincipal } = await import("@/lib/auth");
+    vi.mocked(getServicePrincipal).mockReturnValueOnce({
+      id: "service:robot",
+      handle: "robot",
+    });
+  }
+
+  /** The WHOLE stored file — the string the precondition is derived from. */
+  async function storedFile(slug: string): Promise<string> {
+    return (await readWikiPageWithFrontmatter(slug, { fresh: true }))!.content;
+  }
+
+  it("refuses a service-token write with NO If-Match — 428, page unchanged", async () => {
+    await seed("svc-none");
+    const before = await storedFile("svc-none");
+
+    await asService();
+    const response = await put("svc-none", null);
+
+    expect(response.status).toBe(428);
+    // The SAME body shape and the SAME sentence every other caller gets — a
+    // machine caller is not told anything a browser is not.
+    expect(await response.json()).toEqual({
+      error: WRITE_PRECONDITION_REQUIRED_COPY,
+    });
+    expect(await storedFile("svc-none")).toBe(before);
+    expect(before).toContain("what the other actor stored.");
+  });
+
+  it("refuses a service-token write with a STALE If-Match — 412, page unchanged", async () => {
+    await seed("svc-stale");
+    // The version the automated caller last saw…
+    const stale = contentVersion(await storedFile("svc-stale"));
+    // …and then another actor stores something else, through the same route.
+    expect(
+      (await put("svc-stale", formatIfMatch(stale), "# Theirs\n\ntheirs.\n")).status,
+    ).toBe(200);
+    const theirs = await storedFile("svc-stale");
+    expect(theirs).toContain("theirs.");
+
+    await asService();
+    const response = await put("svc-stale", formatIfMatch(stale), "# Robot\n\nmine.\n");
+
+    expect(response.status).toBe(412);
+    expect(await response.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await storedFile("svc-stale")).toBe(theirs);
+  });
+
+  it("lands a service-token write with a MATCHING If-Match, and answers the new version", async () => {
+    await seed("svc-ok");
+    const current = contentVersion(await storedFile("svc-ok"));
+
+    await asService();
+    const response = await put("svc-ok", formatIfMatch(current), "# Robot\n\nmine.\n");
+
+    expect(response.status).toBe(200);
+    const stored = await storedFile("svc-ok");
+    expect(stored).toContain("mine.");
+    // The write and its side effects ran, and the answer carries the version of
+    // what landed so the caller can save again without a re-read.
+    const body = (await response.json()) as { version?: string };
+    expect(body.version).toBe(contentVersion(stored));
+  });
+
+  it("states the requirement where a non-browser caller reads it", async () => {
+    // `/api/wiki/<slug>` authenticates IN-ROUTE, so the middleware's exemption
+    // list is the first thing an automated caller reads — and authenticating is
+    // not sufficient to write. The route's own docblock carries the full
+    // contract; both are asserted so neither can quietly drop it.
+    const middleware = await fs.readFile(
+      path.resolve(__dirname, "../../middleware.ts"),
+      "utf8",
+    );
+    expect(middleware).toContain("If-Match");
+    expect(middleware).toContain("428");
+    expect(middleware).toContain("412");
+
+    const route = await fs.readFile(
+      path.resolve(__dirname, "../../app/api/wiki/[slug]/route.ts"),
+      "utf8",
+    );
+    const doc = route.slice(0, route.indexOf("export async function PUT"));
+    expect(doc).toContain("If-Match");
+    expect(doc).toContain("428");
+    expect(doc).toContain("412");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE page is not an ABSENT one — the delete ACL and the two
+// create-conflict guards (DW-496)
+// ---------------------------------------------------------------------------
+
+/**
+ * Three write-authorizing reads still called `readWikiPage`/
+ * `readWikiPageWithFrontmatter` with no options, so a non-ENOENT storage
+ * failure came back as `null` and each caller read that `null` as proof the
+ * Page does not exist:
+ *
+ *   - `DELETE /api/wiki/[slug]`'s realm-aware ACL read answered
+ *     `page not found: <slug>` for a page that is stored but momentarily
+ *     unreadable — the one answer that makes a human stop retrying and start
+ *     recovering.
+ *   - the create-conflict guards in `POST /api/wiki` and `handleCreatePage`
+ *     (pinned in `mcp.test.ts`) read the same blip as "the slug is free" and
+ *     let a create land over a stored Page.
+ *
+ * `{ fresh: true, strict: true }` at all three, plus DELETE's unclassified
+ * catch default moving 400 → 500 so the rethrow lands as the fault it is
+ * rather than as the caller's malformed request.
+ *
+ * What is pinned here is the CLASSIFICATION, not the wording: a store fault is
+ * ≥ 500 and never `page not found` / `page already exists`, and it writes
+ * nothing.
+ */
+describe("unreadable ≠ absent — DELETE ACL and the create guard (DW-496)", () => {
+  /** A private page the mocked principal ("test-user") owns and may delete. */
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\nStored bytes.`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+
+  /**
+   * A non-ENOENT failure on `<slug>.md`: the file is there, the provider is
+   * not. Every other path (the page index included) is served for real, so the
+   * only thing under test is what the Page read does with the blip.
+   */
+  function blipOn(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    return vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith(`${slug}.md`)) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+  }
+
+  // -- DELETE ---------------------------------------------------------------
+
+  it("DELETE answers 5xx — NOT `page not found` — when the ACL read blips", async () => {
+    await seed("del-blip");
+
+    const readSpy = blipOn("del-blip");
+    try {
+      const response = await del("del-blip");
+      // Was a 400 before DW-496: the rethrow fell through the catch's
+      // unclassified default, so a broken store was reported as the caller's
+      // malformed request.
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // And the page is still there — the blip authorized nothing.
+    expect(await readWikiPage("del-blip")).not.toBeNull();
+  });
+
+  it("DELETE still answers 404 for a slug that genuinely has no stored file", async () => {
+    // The companion row. `strict` must not turn a real absence into a 500 —
+    // ENOENT stays `null`, so the 404 means only what it claims.
+    const response = await del("del-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: del-never-existed",
+    });
+  });
+
+  it("DELETE still deletes a stored page it is allowed to delete", async () => {
+    await seed("del-ok");
+    const response = await del("del-ok");
+    expect(response.status).toBe(200);
+    expect(await readWikiPage("del-ok")).toBeNull();
+  });
+
+  it("DELETE still answers 403 when the read-only flag flips mid-request", async () => {
+    // The `isReadOnlyError` branch sits ABOVE the fallback the 400 → 500 change
+    // touched, and it has to keep winning: the flag flips after DELETE's own
+    // gate has passed, so `deleteWikiPage`'s `assertWritable` refusal is what
+    // reaches the catch. Flipping it from inside the ACL read is the real
+    // ordering — gate, read, refusal.
+    await seed("del-flip");
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        const content = await originalRead(filePath);
+        if (filePath.endsWith("del-flip.md")) {
+          process.env.YOPEDIA_READONLY = "1";
+        }
+        return content;
+      });
+
+    try {
+      const response = await del("del-flip");
+      expect(response.status).toBe(403);
+    } finally {
+      readSpy.mockRestore();
+      delete process.env.YOPEDIA_READONLY;
+    }
+
+    expect(await readWikiPage("del-flip")).not.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // The ACL is decided from the STORED file, not a cached one (DW-195)
+  // -------------------------------------------------------------------------
+
+  it("DELETE checks the ACL against storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin, and it needs its own row: remove
+    // `fresh: true` from the source read and every `strict` row above still
+    // passes. `pageCache` is module-global and ref-counted around bulk scans,
+    // so one can be holding a superseded entry open when this request arrives —
+    // and the delete ACL is decided from the frontmatter this read returns, so
+    // a cached entry lets the route authorize a delete off an OWNER that is no
+    // longer stored.
+    await seed("del-cached");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("del-cached"))!;
+      expect(cached.content).toContain("owner: test-user");
+
+      // The page changes hands underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about. (In production the same state arises from a
+      // scan that re-read the entry after an invalidation.)
+      const stored = cached.content.replace("owner: test-user", "owner: someone-else");
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old owner.
+      expect((await readWikiPage("del-cached"))!.content).toBe(cached.content);
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The ACL sees the
+      // STORED frontmatter — a private page owned by someone else — and cloaks
+      // it as a 404. Off the cached entry it reads `owner: test-user`,
+      // authorizes, and deletes a page that now belongs to another principal.
+      const response = await del("del-cached");
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "page not found: del-cached",
+      });
+      // Nothing was deleted: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // -- POST /api/wiki -------------------------------------------------------
+
+  /**
+   * WHAT THE HARM ACTUALLY IS. The blip did not by itself overwrite the stored
+   * Page: the `createOnly` branch of the lifecycle pipeline
+   * (`src/lib/lifecycle.ts:487-497`) re-checks `storageFileExists(flatPath)`
+   * and throws `LifecyclePageConflictError`, so a Page that has a flat
+   * compatibility copy was still refused — but under an error naming a CONFLICT
+   * rather than the storage fault that actually happened, which sends the
+   * caller to fix a slug collision that does not exist. The sharper residual
+   * case is a Page stored only in another tenant's silo, where that flat check
+   * passes and the create does land. Either way the guard was ruling on a
+   * `null` it had no right to read as an absence.
+   */
+  it("POST /api/wiki 500s a blipped conflict read over a STORED page, and writes nothing", async () => {
+    // The Page the guard protects has to actually BE stored, or the row asserts
+    // nothing about the harm above and the closing `toBeNull()` is satisfied by
+    // a slug that never existed.
+    await seed("create-blip");
+    const before = (await readWikiPageWithFrontmatter("create-blip"))!.content;
+
+    // The blip is ONE-SHOT, and deliberately so: a spy that failed EVERY read
+    // of `create-blip.md` would also break the `createOnly` re-check inside the
+    // write below, and the route would answer 500 whether or not the guard
+    // rethrows — a green row that pins nothing. Failing only the guard read
+    // leaves the old behaviour answering the conflict error.
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith("create-blip.md")) {
+          blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    try {
+      const response = await create("create-blip");
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain("storage unavailable");
+      // The caller must not be told this is a slug conflict.
+      expect(body.error).not.toContain("already exists");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    // And the stored Page is untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter("create-blip"))!.content).toBe(before);
+  });
+
+  it("POST /api/wiki still 409s a slug that is genuinely stored", async () => {
+    await seed("create-taken");
+    const before = (await readWikiPageWithFrontmatter("create-taken"))!.content;
+
+    const response = await create("create-taken");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "page already exists: create-taken",
+    });
+    // The conflict refused the write rather than merely reporting it.
+    expect((await readWikiPageWithFrontmatter("create-taken"))!.content).toBe(before);
+  });
+
+  it("POST /api/wiki still 201s a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so the free-slug path is untouched.
+    const response = await create("create-free");
+    expect(response.status).toBe(201);
+    expect(await readWikiPage("create-free")).not.toBeNull();
+  });
+
+  it("POST /api/wiki checks the conflict guard against storage, not a stale cache", async () => {
+    // The FRESH half at the create guard, in the direction that matters: a
+    // cached NEGATIVE entry — the guard's `null` — for a slug that IS stored.
+    // Without `fresh` the guard rules the slug free and hands the request to
+    // the write; the `createOnly` re-check in the lifecycle pipeline is the
+    // only thing left standing between that and an overwrite, and it answers a
+    // conflict error rather than this route's 409. (For a Page stored only in
+    // another tenant's silo that flat re-check passes and the create lands.)
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan looks the slug up before it exists and caches the
+      // miss — `readWikiPage` seeds a negative entry on a true global miss.
+      expect(await readWikiPage("post-cached")).toBeNull();
+
+      // The page appears underneath it. Written DIRECTLY to the flat path,
+      // bypassing `writeWikiPage` — which invalidates — because a stale entry
+      // is exactly what this row is about.
+      const today = new Date().toISOString().slice(0, 10);
+      const storedBytes = serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["someone-else"],
+          owner: "someone-else",
+          visibility: "public",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        } as Frontmatter,
+        "# post-cached\n\nAlready stored by someone else.",
+      );
+      const flatPath = path.join(process.env.WIKI_DIR!, "post-cached.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      // The cache is genuinely stale: a cached read still answers "no page".
+      expect(await readWikiPage("post-cached")).toBeNull();
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ: the guard sees the
+      // stored Page and answers its own 409.
+      const response = await create("post-cached");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "page already exists: post-cached",
+      });
+      // And the other principal's bytes are intact, byte for byte.
+      expect(await fs.readFile(flatPath, "utf-8")).toBe(storedBytes);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The create guard on a case-SENSITIVE store (DW-740)
+//
+// A human ruled that a case variant COUNTS as the page already existing at the
+// create door. This route's guard needs no change to honour that — it reads
+// through `readWikiPage(slug, { fresh: true, strict: true })`, which has
+// recovered a variant since DW-490 — but "no change needed" is a claim, and an
+// unpinned one is what lets a later refactor of the guard quietly reopen the
+// door onto the second-object bug.
+//
+// The store is SIMULATED because the dev host's volume folds case: with
+// `wiki/cased.MD` staged, a real `readFile("wiki/cased.md")` would RESOLVE it
+// here, so the row would go green without ever exercising the recovery it
+// claims to pin.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/wiki create guard on a case-SENSITIVE store (DW-740)", () => {
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+
+  it("409s a slug held only by `wiki/cased.MD`, and writes nothing", async () => {
+    const storage = getStorage();
+    const today = new Date().toISOString().slice(0, 10);
+    const variantBytes = serializeFrontmatter(
+      {
+        created: today,
+        confidence: 0.5,
+        authors: ["someone-else"],
+        owner: "someone-else",
+        visibility: "public",
+        contributors: [],
+        expiry: "2099-01-01",
+        sources: [],
+      } as Frontmatter,
+      "# cased\n\nThe variant object's bytes.",
+    );
+    // `wikiRelPath`, not a hand-written `wiki/…`: this file leaves `DATA_DIR`
+    // alone, so the storage-relative key for the temp wiki root is not the
+    // literal string the other case-variant suites use.
+    const variantKey = wikiRelPath("cased.MD");
+    await storage.writeFile(variantKey, variantBytes);
+
+    // Hide every OTHER `.md` spelling of this slug, under any root. Blacklisting
+    // only the canonical name would not be enough: the host folds case, so
+    // `cased.Md` and `cased.mD` would resolve the staged file too and the
+    // recovery would see three hits where a case-sensitive store presents one.
+    const realRead = storage.readFile.bind(storage);
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
+      if (/(?:^|\/)cased\.md$/i.test(key) && key !== variantKey) {
+        throw Object.assign(new Error(`ENOENT: no such file, open '${key}'`), {
+          code: "ENOENT",
+        });
+      }
+      return realRead(key);
+    });
+    try {
+      const response = await create("cased");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "page already exists: cased" });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // The conflict REFUSED the create rather than merely reporting it: the
+    // object holding the slug is untouched and no canonical sibling appeared.
+    expect(await storage.readFile(variantKey)).toBe(variantBytes);
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The last two doors where an UNREADABLE page still posed as an ABSENT one
+// (DW-497 revisions GET, DW-691 the delete path's SECOND read)
+// ---------------------------------------------------------------------------
+
+/**
+ * DW-496 hardened the delete ACL read and the create guards. Two reads behind
+ * the same doors were still optionless:
+ *
+ *   - `GET /api/wiki/[slug]/revisions` — the read surface a human actually
+ *     hits. Its existence check answered `page not found: <slug>` for a page
+ *     whose history is still stored, while its own sibling `POST` had been
+ *     fresh+strict since DW-379.
+ *   - `deleteWikiPage`'s title read — the SECOND read on the REST delete path,
+ *     running after the now-strict ACL read. Its `page not found: <slug>`
+ *     throw is mapped straight to a 404 by the route, so a blip there still
+ *     told the caller their page was gone through the hardened door.
+ *
+ * As above, what is pinned is the CLASSIFICATION: a store fault is ≥ 500 and
+ * never `page not found`, a genuine absence is still a 404, and neither case
+ * writes anything.
+ */
+describe("unreadable ≠ absent — revisions GET and the delete path's second read (DW-497, DW-691)", () => {
+  /** A private page the mocked principal ("test-user") owns and may delete. */
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\nStored bytes.`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function revisions(slug: string) {
+    const { GET } = await import("@/app/api/wiki/[slug]/revisions/route");
+    return GET(
+      new Request(`http://localhost/api/wiki/${slug}/revisions`),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  /** A non-ENOENT failure on every read of `<slug>.md`. */
+  function blipOn(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    return vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith(`${slug}.md`)) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+  }
+
+  /**
+   * Serve the route's ACL read in full, then fail every later read of
+   * `<slug>.md`.
+   *
+   * DW-691's REST row needs a blip the FIRST read survives and the SECOND —
+   * `deleteWikiPage`'s title read — does not, because the whole point is that
+   * the second read still reported a stored page as gone through the door
+   * DW-378 hardened. Nothing between the two touches `<slug>.md` (the page
+   * index lives at its own path), so the only thing to get right is where one
+   * logical read ends.
+   *
+   * ONE `readWikiPage` OF AN OWNED PAGE IS TWO STORAGE READS: the flat
+   * compatibility copy, then the owner's silo (`wiki.ts:513-530` prefers the
+   * silo bytes once the flat copy names an owner). Arming on a plain count of
+   * served reads would therefore fail the ACL read's own second half and 500
+   * whether or not `deleteWikiPage` is strict. Arming on the first SERVED SILO
+   * read is exactly the end of the first logical read. ENOENT still propagates
+   * unchanged, because served reads are delegated to the real storage.
+   */
+  function blipAfterFirstServedRead(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const state = { armed: false };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!filePath.endsWith(`${slug}.md`)) return originalRead(filePath);
+        if (state.armed) throw new Error("storage unavailable");
+        const content = await originalRead(filePath);
+        if (filePath.includes("tenants/")) state.armed = true;
+        return content;
+      });
+    return { spy, state };
+  }
+
+  // -- GET /api/wiki/[slug]/revisions (DW-497) -------------------------------
+
+  it("revisions GET answers 5xx — NOT `page not found` — when the existence read blips", async () => {
+    await seed("rev-blip");
+
+    const readSpy = blipOn("rev-blip");
+    try {
+      const response = await revisions("rev-blip");
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      // The whole point: the reader must not be told their history is gone.
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("revisions GET still answers 404 for a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so a genuine absence is unchanged.
+    const response = await revisions("rev-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: rev-never-existed",
+    });
+  });
+
+  it("revisions GET still answers 200 with a revisions array for a stored page", async () => {
+    await seed("rev-ok");
+    const response = await revisions("rev-ok");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { revisions: unknown[] };
+    expect(Array.isArray(body.revisions)).toBe(true);
+  });
+
+  // -- DELETE, blip on the SECOND read (DW-691) ------------------------------
+
+  it("DELETE answers 5xx — NOT `page not found` — when only the SECOND read blips", async () => {
+    // The route's ACL read (DW-378) is served for real; `deleteWikiPage`'s own
+    // title read is the one that fails. Before DW-691 that read's
+    // `page not found: <slug>` throw was mapped to a 404 by the route, so the
+    // hardened door still reported a stored page as gone.
+    await seed("del2-blip");
+
+    const { spy: readSpy, state } = blipAfterFirstServedRead("del2-blip");
+    try {
+      const response = await del("del2-blip");
+      // Was a 404 before DW-691: `deleteWikiPage`'s `page not found: <slug>`
+      // throw is what the route's catch maps to one.
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+    // The ACL read really was served — otherwise the row would be pinning the
+    // FIRST read's strictness (DW-378) all over again.
+    expect(state.armed).toBe(true);
+
+    // Nothing was deleted — the blip authorized nothing.
+    expect(await readWikiPage("del2-blip")).not.toBeNull();
+  });
+
+  it("DELETE still answers 404 for a slug with no stored file", async () => {
+    // The companion row for the second read too: ENOENT there is still a plain
+    // absence, and the ACL read above it answers first anyway.
+    const response = await del("del2-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: del2-never-existed",
+    });
+  });
+
+  // -- The existence answer comes from STORAGE, not a cached miss (DW-195) ---
+
+  it("revisions GET answers from storage while a stale NEGATIVE cache entry is open", async () => {
+    // FRESH is the half `strict` cannot pin — strip `fresh: true` from the
+    // source read and every blip row above still passes, because a `pageCache`
+    // hit is answered before `storage.readFile` is ever reached.
+    //
+    // And for a read that only answers "does this exist", the dangerous
+    // direction is the NEGATIVE entry: `src/lib/wiki.ts` does
+    // `pageCache.set(slug, null)` on a true global miss, and the cache is
+    // module-global and ref-counted around bulk scans. So a scan that looked
+    // this slug up BEFORE the page existed manufactures the exact
+    // `page not found` this conversion exists to remove.
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan looks the slug up before it exists and caches the
+      // miss.
+      expect(await readWikiPage("rev-cached")).toBeNull();
+
+      // The page appears underneath it. Written DIRECTLY to the flat path,
+      // bypassing `writeWikiPage` — which invalidates — because a stale entry
+      // is exactly what this row is about.
+      const today = new Date().toISOString().slice(0, 10);
+      const storedBytes = serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["test-user"],
+          owner: "test-user",
+          visibility: "public",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        } as Frontmatter,
+        "# rev-cached\n\nStored, while a scan still remembers the miss.",
+      );
+      const flatPath = path.join(process.env.WIKI_DIR!, "rev-cached.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      // The cache is genuinely stale: a cached read still answers "no page".
+      expect(await readWikiPage("rev-cached")).toBeNull();
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ: the existence check
+      // sees the stored page and the reader gets their history. Off the cached
+      // `null` this is a 404 about a page that is right there.
+      const response = await revisions("rev-cached");
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { revisions: unknown[] };
+      expect(Array.isArray(body.revisions)).toBe(true);
+    } finally {
+      cleanup();
+    }
   });
 });

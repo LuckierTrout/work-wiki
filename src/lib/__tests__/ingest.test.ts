@@ -11,12 +11,15 @@ import {
   chunkText,
   parseConceptMarker,
   parseDisputedMarker,
+  reconcilePage,
   normalizeTags,
   deriveTitleFromContent,
   collectTagVocabulary,
   computeConfidence,
   stripImageMarkdown,
   mergeSourceEntry,
+  recordSourceResee,
+  sameHumanOwner,
 } from "../ingest";
 import { slugify } from "../slugify";
 import { loadPageConventions } from "../schema";
@@ -37,15 +40,33 @@ import {
   writeWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
+  tenantForOwner,
+  wikiRelPath,
+  beginPageCache,
   type Frontmatter,
 } from "../wiki";
 import { resetSourceIndex } from "../source-index";
+import { createIngestJob } from "../ingest-jobs";
 import { resetAliasIndex } from "../alias-index";
-import { hasEmbeddingSupport, searchByVector, contentHash } from "../embeddings";
+// `hasEmbeddingSupport` is imported but NOT mocked (DW-68): the pin below needs
+// the REAL predicate to answer true while the switch is off.
+import { searchByVector, contentHash, hasEmbeddingSupport } from "../embeddings";
+import { getVectorSearchSettings } from "../config";
 import type { IndexEntry, SourceEntry } from "../types";
 
-const mockedHasEmbeddingSupport = vi.mocked(hasEmbeddingSupport);
+const mockedGetVectorSearchSettings = vi.mocked(getVectorSearchSettings);
 const mockedSearchByVector = vi.mocked(searchByVector);
+
+/** The switch, as `findMergeCandidates` reads it. */
+function vectorSearch(enabled: boolean) {
+  mockedGetVectorSearchSettings.mockReturnValue({
+    enabled,
+    provider: enabled ? "openai" : null,
+    baseUrl: null,
+    model: enabled ? "text-embedding-3-small" : null,
+    hasKey: enabled,
+  });
+}
 
 // Mock the LLM module so ingest never calls the real API
 vi.mock("../llm", () => ({
@@ -53,17 +74,57 @@ vi.mock("../llm", () => ({
   callLLM: vi.fn(),
 }));
 
-// Partial-mock embeddings: keep every real export (contentHash, the no-op
-// embed/upsert behaviour, etc.) but make `hasEmbeddingSupport` and
+// Partial-mock embeddings: keep every real export (contentHash, etc.) but make
 // `searchByVector` overridable so the concept resolver's SEMANTIC step (layer 3)
-// can be exercised. Defaults delegate to the real impls, so non-embedding tests
-// behave exactly as before (no provider → support false → semantic step skipped).
+// can be exercised. The default delegates to the real impl, so non-embedding
+// tests behave exactly as before.
+//
+// `upsertEmbedding` IS STUBBED, and it has to be now that the switch below is a
+// mock. `ingest()` reaches `lifecycle.ts`'s embed-on-write step, which is gated
+// on the very `getVectorSearchSettings().enabled` this file now controls — so
+// every `vectorSearch(true)` case runs a step the REAL gate used to hold shut
+// (measured: with this stub in place it is entered once per such ingest).
+// Nothing else here would hold it: the partial mock keeps the real
+// implementation, `loadConfigSync` is real, and the `ai` module is NOT mocked in
+// this file, so provider resolution answers to the AMBIENT environment —
+// `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_*` — rather than to
+// anything the suite controls.
+//
+// Scope of the claim, since it was checked rather than assumed: with the real
+// implementation and `OPENAI_API_KEY` exported, this suite still made no
+// outbound connection (a `net.Socket.prototype.connect` + `fetch` recorder
+// loaded into all 20 processes saw none), so the stub is not fixing an observed
+// live-call bug. It is defence in depth: it keeps a suite about MERGE RETRIEVAL
+// off the embed path entirely, so no future change to provider resolution or to
+// the storage layer can turn a developer's exported key into a billed call
+// nothing here asked for. No assertion in this file reads it, so a no-op is the
+// whole requirement.
 vi.mock("../embeddings", async (orig) => {
   const actual = await orig<typeof import("../embeddings")>();
   return {
     ...actual,
-    hasEmbeddingSupport: vi.fn(actual.hasEmbeddingSupport),
     searchByVector: vi.fn(actual.searchByVector),
+    upsertEmbedding: vi.fn(async () => {}),
+  };
+});
+
+// Partial-mock config the same way, for the ONE fact `findMergeCandidates`
+// gates on since DW-68: the vector-search SWITCH, not `hasEmbeddingSupport()`.
+// A stored embedding key is not consent to do vector work, so a suite that
+// drove the branch through the predicate was driving the wrong lever.
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    getVectorSearchSettings: vi.fn(() => ({
+      // The shipped default, so every test that never mentions vector search
+      // takes the BM25 branch exactly as it did before.
+      enabled: false,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    })),
   };
 });
 
@@ -153,7 +214,7 @@ describe("ingest — title derivation", () => {
   });
 
   it("a title-less paste with an LLM CONCEPT lands on the concept slug + records the derived title as an alias", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     try {
       mockedCallLLM.mockResolvedValue(
         "CONCEPT: Vector Databases\nALIASES: none\n\n# Vector Databases\n\n## Summary\n\nThey store embeddings.",
@@ -172,13 +233,13 @@ describe("ingest — title derivation", () => {
       );
       expect(aliases).not.toContain("");
     } finally {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
 
   it("a title-less paste derives its slug from the synthesized CONCEPT (no fork)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     try {
       // No preview/commit two-step anymore: synthesis runs and the CONCEPT marker
       // drives the slug for a title-less paste.
@@ -189,7 +250,7 @@ describe("ingest — title derivation", () => {
       expect(result.primarySlug).toBe("topic-x");
       expect(await readWikiPageWithFrontmatter("topic-x")).not.toBeNull();
     } finally {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
@@ -267,13 +328,17 @@ describe("extractSummary", () => {
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ingest-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = tmpDir;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  _resetStorage();
 });
 
 afterEach(async () => {
@@ -287,6 +352,12 @@ afterEach(async () => {
   } else {
     process.env.RAW_DIR = originalRawDir;
   }
+  if (originalDataDir === undefined) {
+    delete process.env.DATA_DIR;
+  } else {
+    process.env.DATA_DIR = originalDataDir;
+  }
+  _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -340,6 +411,77 @@ describe("ingest", () => {
     expect(entries[0].summary).toBe("Updated content about the topic.");
   });
 
+  it("serializes concurrent first-ingests that converge on one slug without losing either body", async () => {
+    const [first, second] = await Promise.all([
+      ingest("Collision", "FIRST UNIQUE BODY", { owner: "alice", author: "alice" }),
+      ingest("Collision", "SECOND UNIQUE BODY", { owner: "alice", author: "alice" }),
+    ]);
+
+    expect(first.primarySlug).toBe("collision");
+    expect(second.primarySlug).toBe("collision");
+    const page = await readWikiPageWithFrontmatter("collision");
+    expect(page!.content).toContain("FIRST UNIQUE BODY");
+    expect(page!.content).toContain("SECOND UNIQUE BODY");
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  it("does not overwrite a competing first-ingest after its resolved-slug lease is lost", async () => {
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let releaseFirst!: () => void;
+    let markFirstPaused!: () => void;
+    const firstPaused = new Promise<void>((resolve) => { markFirstPaused = resolve; });
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let paused = false;
+    const writeSpy = vi.spyOn(storage, "writeFile").mockImplementation(async (target, body) => {
+      if (target.startsWith("derived-indexes/pages-dirty/.v2-") && body === "lease-loss" && !paused) {
+        paused = true;
+        markFirstPaused();
+        await release;
+      }
+      return originalWrite(target, body);
+    });
+
+    const first = ingest("Lease Loss", "FIRST CREATOR BODY", {
+      owner: "alice",
+      author: "alice",
+    });
+    await firstPaused;
+    // Simulate a second Worker admitting the same slug after the first
+    // Worker's lease expired. The lifecycle create-only precondition, not the
+    // in-process lock, must be the final mutation fence.
+    _resetLocks();
+    const second = await ingest("Lease Loss", "SECOND CREATOR BODY", {
+      owner: "bob",
+      author: "bob",
+    });
+    releaseFirst();
+    await expect(first).rejects.toThrow(/already exists/i);
+    writeSpy.mockRestore();
+
+    expect(second.primarySlug).toBe("lease-loss");
+    const page = await readWikiPageWithFrontmatter("lease-loss", {
+      fresh: true,
+      strict: true,
+      owner: "bob",
+    });
+    expect(page!.content).toContain("SECOND CREATOR BODY");
+    expect(page!.content).not.toContain("FIRST CREATOR BODY");
+    expect(page!.frontmatter.owner).toBe("bob");
+    // Alice may have completed her silo create before losing the one global
+    // flat claim. The lifecycle compensates those exact bytes so the losing
+    // tenant cannot retain a split Page identity.
+    await expect(getStorage().fileExists("tenants/alice/wiki/lease-loss.md"))
+      .resolves.toBe(false);
+    // Her caller hint must still resolve the committed/indexed Bob Page.
+    expect((await readWikiPageWithFrontmatter("lease-loss", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    }))?.frontmatter.owner).toBe("bob");
+    _resetLocks();
+  }, 15_000);
+
   it("updates title on re-ingest when slug matches but title differs", async () => {
     // The slug for both is "hello-world"
     await ingest("Hello World", "First version of the doc. Details here.");
@@ -375,10 +517,10 @@ describe("ingest", () => {
 
 describe("ingest — auto tags", () => {
   beforeEach(() => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -577,6 +719,9 @@ describe("ingest — YAML frontmatter", () => {
     await writeWikiPage(
       "recurring",
       `---\ncreated: 2020-01-01\nupdated: 2020-01-01\nsource_count: 1\ntags: [keep-me]\n---\n\n# Recurring\n\nOlder body.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Recurring", "Second version of the content. More details.");
@@ -643,6 +788,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-reingest",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.9\nexpiry: 2024-09-01\nauthors: [alice]\ncontributors: [bob]\ndisputed: true\nsupersedes: old-page\naliases: [p1r, phase-one]\n---\n\n# Phase1 Reingest\n\nEdited body.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     // Re-ingest
@@ -667,15 +815,13 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     // the preserved disputed=true flag caps it at 0.5.
     expect(page!.frontmatter.confidence).toBe(0.5);
 
-    // (A) The disputed page got an OPEN reconciliation thread so the dispute is
-    // actionable (human / ask-yoyo / maintenance scan).
-    const { listThreads, RECONCILE_THREAD_TITLE } = await import("../talk");
-    const threads = await listThreads("phase1-reingest");
-    expect(
-      threads.some(
-        (t) => t.status === "open" && t.title === RECONCILE_THREAD_TITLE,
-      ),
-    ).toBe(true);
+    // (A) The disputed flag is the WHOLE record now (DW-230). A disputed ingest
+    // used to auto-open a talk reconciliation thread here; the talk HTTP
+    // surfaces are retired, so nothing could ever read it. The write must not
+    // come back — a discuss file no surface serves is storage churn that reads
+    // like a working feature.
+    const { readDiscussFixture } = await import("./discuss-fixtures");
+    expect(await readDiscussFixture("phase1-reingest")).toEqual([]);
 
     // expiry reset to ~90 days from now (not the old 2024-09-01)
     const expiry = page!.frontmatter.expiry as string;
@@ -700,6 +846,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-nodup",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.7\nexpiry: 2024-09-01\nauthors: [system]\ncontributors: [system, editor]\ndisputed: false\nsupersedes:\naliases: []\n---\n\n# Phase1 NoDup\n\nBody.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Phase1 NoDup", "Second content for dedup test. More text.");
@@ -719,6 +868,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-lowconf",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.5\nexpiry: 2024-09-01\nauthors: [system]\ncontributors: []\ndisputed: false\nsupersedes:\naliases: []\n---\n\n# Phase1 LowConf\n\nBody.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Phase1 LowConf", "Second content. Updated details.");
@@ -943,6 +1095,37 @@ describe("ingest — structured sources[] provenance", () => {
     expect(sources).toHaveLength(1);
     expect(sources[0].url).toBe("https://example.com/same");
     expect(sources[0].fetched).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("re-ingest of the same URL with a new body mints a new raw snapshot (FR-2)", async () => {
+    const firstBody = "First snapshot body. Details here.";
+    const secondBody = "Second snapshot body. More info here.";
+    await ingest("Sources Snapshot", firstBody, {
+      sourceUrl: "https://example.com/same-snap",
+    });
+    const { readWikiPageWithFrontmatter, readRawSourceById } = await import("../wiki");
+    const firstPage = await readWikiPageWithFrontmatter("sources-snapshot");
+    const firstId = parseSources(firstPage!.frontmatter.sources as string)[0]!.raw_id!;
+    expect(firstId).toBe(contentHash(firstBody));
+    expect((await readRawSourceById("sources-snapshot", firstId)).content).toBe(
+      firstBody,
+    );
+
+    await ingest("Sources Snapshot", secondBody, {
+      sourceUrl: "https://example.com/same-snap",
+    });
+    const secondPage = await readWikiPageWithFrontmatter("sources-snapshot");
+    const sources = parseSources(secondPage!.frontmatter.sources as string);
+    expect(sources).toHaveLength(1);
+    const secondId = sources[0]!.raw_id!;
+    expect(secondId).toBe(contentHash(secondBody));
+    expect(secondId).not.toBe(firstId);
+    expect((await readRawSourceById("sources-snapshot", firstId)).content).toBe(
+      firstBody,
+    );
+    expect((await readRawSourceById("sources-snapshot", secondId)).content).toBe(
+      secondBody,
+    );
   });
 
   it("re-ingest of text-paste over existing URL preserves both entries", async () => {
@@ -1209,6 +1392,22 @@ describe("extractWithReadability", () => {
 // fetchUrlContent (mocked fetch)
 // ---------------------------------------------------------------------------
 
+/**
+ * The BYTES a headerless response is now sniffed on (DW-441).
+ *
+ * `fetchUrlContent` used to guard with `if (mimeType && ...)`, so a response
+ * that declared no `Content-Type` skipped the allowlist entirely. It now reads
+ * the leading bytes and puts the sniffed answer through the caller's own door,
+ * which means a headerless fixture has to carry bytes as well as text. Derived
+ * from the same string, so the two can never disagree.
+ */
+function bytesOf(text: string): () => Promise<ArrayBuffer> {
+  return async () => {
+    const bytes = new TextEncoder().encode(text);
+    return bytes.buffer.slice(0, bytes.byteLength) as ArrayBuffer;
+  };
+}
+
 describe("fetchUrlContent", () => {
   const sampleHtml = `
     <!DOCTYPE html>
@@ -1239,6 +1438,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -1261,6 +1461,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Some content</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Some content</p></body></html>"),
     });
 
     try {
@@ -1292,7 +1493,10 @@ describe("fetchUrlContent", () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      headers: mockHeaders({ "content-length": "10000000" }),
+      // DECLARED type: this case is about the Content-Length guard, and the
+      // headerless door (DW-441) reads the body to sniff it before that guard
+      // could ever fire.
+      headers: mockHeaders({ "content-type": "text/html", "content-length": "10000000" }),
       text: () => Promise.resolve("<p>should not be read</p>"),
     });
 
@@ -1312,6 +1516,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(), // no content-length
       text: () => Promise.resolve(hugeBody),
+      arrayBuffer: bytesOf(hugeBody),
     });
 
     try {
@@ -1332,6 +1537,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(html),
+      arrayBuffer: bytesOf(html),
     });
 
     try {
@@ -1349,6 +1555,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Hello</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Hello</p></body></html>"),
     });
 
     try {
@@ -1384,6 +1591,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(articleHtml),
+      arrayBuffer: bytesOf(articleHtml),
     });
 
     try {
@@ -1407,6 +1615,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(minimalHtml),
+      arrayBuffer: bytesOf(minimalHtml),
     });
 
     try {
@@ -1440,6 +1649,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(html),
+      arrayBuffer: bytesOf(html),
     });
 
     try {
@@ -1543,6 +1753,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(), // no content-type
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -1596,6 +1807,7 @@ describe("ingestUrl", () => {
       ok: true,
       headers: { get: () => null },
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -1620,7 +1832,7 @@ describe("ingestUrl", () => {
 describe("cross-referencing", () => {
   describe("findRelatedPages", () => {
     it("returns empty array when no LLM key", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
       ];
@@ -1629,13 +1841,13 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array when no existing pages", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       const result = await findRelatedPages("new-page", "some content", []);
       expect(result).toEqual([]);
     });
 
     it("returns related slugs from LLM response", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["ai", "machine-learning"]');
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1647,7 +1859,7 @@ describe("cross-referencing", () => {
     });
 
     it("filters out invalid slugs from LLM response", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["ai", "nonexistent-page"]');
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1657,7 +1869,7 @@ describe("cross-referencing", () => {
     });
 
     it("filters out the new page's own slug", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["new-page", "ai"]');
       const entries: IndexEntry[] = [
         { title: "New Page", slug: "new-page", summary: "The new page" },
@@ -1668,7 +1880,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array on LLM error", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockRejectedValue(new Error("API error"));
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1678,7 +1890,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array on malformed JSON", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue("not valid json at all");
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1688,7 +1900,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array when only entry is the new page itself", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       const entries: IndexEntry[] = [
         { title: "New Page", slug: "new-page", summary: "The new page" },
       ];
@@ -1763,7 +1975,13 @@ describe("cross-referencing", () => {
   describe("ingest with cross-referencing", () => {
     it("returns multiple wikiPages when cross-refs are updated", async () => {
       // Pre-populate the wiki with an existing page
-      await writeWikiPage("ai", "# AI\n\nContent about artificial intelligence.");
+      await writeWikiPage(
+        "ai",
+        serializeFrontmatter(
+          { owner: "system", visibility: "public" },
+          "# AI\n\nContent about artificial intelligence.",
+        ),
+      );
 
       // Set up index with the existing page
       const { updateIndex } = await import("../wiki");
@@ -1772,7 +1990,7 @@ describe("cross-referencing", () => {
       ]);
 
       // Enable LLM and mock responses
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
 
       // First call: generate wiki page content; second call: find related pages
       mockedCallLLM
@@ -1795,8 +2013,35 @@ describe("cross-referencing", () => {
       expect(aiPage!.content).toContain("[Deep Learning](deep-learning.md)");
     });
 
+    it("does not discover or mutate a related Page owned by another tenant", async () => {
+      const bobPage = serializeFrontmatter(
+        { owner: "bob", visibility: "private" },
+        "# Bob roadmap\n\nPrivate roadmap.",
+      );
+      await writeWikiPage("bob-roadmap", bobPage);
+      const { updateIndex } = await import("../wiki");
+      await updateIndex([{
+        title: "Bob roadmap",
+        slug: "bob-roadmap",
+        summary: "Private roadmap",
+        owner: "bob",
+      }]);
+      mockedHasLLMKey.mockResolvedValue(true);
+      mockedCallLLM
+        .mockResolvedValueOnce("# Alice launch\n\n## Summary\n\nLaunch notes.")
+        .mockResolvedValueOnce('["bob-roadmap"]');
+
+      const result = await ingest("Alice launch", "Private launch details.", {
+        owner: "alice",
+        author: "alice",
+      });
+
+      expect(result.relatedUpdated).toEqual([]);
+      expect((await readWikiPage("bob-roadmap"))?.content).not.toContain("Alice launch");
+    });
+
     it("returns only the new page when no LLM key (existing behavior)", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       const result = await ingest("Solo Page", "Content for a solo page. More text.");
       expect(result.wikiPages).toEqual(["solo-page"]);
       expect(result.primarySlug).toBe("solo-page");
@@ -1806,7 +2051,7 @@ describe("cross-referencing", () => {
 
   // Restore default mock after cross-referencing tests
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 });
@@ -2103,10 +2348,10 @@ describe("ingest — concept-slug convergence", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2216,7 +2461,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockImplementation(async (system: string, user: string) => {
       // The adjudicator (distinct system prompt) decides merges; by default it
       // confirms a merge into "alpha-thing" whenever that candidate is offered.
@@ -2231,14 +2476,14 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     });
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
-    mockedHasEmbeddingSupport.mockReturnValue(false);
+    vectorSearch(false);
     mockedSearchByVector.mockResolvedValue([]);
   });
 
   it("merges a differently-worded source into the candidate the adjudicator confirms", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     // The retrieval surfaces "alpha-thing" as a near candidate; the adjudicator
     // (mock) confirms it's the same concept.
     mockedSearchByVector.mockResolvedValue([
@@ -2268,7 +2513,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when no candidate clears the retrieval floor (no adjudication call)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     // Nearest page exists but is below CONCEPT_ADJUDICATE_FLOOR (0.6) → it isn't
     // even offered to the adjudicator → fork.
     mockedSearchByVector.mockResolvedValue([
@@ -2287,7 +2532,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("never folds into an artifact / agent-scoped candidate even at the same scope", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
 
     // Both pages are agent-knowledge + same owner, so the scope-EQUALITY check
@@ -2311,7 +2556,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when the adjudicator judges the candidate a DIFFERENT concept", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
     // Override: adjudicator always says "none".
     mockedCallLLM.mockImplementation(async (system: string, user: string) =>
@@ -2333,7 +2578,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when the adjudicator returns a slug that wasn't offered (hallucination guard)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
     mockedCallLLM.mockImplementation(async (system: string, user: string) =>
       system.includes("decide whether")
@@ -2349,10 +2594,10 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     expect(result.primarySlug).toBe("beta-thing");
   });
 
-  it("merges via the BM25 fallback when embeddings are unavailable (the pre-backfill prod path)", async () => {
+  it("merges via the BM25 fallback when vector search is off (the pre-backfill prod path)", async () => {
     // Vectorize not backfilled → searchByVector unused; candidates come from a
     // title+summary BM25 pass. The two sources share tokens ("widget protocol").
-    mockedHasEmbeddingSupport.mockReturnValue(false);
+    vectorSearch(false);
     mockedCallLLM.mockImplementation(async (system: string, user: string) => {
       if (system.includes("decide whether")) {
         return user.includes("widget-protocol") ? "widget-protocol" : "none";
@@ -2371,8 +2616,111 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     expect(await listWikiPages()).toHaveLength(1);
   });
 
+  // DW-710. `getVectorSearchSettings().enabled` reports true on a store with
+  // `embeddingProvider: "workers-ai"` + `vectorSearchEnabled: true` running OFF
+  // Workers (the `hasWorkersAiBinding: null` hole, DW-225): the provider never
+  // resolves, `searchByVector` answers `[]`, and returning that empty list
+  // forked EVERY ingest instead of merging — silently. Zero hits means the
+  // vector leg had nothing to say, so it falls through to BM25.
+  it("falls through to BM25 when the switch is ON but the vector leg returns nothing (DW-710)", async () => {
+    vectorSearch(true);
+    mockedSearchByVector.mockResolvedValue([]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("widget-protocol") ? "widget-protocol" : "none";
+      }
+      return user.toLowerCase().includes("specification")
+        ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+        : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+    });
+
+    await ingest("First", "First note on the widget protocol specification details.");
+    expect((await listWikiPages()).map((p) => p.slug)).toContain("widget-protocol");
+
+    // Zero the history AFTER the seeding ingest, so the assertion below is
+    // about the ingest under test and not satisfied by the first one's call.
+    mockedSearchByVector.mockClear();
+
+    const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+    // The SECOND ingest consulted the vector leg (the switch is on) — this is
+    // not the DW-68 path — it just had nothing to offer. Exactly once: the
+    // merge-candidate lookup, no retry loop hiding behind a truthy assertion.
+    expect(mockedSearchByVector).toHaveBeenCalledTimes(1);
+    // …and the merge still happened, through the BM25 corpus-stats branch.
+    expect(result.primarySlug).toBe("widget-protocol");
+    expect(await listWikiPages()).toHaveLength(1);
+  });
+
+  // The other half of the DW-710 predicate: `hits.length === 0`, NOT "no hits
+  // above the floor". A leg that returned hits which all scored below
+  // CONCEPT_ADJUDICATE_FLOOR is a WORKING leg answering "nothing is near" —
+  // a real answer, not one to second-guess with a lexical pass.
+  it("does NOT fall through to BM25 when the vector leg answers below the floor (DW-710)", async () => {
+    vectorSearch(true);
+    // Lexically these two WOULD merge under BM25 (they share "widget
+    // protocol"), so a fall-through here would be visible as one page.
+    mockedSearchByVector.mockResolvedValue([{ slug: "widget-protocol", score: 0.2 }]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("widget-protocol") ? "widget-protocol" : "none";
+      }
+      return user.toLowerCase().includes("specification")
+        ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+        : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+    });
+
+    await ingest("First", "First note on the widget protocol specification details.");
+    const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+    expect(result.primarySlug).toBe("widget-spec");
+    expect((await listWikiPages()).map((p) => p.slug).sort()).toEqual([
+      "widget-protocol",
+      "widget-spec",
+    ]);
+  });
+
+  it("does NOT retrieve by vector on a STORED KEY with the switch off (DW-68)", async () => {
+    // The headline case. `hasEmbeddingSupport()` is genuinely TRUE here — a real
+    // provider key is present, so the real predicate (not mocked in this file)
+    // answers yes — and the vector switch is off, which is the shipped default.
+    // Gating on the predicate meant pasting a key into Settings → Embeddings
+    // silently moved merge retrieval onto `searchByVector`, against a vector
+    // store nothing had necessarily backfilled. The switch is the consent.
+    process.env.OPENAI_API_KEY = "sk-test-dw68";
+    try {
+      expect(hasEmbeddingSupport()).toBe(true);
+      vectorSearch(false);
+      // Armed with a hit that WOULD merge, so the assertion cannot pass merely
+      // because retrieval returned nothing.
+      mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.99 }]);
+      // Call history only — the resolved value above survives (nothing in this
+      // file clears mocks between tests, so the count has to be zeroed here).
+      mockedSearchByVector.mockClear();
+      mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+        if (system.includes("decide whether")) {
+          return user.includes("widget-protocol") ? "widget-protocol" : "none";
+        }
+        return user.toLowerCase().includes("specification")
+          ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+          : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+      });
+
+      await ingest("First", "First note on the widget protocol specification details.");
+      const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+      // Never asked.
+      expect(mockedSearchByVector).not.toHaveBeenCalled();
+      // …and the merge still happened, through the BM25 corpus-stats branch.
+      expect(result.primarySlug).toBe("widget-protocol");
+      expect(await listWikiPages()).toHaveLength(1);
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
   it("does NOT semantic-merge an agent-knowledge ingest into a public page (scope guard)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([
       { slug: "alpha-thing", score: 0.95 },
     ]);
@@ -2393,7 +2741,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("does NOT merge across owners even on a high-confidence hit", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([
       { slug: "alpha-thing", score: 0.95 },
     ]);
@@ -2434,10 +2782,10 @@ describe("ingest — reconcile on merge", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2493,6 +2841,232 @@ describe("ingest — reconcile on merge", () => {
     expect(page!.frontmatter.disputed).toBe(false);
   });
 
+  it("keeps the freshly synthesized body when reconcile answers empty", async () => {
+    // The ingest door keeps the "fall back to the new body" rule: here `newBody`
+    // IS the fresh synthesis, so an empty fold degrades to the pre-reconcile
+    // overwrite rather than blanking the page. (The merge door opts out via
+    // `emptyFallback: "throw"` because there `newBody` is the absorbed page's
+    // body.)
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "   \n  "
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    await ingest("Topic A", "First source. Details one.");
+    const result = await ingest("Topic B", "Second source. Details two.");
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    expect(page!.body.trim()).not.toBe("");
+    expect(page!.frontmatter.disputed).toBe(false);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  it("keeps the freshly synthesized body when the reconcile carries no prose", async () => {
+    // DW-739, end to end: the fold survives both parsers but strips down to
+    // scaffolding. `DISPUTED: no` is matched by neither parser, so it used to
+    // be returned VERBATIM and become the whole stored body, wiping the page's
+    // prose. It must now degrade to the fresh synthesis, exactly as an empty
+    // response does — and the verdict goes with the body it described.
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "DISPUTED: no\n"
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    await ingest("Topic A", "First source. Details one.");
+    const result = await ingest("Topic B", "Second source. Details two.");
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    // The literal never reaches `wikiContent`.
+    expect(page!.body.trim()).not.toBe("DISPUTED: no");
+    expect(page!.content).not.toContain("DISPUTED: no");
+    expect(page!.frontmatter.disputed).toBe(false);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  it("does NOT escalate disputed when the fold's verdict has no prose under it", async () => {
+    // DW-739, the verdict half, end to end. `"DISPUTED: yes\n\n# X\n"` used to
+    // resolve `{ body: "# X\n", disputed: true }` at the ingest door, so the
+    // caller's `if (reconciled.disputed) frontmatter.disputed = true` fired and
+    // `computeConfidence` capped the page at the 0.5 dispute cap — on the
+    // strength of a verdict over a bare heading. The verdict now goes with the
+    // body it described, and neither escalation happens.
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "DISPUTED: yes\n\n# X\n"
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    // Two DISTINCT source URLs, so corroboration lifts confidence to 0.65 —
+    // above the 0.5 dispute cap, which is the only way the cap is observable
+    // (a text-paste pair scores exactly 0.5 either way).
+    await ingest("Topic A", "First source. Details one.", {
+      sourceUrl: "https://example.com/first",
+    });
+    const result = await ingest("Topic B", "Second source. Details two.", {
+      sourceUrl: "https://example.com/second",
+    });
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    expect(page!.body.trim()).not.toBe("# X");
+    expect(page!.frontmatter.disputed).toBe(false);
+    // …so confidence keeps its corroborated value instead of the 0.5 cap the
+    // old escalation applied.
+    expect(page!.frontmatter.confidence).toBe(0.65);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  // The end-to-end cases above cannot tell the `emptyFallback` default apart:
+  // at the ingest door `newBody` IS the fresh synthesis, so the `"new"`
+  // fallback and the door's own catch produce byte-identical pages. These call
+  // `reconcilePage` directly to pin the option itself.
+  it("defaults to the new body on an empty fold, and throws only when asked to", async () => {
+    mockedCallLLM.mockResolvedValue("   \n  ");
+
+    // No options argument at all — the default must stay `"new"`.
+    await expect(reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.")).resolves.toEqual(
+      { body: "# New\n\nNew prose.", disputed: false },
+    );
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "new",
+      }),
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
+
+    // A marker-only response strips down to the same empty body.
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
+    // …and at the default door it falls back to `newBody`, verdict discarded
+    // with the body it described (DW-739).
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+
+    // DW-702: shapes that SURVIVE stripping but carry no prose. `DISPUTED: no`
+    // is matched by neither parser (`parseDisputedMarker` takes `yes|true`
+    // only), so it comes back verbatim as the body; a bare heading is a real
+    // string too. Both used to pass as a genuine fold and overwrite the merge
+    // survivor. ONE RULE, TWO DEGRADES (DW-739): under `"throw"` they throw;
+    // under the ingest door's default they fall back to `newBody` — they must
+    // NEVER be returned verbatim, which used to publish the literal over the
+    // existing page's whole body.
+    for (const noProse of [
+      "DISPUTED: no\n",
+      "# Agent Harness\n",
+      "DISPUTED: no\n\n# Agent Harness\n\n---\n",
+      // `parseConceptMarker` only strips `CONCEPT:`/`ALIASES:`/`TAGS:` when
+      // `CONCEPT:` LEADS, so a `DISPUTED: no` first line strands all three.
+      "DISPUTED: no\nCONCEPT: Agent Harness\nALIASES: none\nTAGS: none\n",
+      // A BOM and leading whitespace, in EITHER order, must both be normalized
+      // away before the marker test — otherwise the line reads as prose and
+      // overwrites the survivor, the unsafe direction.
+      " ﻿DISPUTED: no\n",
+      "﻿ DISPUTED: no\n",
+    ]) {
+      mockedCallLLM.mockResolvedValue(noProse);
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "throw",
+        }),
+      ).rejects.toThrow(/empty body/);
+      // The ingest door degrades to the fresh synthesis instead of throwing —
+      // never the literal, and never a verdict without prose.
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+      ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "new",
+        }),
+      ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+    }
+
+    // …and the widening does NOT swallow a real fold: a heading plus one line
+    // of prose folds normally under `"throw"`, and a `DISPUTED: yes` verdict
+    // over prose still parses to `disputed: true` with the prose intact.
+    mockedCallLLM.mockResolvedValue("# Agent Harness\n\nThe folded article.");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).resolves.toEqual({ body: "# Agent Harness\n\nThe folded article.", disputed: false });
+    // …and at the DEFAULT door — where the DW-739 change lives — a real fold
+    // still comes back verbatim. Without this the widened check could fall back
+    // to `newBody` on EVERY response and the test would not notice.
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# Agent Harness\n\nThe folded article.", disputed: false });
+
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n\nProse.");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).resolves.toEqual({ body: "# X\n\nProse.", disputed: true });
+    // A verdict that arrives WITH its prose is still trusted at the default
+    // door: the fallback discards a verdict only when it discards the body.
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# X\n\nProse.", disputed: true });
+
+    // Prose that is NOT a paragraph is still prose — a list item, a table row,
+    // a blockquote, a fenced-code delimiter each keep the fold alive. So does
+    // an INDENTED code line, even one whose text would read as scaffolding
+    // unindented: `    # step one` is a shell comment inside a code block, not
+    // a heading, and `    DISPUTED: no` is sample output, not a verdict.
+    for (const prose of [
+      "# X\n\n- one\n",
+      "# X\n\n| a | b |\n",
+      "# X\n\n> quoted\n",
+      "# X\n\n```\n",
+      "# X\n\n    # step one\n",
+      "# X\n\n\t# step one\n",
+      "# X\n\n    DISPUTED: no\n",
+      "# X\n\n    ---\n",
+    ]) {
+      mockedCallLLM.mockResolvedValue(prose);
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "throw",
+        }),
+      ).resolves.toEqual({ body: prose, disputed: false });
+    }
+
+    // THE VERDICT GOES WITH THE BODY, at both doors. A `DISPUTED: yes` over a
+    // bare heading used to return `{ body: "# X\n", disputed: true }` and
+    // escalate the flag (which feeds `computeConfidence`). Under `"throw"` it
+    // throws, so the merge door appends bodies and the survivor keeps the
+    // verdict its own frontmatter already held; under the ingest door's default
+    // it falls back with `disputed: false` (DW-739). Same rule the marker-only
+    // case has always followed: a fold that produced nothing produces no
+    // verdict either.
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+  });
+
   it("degrades to the new body (ingest still succeeds) when reconcile throws", async () => {
     // callLLM throws on API errors / empty output; the merge path must not let
     // that fail an ingest whose synthesis already succeeded.
@@ -2524,10 +3098,10 @@ describe("ingest — private-page convergence guard", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2658,6 +3232,212 @@ describe("ingest — private-page convergence guard", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ingest — realm fork guard reads fresh + strict (DW-698)
+//
+// The realm guard is the ONLY thing standing between "this ingest resolved
+// onto another owner's PRIVATE page" and "the write base below merges the
+// actor's body INTO that page". The write base already reads
+// `{ fresh: true, strict: true, owner }`, so it DOES find the private page —
+// it preserves the private `owner`/`visibility` and writes the actor's body
+// over it, and nothing downstream re-decides. A `null` from the guard is
+// therefore not a neutral "no page here": it AUTHORIZES a cross-owner
+// overwrite. The same is true of the `findFreeSlug` probe the guard calls — a
+// flattened first probe returns `base` itself, i.e. the very private slug the
+// fork exists to get off.
+//
+// So neither read may answer "absent" for any reason except genuine absence:
+// not a provider blip (needs `strict`), and not a stale `pageCache` entry left
+// open by a concurrent bulk scan (needs `fresh`).
+//
+// ANCHORING: each fault row counts reads of the FLAT page path
+// (`wiki/<slug>.md`) and asserts the total, the way the DW-427 rows do. One
+// `readWikiPage` performs at most one flat read, so the count is a stable
+// ordinal over the reads that matter, and a row whose one-shot drifted onto an
+// earlier read fails on the count rather than passing for the wrong reason.
+// ---------------------------------------------------------------------------
+
+describe("ingest — realm fork guard reads fresh + strict (DW-698)", () => {
+  beforeEach(() => {
+    resetSourceIndex();
+    resetAliasIndex();
+    mockedHasLLMKey.mockResolvedValue(true);
+  });
+  afterEach(() => {
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedCallLLM.mockReset();
+  });
+
+  /** The private page Alice owns, serialized. */
+  function privatePageBytes(slug: string, owner: string, body: string) {
+    const fm: Frontmatter = {
+      created: "2026-01-01",
+      updated: "2026-01-01",
+      owner,
+      visibility: "private",
+      authors: [owner],
+      contributors: [],
+      source_count: "1",
+      confidence: 0.7,
+      expiry: "2099-01-01",
+      tags: [],
+      content_hash: contentHash(body),
+    };
+    return serializeFrontmatter(fm, `# ${slug}\n\n${body}`);
+  }
+
+  /** Seed a PRIVATE page owned by `owner`, the way the convergence-guard rows do. */
+  async function seedPrivatePage(slug: string, owner: string, body: string) {
+    await writeWikiPage(slug, privatePageBytes(slug, owner, body));
+    resetSourceIndex();
+    resetAliasIndex();
+  }
+
+  /** Bob's ingest, worded so the concept resolver lands him on `transformer`. */
+  function bobIngestsOntoTransformer() {
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Transformer\nALIASES: none\n\n# Transformer\n\n## Summary\n\nBob's own take.",
+    );
+    return ingest("Transformer", "Bob's distinct source text about transformers.", {
+      owner: "bob",
+      author: "bob",
+    });
+  }
+
+  /**
+   * Fail the `nth` FLAT read of `<slug>.md` with a non-ENOENT storage error,
+   * once. Every other read (including every other read of the same file) goes
+   * through untouched, so the ingest pipeline is not broken wholesale — a spy
+   * that failed every read would reject either way and pin nothing.
+   */
+  function blipFlatRead(slug: string, nth: number) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const flatPath = wikiRelPath(`${slug}.md`);
+    const counter = { reads: 0 };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath === flatPath) {
+          counter.reads++;
+          // A non-ENOENT failure: the file is there, the provider is not.
+          if (counter.reads === nth) throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    return { counter, restore: () => spy.mockRestore() };
+  }
+
+  // The three flat reads a forking ingest makes of the private slug, in order:
+  //   1. resolveConceptSlug step 1 (the exact concept-slug hit),
+  //   2. the realm fork guard — the read under test,
+  //   3. findFreeSlug's first probe, of `base` itself.
+  // Measured, not assumed. The fault rows below assert the RUNNING COUNT at the
+  // point the ingest died, which is what pins a one-shot to the read it was
+  // aimed at: a shot that drifted onto read 1 would stop the ingest a read
+  // early and fail the count, rather than passing for the wrong reason.
+  const FORK_GUARD_READ = 2;
+  const FREE_SLUG_PROBE_READ = 3;
+
+  // INVARIANT row: passes with either flag removed. It pins the behaviour the
+  // fault rows below are the ablation for — with healthy storage and no cache,
+  // the guard already forks. Its value is that the fault rows are compared
+  // against a known-good baseline, not that it fails without the fix.
+  it("forks off Alice's private page and leaves it byte for byte untouched (healthy)", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+
+    const result = await bobIngestsOntoTransformer();
+
+    expect(result.primarySlug).toMatch(/^transformer-\d+$/);
+    expect(result.wikiPages).not.toContain("transformer");
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+  });
+
+  // ABLATION row: fails with `strict` removed from the guard read. Without it
+  // the blip is swallowed into `null`, the fork is skipped, and the write base
+  // merges Bob's body into Alice's private page — the assertion that catches it
+  // is `.rejects` (the old code RESOLVES) and the byte comparison below it.
+  it("rejects with the STORAGE error when the fork guard's read of the private page blips", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+    const { counter, restore } = blipFlatRead("transformer", FORK_GUARD_READ);
+
+    try {
+      await expect(bobIngestsOntoTransformer()).rejects.toThrow("storage unavailable");
+      // The shot landed on the GUARD, not on the concept resolver before it:
+      // the ingest stopped at exactly that read.
+      expect(counter.reads).toBe(FORK_GUARD_READ);
+    } finally {
+      restore();
+    }
+
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+    expect(await readWikiPageWithFrontmatter("transformer-2")).toBeNull();
+  });
+
+  // ABLATION row: fails with `strict` removed from the `findFreeSlug` probe.
+  // Without it the probe's blip flattens to `null`, so the loop exits on its
+  // FIRST candidate and hands back `base` — the private slug the fork exists to
+  // get off — and the write base then merges onto it.
+  it("rejects with the STORAGE error when the findFreeSlug probe blips", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+    const { counter, restore } = blipFlatRead("transformer", FREE_SLUG_PROBE_READ);
+
+    try {
+      await expect(bobIngestsOntoTransformer()).rejects.toThrow("storage unavailable");
+      // The guard read (2) succeeded and forked; the probe (3) is what blew up.
+      expect(counter.reads).toBe(FREE_SLUG_PROBE_READ);
+    } finally {
+      restore();
+    }
+
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+    expect(await readWikiPageWithFrontmatter("transformer-2")).toBeNull();
+  });
+
+  // ABLATION row: fails with `fresh` removed from the guard read. `pageCache` is
+  // module-global and ref-counted around bulk scans, so an unrelated scan can be
+  // holding a negative entry open when this ingest arrives.
+  it("sees the STORED private page through a stale pageCache entry and still forks", async () => {
+    const closeCache = beginPageCache();
+    try {
+      // Prime the cache with the ABSENCE of `transformer` (what a scan that ran
+      // before Alice's page landed would have left behind).
+      expect(await readWikiPageWithFrontmatter("transformer")).toBeNull();
+
+      // Now make that entry stale: write Alice's private page straight through
+      // the storage provider, the one door that does not invalidate the cache.
+      const flatPath = wikiRelPath("transformer.md");
+      const bytes = privatePageBytes("transformer", "alice", "Alice's private notes.");
+      await getStorage().writeFile(flatPath, bytes);
+      resetSourceIndex();
+      resetAliasIndex();
+
+      const result = await bobIngestsOntoTransformer();
+
+      expect(result.primarySlug).toMatch(/^transformer-\d+$/);
+      expect(result.wikiPages).not.toContain("transformer");
+      // Alice's stored bytes are what a stale-cache read would have overwritten.
+      expect(await getStorage().readFile(flatPath)).toBe(bytes);
+    } finally {
+      closeCache();
+    }
+  });
+
+  // INVARIANT row: `strict` must not turn an absence into an error. Passes with
+  // either flag removed by design — what breaks it is making the ENOENT `null`
+  // a throw, which is the regression it exists to prevent.
+  it("does not fork a genuinely absent slug — ENOENT still reads as null under strict", async () => {
+    const result = await bobIngestsOntoTransformer();
+
+    expect(result.primarySlug).toBe("transformer");
+    const page = await readWikiPageWithFrontmatter("transformer");
+    expect(page!.frontmatter.owner).toBe("bob");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // chunkText
 // ---------------------------------------------------------------------------
 
@@ -2734,10 +3514,145 @@ describe("chunkText", () => {
 // ingest — chunked LLM calls for long content
 // ---------------------------------------------------------------------------
 
+describe("ingest routes every LLM gate and call through its own workload (DW-711)", () => {
+  /**
+   * THE DW-711 STORE, as `ingest.ts` sees it through the module mock: a
+   * deployment that named a provider ONLY through `ingestProvider`, so the gate
+   * says yes to `{workload: "ingest"}` and no to every other question.
+   *
+   * The discrimination is what makes this suite non-vacuous rather than a
+   * convenience. A gate in `ingest.ts` that loses its argument gets `false`
+   * here and degrades — an empty analysis, a fallback page, a skipped
+   * adjudication — so the assertions on what ingest PRODUCED go red, not just
+   * the ones on how it asked. It also keeps `findRelatedPages`
+   * (`src/lib/search.ts`, deliberately NOT a workload owner) off the LLM path,
+   * so every `callLLM` recorded below came from the file under test.
+   */
+  function ingestWorkloadOnly(): void {
+    mockedHasLLMKey.mockImplementation(
+      async (options) => options?.workload === "ingest",
+    );
+  }
+
+  /** Every options object handed to `callLLM`, in order. */
+  function callOptions(): unknown[] {
+    return mockedCallLLM.mock.calls.map((call) => call[2]);
+  }
+
+  /**
+   * EVERY call, not "some call". A gate and the call it guards answering to
+   * different providers is the defect this bundle closes, so one un-routed
+   * `callLLM` beside a routed gate has to fail here.
+   */
+  function expectAllRouted(): void {
+    expect(callOptions().length).toBeGreaterThan(0);
+    for (const options of callOptions()) {
+      expect(options).toMatchObject({ workload: "ingest" });
+    }
+  }
+
+  beforeEach(() => {
+    resetSourceIndex();
+    resetAliasIndex();
+    ingestWorkloadOnly();
+  });
+
+  afterEach(() => {
+    mockedHasLLMKey.mockReset();
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedCallLLM.mockReset();
+    vectorSearch(false);
+    mockedSearchByVector.mockResolvedValue([]);
+  });
+
+  it("routes the analysis and synthesis calls on a plain ingest", async () => {
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Workload Routing\n\n# Workload Routing\n\n## Summary\n\nSynthesised.",
+    );
+
+    const result = await ingest(
+      "Routing Note",
+      "A source about workload routing. More detail follows here.",
+    );
+
+    // The gates opened — which, with the mock above, they only do when the
+    // caller names the workload.
+    expect(mockedHasLLMKey).toHaveBeenCalledWith({ workload: "ingest" });
+    expect((await readWikiPage(result.primarySlug))!.content).toContain(
+      "Synthesised.",
+    );
+    expectAllRouted();
+  });
+
+  it("routes the MAP and REDUCE calls on long content", async () => {
+    mockedCallLLM.mockImplementation(async (_system: string, user: string) =>
+      /^# Part 1\b/.test(user)
+        ? "CONCEPT: Long Routing\n\n# Long Routing\n\n## Summary\n\nMerged."
+        : "Distilled note from a chunk.",
+    );
+    const longContent = Array.from(
+      { length: 300 },
+      (_, i) => `Paragraph ${i} discusses topic number ${i} in detail with enough text to be substantial.`,
+    ).join("\n\n");
+    expect(longContent.length).toBeGreaterThan(MAX_LLM_INPUT_CHARS);
+
+    await ingest("Long Routing Article", longContent);
+
+    // Analysis + at least two map calls + the reduce.
+    expect(callOptions().length).toBeGreaterThan(2);
+    expectAllRouted();
+  });
+
+  it("routes the ANALYSIS call the Workbench compile path makes", async () => {
+    // `analyzeSource` only runs behind a `jobId` — the Analysis → Generation
+    // contract — so a plain `ingest()` never reaches it. It is also the sharpest
+    // of the four gates: there is no `try` around the `callLLM` it guards, so a
+    // gate and a call resolving to different providers turns today's
+    // empty-analysis degrade into a failed ingest.
+    await createIngestJob({ jobId: "dw711-job", owner: "owner", title: "Analysed" });
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("Reply with ONLY a JSON object")
+        ? '{"entities":["Routing"],"concepts":["workload"]}'
+        : "CONCEPT: Analysed\n\n# Analysed\n\n## Summary\n\nSynthesised.",
+    );
+
+    await ingest("Analysed Source", "A source the compile path analyses first.", {
+      jobId: "dw711-job",
+    });
+
+    expect(callOptions().length).toBeGreaterThan(1);
+    expectAllRouted();
+  });
+
+  it("routes the merge adjudication and the reconcile that follows it", async () => {
+    vectorSearch(true);
+    mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("alpha-thing") ? "alpha-thing" : "none";
+      }
+      return user.includes("alpha")
+        ? "CONCEPT: Alpha Thing\nALIASES: none\n\n# Alpha Thing\n\n## Summary\n\nAbout alpha."
+        : "CONCEPT: Beta Thing\nALIASES: none\n\n# Beta Thing\n\n## Summary\n\nAbout beta.";
+    });
+
+    await ingest("Alpha Source", "First source, alpha topic. Details here.");
+    const result = await ingest("Beta Source", "Second source, beta wording. More.");
+
+    // The merge happened, so `adjudicateMerge`'s gate opened and its call ran —
+    // both of which are workload-routed now.
+    expect(result.primarySlug).toBe("alpha-thing");
+    expect(
+      mockedCallLLM.mock.calls.filter((c) => c[0].includes("decide whether")).length,
+    ).toBeGreaterThan(0);
+    expectAllRouted();
+  });
+});
+
 describe("ingest — chunked LLM calls", () => {
   it("calls LLM multiple times for long content", async () => {
     // Enable LLM mock
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Wiki Page\n\n## Summary\n\nMocked content.");
 
     // Create content longer than MAX_LLM_INPUT_CHARS
@@ -2755,12 +3670,12 @@ describe("ingest — chunked LLM calls", () => {
     expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
 
     // Reset
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduces long content: maps each chunk from source, then merges into one article", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // Route MAP vs REDUCE off the USER message structure (stable behavior), not
     // prompt prose: reduce is fed the merged "# Part N" notes; map is fed a raw
     // "Part k of N of the source" chunk.
@@ -2795,12 +3710,12 @@ describe("ingest — chunked LLM calls", () => {
     expect(page!.content).toContain("Merged.");
     expect(page!.content.match(/## Key Points/g) ?? []).toHaveLength(1);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduce partial failure: single chunk error does not crash ingest", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     let mapCallCount = 0;
     mockedCallLLM.mockImplementation(async (system: string, _user: string) => {
       // Reduce call — identified by the reduce system prompt
@@ -2832,12 +3747,12 @@ describe("ingest — chunked LLM calls", () => {
     const page = await readWikiPageWithFrontmatter(result.primarySlug);
     expect(page!.content).toContain("Merged.");
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduce total failure: all chunks error produces clear error", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockImplementation(async (system: string, _user: string) => {
       // Map calls all fail; reduce should never be reached
       if (/given faithful NOTES/.test(system)) {
@@ -2857,12 +3772,12 @@ describe("ingest — chunked LLM calls", () => {
       /synthesis produced no content/,
     );
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("calls LLM exactly once for short content", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Short Page\n\n## Summary\n\nBrief.");
 
     const shortContent = "A brief article about something. Not very long.";
@@ -2872,7 +3787,7 @@ describe("ingest — chunked LLM calls", () => {
 
     expect(mockedCallLLM.mock.calls.length).toBe(1);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 });
@@ -3007,6 +3922,7 @@ describe("fetchUrlContent — redirect handling", () => {
       status: 200,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Hello</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Hello</p></body></html>"),
       body: null,
     });
 
@@ -3127,6 +4043,7 @@ describe("fetchUrlContent — redirect handling", () => {
       status: 301,
       headers: mockHeaders(), // no location
       text: () => Promise.resolve(""),
+      arrayBuffer: bytesOf(""),
       body: null,
     });
 
@@ -3159,7 +4076,9 @@ describe("fetchUrlContent — redirect handling", () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      headers: mockHeaders(),
+      // DECLARED type: the headerless door buffers the body to sniff it
+      // (DW-441), so only a declared type still reaches the incremental reader.
+      headers: mockHeaders({ "content-type": "text/html" }),
       body: { getReader: () => mockReader },
     });
 
@@ -3218,7 +4137,7 @@ describe("reingest", () => {
   });
 
   it("re-ingesting a plain URL stays on the page's slug even when the concept differs (no fork)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     const originalFetch = global.fetch;
     try {
       // First ingest → concept "Original Concept" → slug "original-concept".
@@ -3254,13 +4173,13 @@ describe("reingest", () => {
       ).toBeNull();
     } finally {
       global.fetch = originalFetch;
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
 
   it("re-synthesizes the page in place — a renamed concept doesn't fork the slug", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     const originalFetch = global.fetch;
     try {
       mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1 body.");
@@ -3291,7 +4210,7 @@ describe("reingest", () => {
       expect(entries.find((e) => e.slug === "topic")!.title).toBe("Renamed Topic");
     } finally {
       global.fetch = originalFetch;
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
@@ -3327,6 +4246,484 @@ describe("reingest", () => {
   it("throws when page does not exist", async () => {
     await expect(reingest("nonexistent-page")).rejects.toThrow(
       /not found/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DW-427 — the read-modify-write bases read `{ fresh: true, strict: true }`
+//
+// THREE such bases exist in `ingest.ts`: `reingest` (:552),
+// `attachIngestTrigger` (:1447), and the re-ingest merge base inside `ingest`
+// (:2068), which already carried the pair — plus an `owner` routing hint —
+// before DW-427. The rows below cover the first two.
+//
+// Two flags, two different harms, and neither pins the other:
+//
+//   `strict` — a non-ENOENT storage failure on the base read is rethrown AS
+//   ITSELF instead of flattening to `null`. Without it `reingest` reports the
+//   provider blip as `page "s" not found`, which `POST /api/tasks/run` poisons
+//   at 422 instead of retrying; and `attachIngestTrigger` reports it as "index
+//   drifted", falls through to a full ingest, and mints a DUPLICATE page.
+//   `strict` ALSO forwards into `getPageIndex({ strict })` (`wiki.ts`), so an
+//   unreadable or unparseable `derived-indexes/pages.json` fails the read
+//   closed rather than degrading to the scan fallback. That reach is wider
+//   than the Page file and deliberate for a write base: a silent fallback
+//   there can resolve the wrong silo and make the merge base a DIFFERENT Page.
+//
+//   `fresh` — the read bypasses the module-global `pageCache`, which a
+//   concurrent bulk scan (`lint.ts`, `search.ts`, `query.ts`) holds open across
+//   an unrelated request. Without it `reingest` re-fetches a `source_url` that
+//   is no longer stored, and `attachIngestTrigger` merges into — and computes
+//   its `expectedContent` CAS precondition from — bytes nobody stored.
+//
+// TWO KINDS OF ROW BELOW, and the difference matters when reading them:
+//
+//   ABLATION rows fail with the flag they name removed — they are what pins
+//   the change. Each carries a comment marking the assertion that does it.
+//
+//   INVARIANT rows — "still reports a genuinely missing page as `not found`"
+//   and the two index-drift rows — PASS with either flag removed, by design.
+//   They pin what `strict` must NOT disturb: an absence is still an absence,
+//   and the `null` it produces is still usable by the caller. A FLAG ablation
+//   is therefore the wrong instrument for them; what breaks them is removing
+//   the behaviour they name (make the ENOENT `null` a throw and both drift
+//   rows fail). Their value is the regression they prevent, not a flag.
+// ---------------------------------------------------------------------------
+
+describe("ingest — write bases read fresh + strict (DW-427)", () => {
+  beforeEach(() => {
+    resetSourceIndex();
+    resetAliasIndex();
+    mockedHasLLMKey.mockResolvedValue(false);
+  });
+  afterEach(() => {
+    mockedCallLLM.mockReset();
+  });
+
+  /** The HTML a re-fetch / fall-through ingest gets back from the mocked fetch. */
+  function htmlResponse(title: string, body: string) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Map([["content-type", "text/html"]]) as unknown as Headers,
+      body: null,
+      text: () =>
+        Promise.resolve(
+          `<html><head><title>${title}</title></head><body><p>${body}</p></body></html>`,
+        ),
+    };
+  }
+
+  /**
+   * Break ONLY `derived-indexes/pages.json`, leaving every Page file readable.
+   * `onIndexRead` either resolves a body (to pin the unparseable case, which
+   * `getPageIndex` hits on `JSON.parse`) or throws a non-ENOENT error (to pin
+   * the unreadable case). Returns the restore function.
+   */
+  function breakPageIndex(onIndexRead: () => Promise<string>) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) =>
+        filePath === "derived-indexes/pages.json" ? onIndexRead() : originalRead(filePath),
+      );
+    return () => spy.mockRestore();
+  }
+
+  // -- Site 1: reingest() ---------------------------------------------------
+
+  it("reingest rejects with the STORAGE error — not the bogus `not found` — when its base read blips", async () => {
+    const originalFetch = global.fetch;
+    await ingest("Blip Reingest", "Original body for the blip row. Some details.", {
+      sourceUrl: "https://example.com/blip-reingest",
+    });
+    const before = (await readWikiPageWithFrontmatter("blip-reingest"))!.content;
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    // ONE-SHOT, deliberately: a spy that failed EVERY read of the page would
+    // also break the re-ingest pipeline downstream, so the call would reject
+    // either way — a green row that pins nothing. Failing only the base read
+    // leaves the old behaviour rejecting with `Cannot re-ingest: … not found`.
+    // `pageReads` is what ANCHORS the one shot to the merge base rather than to
+    // "whichever read of this page happened to arrive first".
+    let blipped = false;
+    let pageReads = 0;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith("blip-reingest.md")) {
+          pageReads++;
+          // A non-ENOENT failure: the file is there, the provider is not.
+          if (!blipped) {
+            blipped = true;
+            throw new Error("storage unavailable");
+          }
+        }
+        return originalRead(filePath);
+      });
+    // Never expected to fire — asserted below. It is installed so that a row
+    // which stopped landing its blip on the merge base fails FAST here instead
+    // of falling through to a real network request against example.com.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(htmlResponse("Blip Reingest", "Must never be fetched."));
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    let caught: unknown;
+    try {
+      await reingest("blip-reingest");
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+      global.fetch = originalFetch;
+    }
+
+    expect(blipped).toBe(true);
+    // THE ANCHOR. `reingest` read this page EXACTLY ONCE — its merge base —
+    // and never got past it, so the blip cannot have been consumed by some
+    // other read. If a page read were ever introduced ahead of the base read,
+    // it would swallow the one shot and these two would break loudly rather
+    // than leaving a green row that pins nothing.
+    expect(pageReads).toBe(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    // THE ASSERTION THAT FAILS WITHOUT `strict`. `/not found/i` is the sentence
+    // `POST /api/tasks/run` poisons at 422; the rethrown fault instead gets the
+    // store-fault row's 500 when it is errno-coded, and the generic transient
+    // 500 otherwise. Either way it is retried.
+    expect(message).not.toMatch(/not found/i);
+    // And the stored Page is untouched, byte for byte — the rejection landed
+    // before anything could write.
+    expect((await readWikiPageWithFrontmatter("blip-reingest"))!.content).toBe(before);
+  });
+
+  it("reingest re-fetches the STORED source_url while a stale page cache is open", async () => {
+    const { beginPageCache } = await import("../wiki");
+    const originalFetch = global.fetch;
+    await ingest("Stale Reingest", "Original body for the stale row. Some details.", {
+      sourceUrl: "https://example.com/cached-url",
+    });
+    const seeded = (await readWikiPageWithFrontmatter("stale-reingest"))!;
+    expect(seeded.frontmatter.source_url).toBe("https://example.com/cached-url");
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent bulk scan reads the page and caches these bytes.
+      expect(
+        (await readWikiPageWithFrontmatter("stale-reingest"))!.frontmatter.source_url,
+      ).toBe("https://example.com/cached-url");
+
+      // The stored bytes move underneath the open cache. Written DIRECTLY to
+      // the page's path, bypassing `writeWikiPage` — which invalidates —
+      // because a stale entry is exactly what this row is about.
+      await fs.writeFile(
+        seeded.path,
+        seeded.content.replace(
+          "https://example.com/cached-url",
+          "https://example.com/stored-url",
+        ),
+        "utf-8",
+      );
+      // The cache is genuinely stale: a cached read still answers the old URL.
+      expect(
+        (await readWikiPageWithFrontmatter("stale-reingest"))!.frontmatter.source_url,
+      ).toBe("https://example.com/cached-url");
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(htmlResponse("Stale Reingest", "Freshly re-fetched body."));
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+
+      await reingest("stale-reingest");
+
+      // THE ASSERTION THAT FAILS WITHOUT `fresh`: off the cached entry the
+      // re-ingest re-fetches a URL the stored page no longer names.
+      const fetched = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(fetched.length).toBeGreaterThan(0);
+      expect(fetched.some((u) => u.includes("stored-url"))).toBe(true);
+      expect(fetched.some((u) => u.includes("cached-url"))).toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+      cleanup();
+    }
+  });
+
+  /**
+   * The invariant `strict` must NOT disturb: an absent Page is still an
+   * absence. `readWikiPage` answers `null` for ENOENT even under strict, so a
+   * genuine miss keeps the sentence `POST /api/tasks/run` is right to poison at
+   * 422 — the 422 is only wrong for a store fault, never for a page that is
+   * really gone.
+   */
+  it("reingest still reports a genuinely missing page as `not found` under strict", async () => {
+    expect(await readWikiPageWithFrontmatter("never-ingested-page")).toBeNull();
+    await expect(reingest("never-ingested-page")).rejects.toThrow(
+      'Cannot re-ingest: page "never-ingested-page" not found',
+    );
+  });
+
+  // -- Site 2: attachIngestTrigger() ---------------------------------------
+
+  it("a dedup attach rejects with the STORAGE error and mints no duplicate page when its base read blips", async () => {
+    const originalFetch = global.fetch;
+    await ingest("Dedup Blip", "Original body for the dedup blip row. Details.", {
+      sourceUrl: "https://example.com/dedup-blip",
+    });
+    // Warm the source index BEFORE the spy: building it scans every page, which
+    // would otherwise swallow the one-shot blip below.
+    const { resolveSourceUrl } = await import("../source-index");
+    expect(await resolveSourceUrl("https://example.com/dedup-blip")).toBe("dedup-blip");
+    const before = (await readWikiPageWithFrontmatter("dedup-blip"))!.content;
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith("dedup-blip.md")) {
+          blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    // Mocked so the OLD behaviour is deterministic: reading the blip as an
+    // absence returns `null` from the attach, and `ingestUrl` falls through to
+    // a full ingest that fetches and writes a second page. Under `strict` it is
+    // never called at all, which is asserted below.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(htmlResponse("Dedup Blip Duplicate", "A page that must never land."));
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    let caught: unknown;
+    try {
+      await ingestUrl("https://example.com/dedup-blip", { triggeredBy: "bob" });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+      global.fetch = originalFetch;
+    }
+
+    expect(blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+    // THE ASSERTIONS THAT FAIL WITHOUT `strict`: the blip became "index
+    // drifted", and the fall-through ingest fetched and minted a duplicate.
+    // The fetch assertion is what separates "no duplicate landed" from "no
+    // fall-through happened" — without it, a fall-through that fetched and
+    // then failed to WRITE would satisfy both page assertions.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await listWikiPages()).map((e) => e.slug)).toEqual(["dedup-blip"]);
+    expect(await readWikiPageWithFrontmatter("dedup-blip-duplicate")).toBeNull();
+    // And the page the attach was aimed at is untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter("dedup-blip"))!.content).toBe(before);
+  });
+
+  it("a dedup attach merges into the STORED bytes while a stale page cache is open", async () => {
+    const { beginPageCache } = await import("../wiki");
+    const originalFetch = global.fetch;
+    await ingest("Stale Attach", "Original body for the stale attach row. Details.", {
+      sourceUrl: "https://example.com/stale-attach",
+    });
+    const { resolveSourceUrl } = await import("../source-index");
+    expect(await resolveSourceUrl("https://example.com/stale-attach")).toBe("stale-attach");
+    const seeded = (await readWikiPageWithFrontmatter("stale-attach"))!;
+
+    // The attach is expected to succeed, so this never fires — but an attach
+    // that returned `null` would send `ingestUrl` down the fall-through into
+    // `fetchUrlContent` and out to the REAL network. Mocked so that regression
+    // surfaces as a clear assertion failure, not a slow flake.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(htmlResponse("Stale Attach", "Must never be fetched."));
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent bulk scan caches the current bytes.
+      expect((await readWikiPageWithFrontmatter("stale-attach"))!.content).toBe(
+        seeded.content,
+      );
+
+      // Someone else's edit lands underneath the open cache (direct write —
+      // `writeWikiPage` would invalidate the entry this row depends on).
+      const storedContent = `${seeded.content}\n\nRewritten underneath the open cache.\n`;
+      await fs.writeFile(seeded.path, storedContent, "utf-8");
+      // Genuinely stale: a cached read still answers the superseded bytes.
+      expect((await readWikiPageWithFrontmatter("stale-attach"))!.content).toBe(
+        seeded.content,
+      );
+
+      const result = await ingestUrl("https://example.com/stale-attach", {
+        triggeredBy: "bob",
+      });
+      expect(result.primarySlug).toBe("stale-attach");
+    } finally {
+      cleanup();
+      global.fetch = originalFetch;
+    }
+    // It really was an attach, not a fall-through that happened to land here.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // THE ASSERTION THAT FAILS WITHOUT `fresh`: off the cached entry the merge
+    // base is the superseded body, and `expectedContent` preconditions the
+    // write on bytes nobody stored — so the other edit is either lost or the
+    // CAS write rejects outright.
+    const after = (await readWikiPageWithFrontmatter("stale-attach"))!;
+    expect(after.body).toContain("Rewritten underneath the open cache.");
+    // And the attach did what it is for: the new triggerer is recorded.
+    expect(after.frontmatter.contributors).toContain("bob");
+  });
+
+  /**
+   * The other half of the same invariant, at the attach. The source index can
+   * name a slug whose Page is gone; that is index DRIFT, and the attach must
+   * still answer `null` so the caller ingests normally. `strict` only removes
+   * the storage-fault `null` — it must not remove this one.
+   */
+  it("a dedup attach still returns null on index drift (no stored page) under strict", async () => {
+    expect(await readWikiPageWithFrontmatter("drifted-index-slug")).toBeNull();
+    await expect(
+      recordSourceResee("drifted-index-slug", {
+        url: "https://example.com/drifted",
+        type: "url",
+        triggeredBy: "bob",
+        actorOwner: "bob",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  /**
+   * The SECOND clause of that same matrix row — "returns `null`; CALLER INGESTS
+   * NORMALLY". The row above pins the `null`; this one pins that the `null` is
+   * still usable, i.e. `ingestUrl` treats it as "not a dup" and goes on to
+   * build the page. Under `strict` that path is now reachable only for a true
+   * ENOENT, so it is worth pinning that it is still reachable at all: if the
+   * drift `null` ever became a throw, an ingest of a URL whose index entry has
+   * gone stale would fail outright instead of quietly doing the right thing.
+   */
+  it("a dedup attach's null still lets ingestUrl fall through and ingest normally", async () => {
+    const originalFetch = global.fetch;
+    const { resolveSourceUrl, updateSourceIndexForPage } = await import("../source-index");
+
+    // A real page so the source index exists and is cached, then an entry
+    // pointed at a slug that was never stored — exactly the drift the attach
+    // answers `null` for.
+    await ingest("Drift Anchor", "A page so the source index is built. Details.", {
+      sourceUrl: "https://example.com/drift-anchor",
+    });
+    expect(await resolveSourceUrl("https://example.com/drift-anchor")).toBe("drift-anchor");
+    updateSourceIndexForPage("never-stored-slug", "https://example.com/drifted-source", undefined);
+    expect(await resolveSourceUrl("https://example.com/drifted-source")).toBe(
+      "never-stored-slug",
+    );
+    expect(await readWikiPageWithFrontmatter("never-stored-slug")).toBeNull();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(htmlResponse("Drifted Source", "Body of the drifted source."));
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    let result;
+    try {
+      result = await ingestUrl("https://example.com/drifted-source", { triggeredBy: "bob" });
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    // Ingested NORMALLY: the fall-through fetched and built its own page,
+    // rather than the drift becoming an error the caller has to handle.
+    expect(fetchMock).toHaveBeenCalled();
+    expect(result.primarySlug).toBe("drifted-source");
+    const made = await readWikiPageWithFrontmatter("drifted-source");
+    expect(made).not.toBeNull();
+    expect(made!.frontmatter.source_url).toBe("https://example.com/drifted-source");
+  });
+
+  // -- The wider reach of `strict`: the Page INDEX, not just the Page file ----
+  //
+  // `strict` forwards into `getPageIndex({ strict })` (`wiki.ts`), where the
+  // default logs "read failed; falling back to scan" and returns `null`. Under
+  // strict it rethrows instead — so BOTH bases now fail closed when only
+  // `derived-indexes/pages.json` is bad, even though the Page file itself reads
+  // fine. That is the intended write-base contract (a silent fallback there can
+  // resolve the wrong silo and merge into a DIFFERENT Page), and it is the half
+  // of `strict` that neither blip row reaches, so it is pinned separately.
+  // ABLATION rows: with `strict` removed at either site, that site degrades to
+  // the scan fallback and proceeds instead of rejecting.
+
+  /** Both bases, one broken index. `assertBothFailClosed` is the shared body. */
+  async function assertBothFailClosed(
+    slug: string,
+    url: string,
+    onIndexRead: () => Promise<string>,
+    expectRejection: (p: Promise<unknown>) => Promise<void>,
+  ) {
+    const originalFetch = global.fetch;
+    await ingest("Index Guard", "A page whose FILE stays perfectly readable. Details.", {
+      sourceUrl: url,
+    });
+    // Warm the source index before breaking anything: building it scans pages,
+    // and this row is about the index read INSIDE the two bases.
+    const { resolveSourceUrl } = await import("../source-index");
+    expect(await resolveSourceUrl(url)).toBe(slug);
+    const before = (await readWikiPageWithFrontmatter(slug))!.content;
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(htmlResponse("Index Guard Duplicate", "Must never land."));
+    global.fetch = fetchMock as unknown as typeof global.fetch;
+
+    const restore = breakPageIndex(onIndexRead);
+    try {
+      // Site 1 — reingest's merge base.
+      await expectRejection(reingest(slug));
+      // Site 2 — attachIngestTrigger's merge base, reached via ingestUrl's
+      // dedup hit. Without `strict` this attaches instead of rejecting.
+      await expectRejection(ingestUrl(url, { triggeredBy: "bob" }));
+    } finally {
+      restore();
+      global.fetch = originalFetch;
+    }
+
+    // Failed CLOSED: nothing fetched, nothing written, no second page.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await readWikiPageWithFrontmatter(slug))!.content).toBe(before);
+    expect((await listWikiPages()).map((e) => e.slug)).toEqual([slug]);
+  }
+
+  it("both bases fail closed when the page index is unparseable and the page file is fine", async () => {
+    await assertBothFailClosed(
+      "index-guard",
+      "https://example.com/index-guard",
+      async () => "{not json",
+      async (p) => {
+        // `getPageIndex` does not swallow a JSON.parse failure; strict rethrows
+        // it rather than degrading to the scan fallback.
+        await expect(p).rejects.toThrow(SyntaxError);
+        await expect(p).rejects.not.toThrow(/not found/i);
+      },
+    );
+  });
+
+  it("both bases fail closed when the page index read throws (non-ENOENT)", async () => {
+    await assertBothFailClosed(
+      "index-guard",
+      "https://example.com/index-guard",
+      async () => {
+        throw new Error("page index unavailable");
+      },
+      async (p) => {
+        await expect(p).rejects.toThrow("page index unavailable");
+      },
     );
   });
 });
@@ -3586,7 +4983,7 @@ describe("ingest dedup", () => {
     // (they rebuild from the fresh temp-dir frontmatter on demand).
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Page\n\n## Summary\n\nMocked synthesis.");
   });
 
@@ -3641,7 +5038,7 @@ describe("ingest attribution", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Page\n\n## Summary\n\nMocked.");
   });
 
@@ -3719,5 +5116,426 @@ describe("mergeSourceEntry URL normalization", () => {
     const existing = [mk("https://a.com")];
     const result = mergeSourceEntry(existing, mk("https://b.com"));
     expect(result).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Owner equivalence (`sameHumanOwner`) — the guard DW-543's promotion moved
+// ---------------------------------------------------------------------------
+
+describe("sameHumanOwner", () => {
+  it("treats an agent and its human owner as the same owner", () => {
+    expect(sameHumanOwner("alice", "alice--yoyo")).toBe(true);
+    expect(sameHumanOwner("alice--yoyo", "alice")).toBe(true);
+    expect(sameHumanOwner("alice--yoyo", "alice--scout")).toBe(true);
+    expect(sameHumanOwner("alice", "alice")).toBe(true);
+  });
+
+  it("keeps two different humans apart", () => {
+    expect(sameHumanOwner("alice", "bob")).toBe(false);
+    expect(sameHumanOwner("alice--yoyo", "bob--yoyo")).toBe(false);
+    expect(sameHumanOwner("alice", "bob--yoyo")).toBe(false);
+  });
+
+  it("compares case-insensitively (the key is slugified)", () => {
+    expect(sameHumanOwner("Alice", "alice--yoyo")).toBe(true);
+    expect(sameHumanOwner("ALICE--yoyo", "alice")).toBe(true);
+  });
+
+  it("refuses a missing, blank or non-string side", () => {
+    expect(sameHumanOwner(undefined, "alice")).toBe(false);
+    expect(sameHumanOwner("", "alice")).toBe(false);
+    expect(sameHumanOwner("   ", "alice")).toBe(false);
+    expect(sameHumanOwner("alice", undefined)).toBe(false);
+    expect(sameHumanOwner("alice", "")).toBe(false);
+    expect(sameHumanOwner("alice", "   ")).toBe(false);
+    expect(sameHumanOwner("alice", 42)).toBe(false);
+    expect(sameHumanOwner("alice", null)).toBe(false);
+  });
+
+  /**
+   * CHARACTERIZATION — the pre-existing behavior of the degenerate class, NOT
+   * a property DW-543 introduced or endorses. A handle whose text before the
+   * first `--` is empty or blank names no human, so it keys its OWN class:
+   * it never matches a real person, and it matches every other such handle.
+   *
+   * This is authorization-adjacent (the guard gates private-page dedup, the
+   * workbench intake door and the merge same-owner check), and the class is
+   * reachable in production: `agentIdFor` is `slugify(owner)--slugify(name)`
+   * and a non-CJK unicode handle slugifies to `""`. DW-543 moved the reduction
+   * into `agent-handle.ts`, where the no-prefix class must return the WHOLE
+   * handle so guidance never addresses the default silo — the opposite of what
+   * this guard wants. `ownerClassKey` folds it back. These rows pin that
+   * round-trip, so any future change to the class is visible in a diff rather
+   * than silently widening the guard.
+   */
+  it("keeps a human-less handle in its own equivalence class (characterization)", () => {
+    // `"yoyo"` is a REAL actor — `normalizeActor` folds system/lint-fix/yopedia
+    // into it and the task runner ingests as it — so this must stay false.
+    expect(sameHumanOwner("yoyo", "--yoyo")).toBe(false);
+    expect(sameHumanOwner("alice", "--alice")).toBe(false);
+    // ...and every human-less handle collapses together, as it always has.
+    expect(sameHumanOwner("--alice", "--bob")).toBe(true);
+    // Blank-prefixed handles land in that same class (`ownerToTenant` trims).
+    expect(sameHumanOwner(" --alice", "--bob")).toBe(true);
+    expect(sameHumanOwner("yoyo", " --yoyo")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workspace guidance is resolved ONCE per ingest (DW-141)
+// ---------------------------------------------------------------------------
+
+import { createGuidanceCache } from "../guidance-cache";
+import { _resetLocks } from "../lock";
+import { createNamesTerm } from "../names-terms";
+import { wikiArtifactPath } from "../wiki-paths";
+import { createWiki, writeWikiArtifact } from "../wikis";
+
+describe("ingest resolves workspace guidance once per document", () => {
+  const OWNER = "alice";
+  const PURPOSE = "Track Project Lighthouse decisions.";
+  /** Where the owner's Names & Terms dictionary lives on disk. */
+  const DICTIONARY_PATH = `tenants/${tenantForOwner(OWNER)}/names-terms.json`;
+  /**
+   * Half again over `MAX_LLM_INPUT_CHARS`, so `chunkText` always yields more
+   * than one chunk and synthesis takes the map/reduce branch. The repeat count
+   * is derived from the sentence's OWN length, so editing the sentence cannot
+   * silently shrink the content back under the threshold and quietly stop
+   * exercising REDUCE.
+   */
+  const FILLER_SENTENCE = "Detail line about the rollout. ";
+  const LONG_CONTENT = `Project Lighthouse status. ${FILLER_SENTENCE.repeat(
+    Math.ceil((MAX_LLM_INPUT_CHARS * 1.5) / FILLER_SENTENCE.length),
+  )}`;
+
+  let originalDataDir: string | undefined;
+  let wikiId: string;
+  /** Structurally typed: all this block needs from the spy is tearing it down. */
+  let readSpy: { mockRestore: () => void } | null = null;
+
+  beforeEach(async () => {
+    // The outer `beforeEach` already made `tmpDir` and pointed WIKI_DIR/RAW_DIR
+    // at it; add DATA_DIR so the wiki registry and artifacts are real bytes too.
+    originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmpDir;
+    _resetLocks();
+    _resetStorage();
+    resetSourceIndex();
+    resetAliasIndex();
+
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    wikiId = wiki.id;
+    await writeWikiArtifact(
+      OWNER,
+      wiki.id,
+      "purpose.md",
+      `# Ops\n\n${PURPOSE}\n`,
+    );
+
+    mockedHasLLMKey.mockResolvedValue(true);
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Project Lighthouse\n\n# Project Lighthouse\n\n## Summary\n\nMocked synthesis.",
+    );
+  });
+
+  afterEach(async () => {
+    // Restore ONLY the storage spy this block installed. `vi.restoreAllMocks()`
+    // would reach the file-wide `../llm` and `../embeddings` mocks declared at
+    // the top of this file, which every other describe here depends on.
+    readSpy?.mockRestore();
+    readSpy = null;
+    // And put the file's defaults back the way the rest of this file leaves
+    // them: `hasLLMKey` is `false` in the module mock, and `callLLM` carries no
+    // implementation.
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedCallLLM.mockReset();
+    if (originalDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = originalDataDir;
+    _resetLocks();
+    _resetStorage();
+  });
+
+  /** Count `readFile` calls per path from here on (fixture reads excluded). */
+  function countReads(): (relativePath: string) => number {
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    const seen: string[] = [];
+    readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        seen.push(target);
+        return readFile(target);
+      });
+    return (relativePath) => seen.filter((p) => p === relativePath).length;
+  }
+
+  function systemPrompts(): string[] {
+    return mockedCallLLM.mock.calls.map((call) => String(call[0]));
+  }
+
+  it("reads the active wiki's Purpose once across synthesis and map/reduce", async () => {
+    // Two guidance calls today: `buildIngestSystemPrompt` and the REDUCE step.
+    // One cache handle per `ingest()` collapses them to a single artifact read,
+    // and the Purpose must still reach the prompt that goes to the model.
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+    expect(systemPrompts().some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("reads the Names & Terms dictionary once across the whole document", async () => {
+    // DW-322. THREE dictionary reads in this scenario without a handle:
+    // `buildIngestSystemPrompt`, the map/reduce REDUCE step, and the direct
+    // `listNamesTerms` that canonicalizes the extracted concept. (A fourth,
+    // reconcile-on-merge, only happens when the ingest lands on an EXISTING
+    // page — this fixture starts empty, so it does not run here; the
+    // reconcile path is covered by the sibling case above.) One handle per
+    // `ingest()` collapses those three to a single read — and the dictionary
+    // must still reach the prompt that goes to the model.
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
+      .toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("aliases: Lighthouse")))
+      .toBe(true);
+  });
+
+  it("guides an AGENT-owned ingest with its human's standards, storing it unchanged", async () => {
+    // DW-543. `ownerToTenant("alice--yoyo")` is its own (empty) tenant, so
+    // resolving guidance from the raw handle would synthesize with no Purpose
+    // and no dictionary. Guidance reduces to the human; addressing does not.
+    const AGENT_OWNER = `${OWNER}--yoyo`;
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+    // Emit the ALIAS as the concept, so canonicalization is a real decision
+    // rather than an identity. This is the DATA-visible half of the change:
+    // the concept drives the page title and the convergence slug, so if the
+    // agent's ingest failed to consult ALICE's dictionary the written page
+    // would be titled/slugged "Lighthouse" instead.
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Lighthouse\n\n# Lighthouse\n\n## Summary\n\nMocked synthesis.",
+    );
+
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("aliases: Lighthouse")))
+      .toBe(true);
+    // One guidance owner per document ⇒ the shared handle stays ONE read each,
+    // and never a read against the agent's own empty tenant.
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(`tenants/${tenantForOwner(AGENT_OWNER)}/names-terms.json`)).toBe(0);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+
+    const pages = await listWikiPages();
+    expect(pages).toHaveLength(1);
+    // The concept was canonicalized against alice's dictionary — WRITTEN data,
+    // not just prompt text.
+    expect(pages[0].slug).toBe("project-lighthouse");
+    expect(pages[0].title).toBe("Project Lighthouse");
+    // Addressing is untouched: the page is still written as the AGENT's.
+    const written = await readWikiPageWithFrontmatter(pages[0].slug, {
+      fresh: true,
+    });
+    expect(written?.frontmatter.owner).toBe(AGENT_OWNER);
+  });
+
+  it("guides the reconcile-on-merge fold of an AGENT-owned ingest with its human's standards", async () => {
+    // DW-543's third re-pointed consumer. The `reconcilePage` call only runs
+    // when an ingest converges onto an EXISTING page, so it needs a SECOND
+    // ingest — a single ingest into an empty fixture never reaches that branch
+    // and leaves the argument untested.
+    const AGENT_OWNER = `${OWNER}--yoyo`;
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+    });
+    const pages = await listWikiPages();
+    // Assert before indexing: a first ingest that wrote nothing would otherwise
+    // surface as a TypeError here and hide the real failure.
+    expect(pages).toHaveLength(1);
+    const slug = pages[0].slug;
+
+    mockedCallLLM.mockClear();
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", `${LONG_CONTENT} A second pass.`, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+      pinSlug: slug,
+    });
+
+    // Identify the reconcile call by RECONCILE_SYSTEM_PROMPT's own marker.
+    const reconcilePrompts = systemPrompts().filter((prompt) =>
+      prompt.includes("You are a wiki editor maintaining a single canonical page"),
+    );
+    expect(reconcilePrompts).toHaveLength(1);
+    expect(reconcilePrompts[0]).toContain(PURPOSE);
+    expect(reconcilePrompts[0]).toContain("WORKSPACE NAMES & TERMS");
+    expect(reconcilePrompts[0]).toContain("aliases: Lighthouse");
+    // The fold never addressed the agent's own empty tenant.
+    expect(reads(`tenants/${tenantForOwner(AGENT_OWNER)}/names-terms.json`)).toBe(0);
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+  });
+
+  it("shares a CALLER-SUPPLIED handle across two whole documents", async () => {
+    // DW-324's seam: `options.guidanceCache` must actually be adopted, not
+    // quietly replaced by a freshly minted per-document handle. This is the
+    // only place the supplied-handle path is exercised against the real
+    // `ingest()` — the batch route's own tests module-mock `@/lib/ingest`, so
+    // they can only prove the route hands the SAME object to every call, not
+    // that `ingest()` honours it. Two documents, one handle, one read each.
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    const reads = countReads();
+    const shared = createGuidanceCache();
+
+    await ingest("Lighthouse One", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+      guidanceCache: shared,
+    });
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+      guidanceCache: shared,
+    });
+
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+    // The guidance still reached the model on both documents.
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
+      .toBe(true);
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("still picks up a dictionary entry saved BETWEEN two ingests", async () => {
+    // The handle is per-document unless a caller supplies its own — it must
+    // never span two `ingest()` calls on its own.
+    await ingest("Lighthouse One", LONG_CONTENT, { author: OWNER, owner: OWNER });
+
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Phoenix Reading Shelf",
+      aliases: ["Phoenix"],
+    });
+    mockedCallLLM.mockClear();
+
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    expect(
+      systemPrompts().some((prompt) => prompt.includes("Phoenix Reading Shelf")),
+    ).toBe(true);
+  });
+
+  it("shares the same handle with reconcile-on-merge", async () => {
+    // Three guidance calls in one document: system prompt, REDUCE, reconcile.
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+    const pages = await listWikiPages();
+    // Assert before indexing: a first ingest that wrote nothing would otherwise
+    // surface as a TypeError here and hide the real failure.
+    expect(pages).toHaveLength(1);
+    const slug = pages[0].slug;
+
+    mockedCallLLM.mockClear();
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", `${LONG_CONTENT} A second pass.`, {
+      author: OWNER,
+      owner: OWNER,
+      pinSlug: slug,
+    });
+
+    const prompts = systemPrompts();
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("You are a wiki editor maintaining a single canonical page"),
+      ),
+    ).toBe(true);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+  });
+
+  it("still picks up a Purpose saved BETWEEN two ingests", async () => {
+    // The handle is per-document on purpose — it must never span ingests.
+    await ingest("Lighthouse One", LONG_CONTENT, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    await writeWikiArtifact(
+      OWNER,
+      wikiId,
+      "purpose.md",
+      "# Ops\n\nTrack the Phoenix reading shelf.\n",
+    );
+    mockedCallLLM.mockClear();
+
+    await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {
+      author: OWNER,
+      owner: OWNER,
+    });
+
+    const prompts = systemPrompts();
+    expect(
+      prompts.some((prompt) =>
+        prompt.includes("Track the Phoenix reading shelf."),
+      ),
+    ).toBe(true);
+    // REPLACED, not appended, and no stale memo leaking in beside the fresh
+    // read: the superseded purpose must appear in NO prompt of the second run.
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
  * Cloudflare Workers environment.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { R2StorageProvider, R2NotFoundError } from "../storage/r2";
 import type { CloudflareEnv } from "../storage/cloudflare-types";
 import type {
@@ -32,15 +32,28 @@ interface StoredObject {
   content: string | ArrayBuffer;
   size: number;
   uploaded: Date;
-  httpEtag: string;
+  /** The RAW etag, which is what R2 stores and what `onlyIf` compares. */
+  etag: string;
 }
 
+/**
+ * The two etag forms R2 exposes, kept DISTINCT here on purpose.
+ *
+ * The real `R2Object` carries a raw `etag` and an `httpEtag` that is the same
+ * value quoted for a response header, and `R2Conditional.etagMatches` compares
+ * the RAW one. This mock used to store a single quoted string and compare
+ * `onlyIf` against the same field it had handed out, so it matched for either
+ * convention and could not catch a provider that read the wrong one — which is
+ * a break that only shows up on a real Workers runtime, as a compare-and-set
+ * that can never succeed again.
+ */
 function makeR2Object(stored: StoredObject): R2Object {
   return {
     key: stored.key,
     size: stored.size,
     uploaded: stored.uploaded,
-    httpEtag: stored.httpEtag,
+    etag: stored.etag,
+    httpEtag: `"${stored.etag}"`,
   };
 }
 
@@ -74,9 +87,19 @@ function createMockR2Bucket(): R2Bucket {
       options?: R2PutOptions,
     ): Promise<R2Object | null> {
       // Handle conditional put
+      const existing = store.get(key);
       if (options?.onlyIf?.etagMatches) {
-        const existing = store.get(key);
-        if (!existing || existing.httpEtag !== options.onlyIf.etagMatches) {
+        // Against the RAW etag, as R2 does. A provider that fed back `httpEtag`
+        // fails here, which is the whole point of keeping the two apart.
+        if (!existing || existing.etag !== options.onlyIf.etagMatches) {
+          return null;
+        }
+      }
+      if (options?.onlyIf?.etagDoesNotMatch) {
+        const token = options.onlyIf.etagDoesNotMatch;
+        if (token === "*") {
+          if (existing) return null;
+        } else if (existing && existing.etag === token) {
           return null;
         }
       }
@@ -93,7 +116,7 @@ function createMockR2Bucket(): R2Bucket {
         content,
         size,
         uploaded: new Date(),
-        httpEtag: `"etag-${etagCounter}"`,
+        etag: `etag-${etagCounter}`,
       };
       store.set(key, obj);
       return makeR2Object(obj);
@@ -393,6 +416,14 @@ describe("R2StorageProvider", () => {
     it("throws R2NotFoundError for missing files", async () => {
       await expect(provider.stat("nope.txt")).rejects.toThrow(R2NotFoundError);
     });
+
+    // The keyspace is flat: `head` only answers for a real object, so there is
+    // no directory to report. Pinned so the cross-provider contract (DW-701) is
+    // explicit on BOTH sides rather than accidental on this one.
+    it("reports isDirectory false — the keyspace admits no other answer", async () => {
+      await provider.writeFile("dir-probe/a.md", "a");
+      expect((await provider.stat("dir-probe/a.md")).isDirectory).toBe(false);
+    });
   });
 
   describe("deleteDirectory", () => {
@@ -468,10 +499,170 @@ describe("R2StorageProvider", () => {
       expect(await provider.readFile("page.md")).toBe("v1");
     });
 
+    it("hands back the RAW etag, not the quoted header form", async () => {
+      // `R2Conditional.etagMatches` compares the raw one. Returning `httpEtag`
+      // makes every conditional put compare `"abc"` against `abc`, so the second
+      // compare-and-set on any object fails forever — and since DW-272 that is
+      // every settings save on Workers after the first.
+      await provider.writeFile("page.md", "v1");
+      const { etag } = await provider.readFileWithEtag("page.md");
+      expect(etag.startsWith('"')).toBe(false);
+      // …and the value it hands back is exactly what a conditional put accepts.
+      expect(await provider.writeFileIfMatch("page.md", "v2", etag)).toBe(true);
+      // The quoted form is NOT interchangeable, which is what makes the above a
+      // real assertion rather than one the mock satisfies either way.
+      const quoted = await provider.readFileWithEtag("page.md");
+      expect(
+        await provider.writeFileIfMatch("page.md", "v3", `"${quoted.etag}"`),
+      ).toBe(false);
+    });
+
     it("throws R2NotFoundError for missing file", async () => {
       await expect(
         provider.readFileWithEtag("nope.md"),
       ).rejects.toThrow(R2NotFoundError);
+    });
+  });
+
+  describe("writeFileIfAbsent", () => {
+    it("allows exactly one concurrent creator and preserves that winner", async () => {
+      const values = ["first", "second"];
+      const results = await Promise.all(
+        values.map((value) => provider.writeFileIfAbsent("create.md", value)),
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(await provider.readFile("create.md")).toBe(values[winner]);
+    });
+
+    it("does not replace a pre-existing object", async () => {
+      await provider.writeFile("create.md", "already here");
+
+      await expect(
+        provider.writeFileIfAbsent("create.md", "replacement"),
+      ).resolves.toBe(false);
+      await expect(provider.readFile("create.md")).resolves.toBe("already here");
+    });
+  });
+
+  describe("writeAssetIfAbsent", () => {
+    it("allows exactly one concurrent creator and preserves that winner", async () => {
+      const values = [
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([9, 9, 9, 9]),
+      ];
+      const results = await Promise.all(
+        values.map((value) =>
+          provider.writeAssetIfAbsent("create.bin", value.buffer as ArrayBuffer),
+        ),
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(new Uint8Array(await provider.readAsset("create.bin"))).toEqual(
+        values[winner],
+      );
+    });
+
+    it("does not replace a pre-existing object", async () => {
+      const original = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await provider.writeAsset("create.bin", original.buffer as ArrayBuffer);
+
+      await expect(
+        provider.writeAssetIfAbsent(
+          "create.bin",
+          new Uint8Array([0, 0]).buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(false);
+      expect(new Uint8Array(await provider.readAsset("create.bin"))).toEqual(
+        original,
+      );
+    });
+  });
+
+  /**
+   * The create-only doors under a bucket that FAILS, rather than one that
+   * merely refuses the conditional put (DW-574).
+   *
+   * The distinction is the whole point and it has exactly one shape: `false`
+   * means "the name is taken", a rejection means "the write did not happen and
+   * nobody knows what is there". `raw.ts`'s Source arrivals branch on it — a
+   * `false` is a benign re-drop of bytes that already exist, a throw is an
+   * arrival that must be retried and logged — so a provider that collapsed a
+   * fault into `false` would report an immutable Source as safely stored when
+   * nothing was written at all.
+   *
+   * Every assertion here is `.rejects.toBe(fault)`, never `toBeInstanceOf`:
+   * object identity IS the contract this suite exists for, and a re-wrapped
+   * error would sail past a shape check while destroying the diagnosis the
+   * caller re-throws.
+   */
+  describe("create-only fault identity", () => {
+    /** A provider whose bucket rejects every `put` with `fault`. */
+    function providerWithFailingPut(fault: Error): R2StorageProvider {
+      const failing = createMockEnv();
+      failing.YOPEDIA_BUCKET = {
+        ...failing.YOPEDIA_BUCKET,
+        put: async () => {
+          throw fault;
+        },
+      } as R2Bucket;
+      return new R2StorageProvider(failing);
+    }
+
+    it("rejects writeFileIfAbsent with the bucket's own error object", async () => {
+      const fault = new Error("R2 put failed: internal error");
+
+      await expect(
+        providerWithFailingPut(fault).writeFileIfAbsent("create.md", "bytes"),
+      ).rejects.toBe(fault);
+    });
+
+    it("rejects writeAssetIfAbsent with the bucket's own error object", async () => {
+      // The binary door gets its own row rather than trusting it shares a body
+      // with the string one.
+      const fault = new Error("R2 put failed: internal error");
+
+      await expect(
+        providerWithFailingPut(fault).writeAssetIfAbsent(
+          "create.bin",
+          new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+        ),
+      ).rejects.toBe(fault);
+    });
+
+    it("keeps a fault distinguishable from an already-exists on BOTH doors", async () => {
+      // The contrast, pinned on the same pair of calls: an occupied key answers
+      // `false` and a broken bucket throws. One provider that answered `false`
+      // for both would be indistinguishable from a healthy one to every caller.
+      await provider.writeFile("taken.md", "already here");
+      await provider.writeAsset(
+        "taken.bin",
+        new Uint8Array([7]).buffer as ArrayBuffer,
+      );
+
+      await expect(
+        provider.writeFileIfAbsent("taken.md", "replacement"),
+      ).resolves.toBe(false);
+      await expect(
+        provider.writeAssetIfAbsent(
+          "taken.bin",
+          new Uint8Array([0]).buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(false);
+
+      const fault = new Error("R2 put failed: internal error");
+      const broken = providerWithFailingPut(fault);
+      await expect(
+        broken.writeFileIfAbsent("fresh.md", "bytes"),
+      ).rejects.toBe(fault);
+      await expect(
+        broken.writeAssetIfAbsent(
+          "fresh.bin",
+          new Uint8Array([1]).buffer as ArrayBuffer,
+        ),
+      ).rejects.toBe(fault);
     });
   });
 
@@ -506,6 +697,85 @@ describe("R2StorageProvider", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Atomic counters (R2 compare-and-swap, not KV)
+  // -------------------------------------------------------------------------
+
+  describe("incrementIndex", () => {
+    it("stores 1 on the first bump and keeps counting from there", async () => {
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(1);
+      await expect(provider.getIndex("data-version")).resolves.toBe(1);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(2);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(3);
+    });
+
+    it("never lets concurrent increments collapse or regress", async () => {
+      const n = 20;
+      const values = await Promise.all(
+        Array.from({ length: n }, () => provider.incrementIndex("data-version")),
+      );
+      expect(new Set(values).size).toBe(n);
+      expect(values.sort((a, b) => a - b)).toEqual(
+        Array.from({ length: n }, (_, i) => i + 1),
+      );
+      await expect(provider.getIndex("data-version")).resolves.toBe(n);
+    });
+
+    it("seeds the first R2 write from a leftover KV value", async () => {
+      await env.YOPEDIA_CONFIG.put("_idx:data-version", "40");
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(41);
+      await expect(provider.getIndex("data-version")).resolves.toBe(41);
+    });
+
+    it("prefers the R2 object over a stale leftover KV value", async () => {
+      await provider.incrementIndex("data-version");
+      await env.YOPEDIA_CONFIG.put("_idx:data-version", "99");
+      await expect(provider.getIndex("data-version")).resolves.toBe(1);
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(2);
+    });
+
+    it("does not store a lower value when a read is stale", async () => {
+      await provider.putIndex("data-version", 5);
+      const live = await env.YOPEDIA_BUCKET.get("_idx/data-version");
+      expect(live).not.toBeNull();
+
+      const realGet = env.YOPEDIA_BUCKET.get.bind(env.YOPEDIA_BUCKET);
+      let staleOnce = true;
+      env.YOPEDIA_BUCKET.get = async (key: string) => {
+        const current = await realGet(key);
+        if (staleOnce && key === "_idx/data-version" && current) {
+          staleOnce = false;
+          return {
+            ...current,
+            etag: "stale-etag",
+            text: async () => "1",
+          };
+        }
+        return current;
+      };
+
+      await expect(provider.incrementIndex("data-version")).resolves.toBe(6);
+      await expect(provider.getIndex("data-version")).resolves.toBe(6);
+    });
+
+    it("refuses keys that are not atomic counters", async () => {
+      await expect(provider.incrementIndex("config")).rejects.toThrow(
+        /atomic counter keys/,
+      );
+    });
+
+    it("counts the embedding rebuild epoch in the R2 object, not KV", async () => {
+      // The drift re-arm reads this counter across isolates (DW-599), so it has
+      // to be an atomic-counter key for exactly the reason `data-version` is —
+      // otherwise `incrementIndex` refuses it and `getIndex` would answer from
+      // eventually-consistent KV.
+      await expect(provider.incrementIndex("embedding-rebuild-epoch")).resolves.toBe(1);
+      await expect(provider.getIndex("embedding-rebuild-epoch")).resolves.toBe(1);
+      expect(await env.YOPEDIA_BUCKET.head("_idx/embedding-rebuild-epoch")).not.toBeNull();
+      await expect(provider.incrementIndex("embedding-rebuild-epoch")).resolves.toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Embeddings — KV fallback (no Vectorize)
   // -------------------------------------------------------------------------
 
@@ -514,7 +784,8 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
 
-      const results = await provider.queryEmbeddings([1, 0, 0], 2);
+      const { matches: results, rejected } = await provider.queryEmbeddings([1, 0, 0], 2);
+      expect(rejected).toBe(0);
       expect(results).toHaveLength(2);
       expect(results[0].id).toBe("page1");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -524,7 +795,7 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.removeEmbedding("page1");
 
-      const results = await provider.queryEmbeddings([1, 0, 0], 5);
+      const { matches: results } = await provider.queryEmbeddings([1, 0, 0], 5);
       expect(results).toHaveLength(0);
     });
 
@@ -532,10 +803,48 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.upsertEmbedding("page1", [0, 1, 0], { hash: "b" });
 
-      const results = await provider.queryEmbeddings([0, 1, 0], 5);
+      const { matches: results } = await provider.queryEmbeddings([0, 1, 0], 5);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("page1");
       expect(results[0].metadata.hash).toBe("b");
+    });
+
+    it("applies `accept` BEFORE the top-K slice, like the filesystem provider", async () => {
+      // The KV fallback ranks locally, so it owes the pre-slice guarantee
+      // exactly, not best-effort: the nearest vector is refused and the single
+      // slot goes to the accepted one behind it (DW-598).
+      await provider.upsertEmbedding("stale", [1, 0, 0], { model: "old" });
+      await provider.upsertEmbedding("current", [1, 1, 0], { model: "new" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches.map((m) => m.id)).toEqual(["current"]);
+      expect(rejected).toBe(1);
+    });
+
+    it("reports every refused vector in `rejected` on a fully drifted KV store", async () => {
+      await provider.upsertEmbedding("page1", [1, 0, 0], { model: "old" });
+      await provider.upsertEmbedding("page2", [0, 1, 0], { model: "old" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0, 0],
+        5,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches).toEqual([]);
+      expect(rejected).toBe(2);
+    });
+
+    it("is byte-identical with an accept-all predicate and with none", async () => {
+      await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
+      await provider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
+
+      const unfiltered = await provider.queryEmbeddings([1, 0, 0], 1);
+      expect(await provider.queryEmbeddings([1, 0, 0], 1, () => true)).toEqual(unfiltered);
+      expect(unfiltered.rejected).toBe(0);
     });
 
     it("getEmbeddingById returns the vector + metadata, or null", async () => {
@@ -549,7 +858,7 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.clearEmbeddings();
       expect(await provider.getEmbeddingById("page1")).toBeNull();
-      expect(await provider.queryEmbeddings([1, 0, 0], 5)).toHaveLength(0);
+      expect((await provider.queryEmbeddings([1, 0, 0], 5)).matches).toHaveLength(0);
     });
   });
 
@@ -569,7 +878,8 @@ describe("R2StorageProvider", () => {
       await vecProvider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await vecProvider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
 
-      const results = await vecProvider.queryEmbeddings([1, 0, 0], 2);
+      const { matches: results, rejected } = await vecProvider.queryEmbeddings([1, 0, 0], 2);
+      expect(rejected).toBe(0);
       expect(results).toHaveLength(2);
       expect(results[0].id).toBe("page1");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -579,8 +889,107 @@ describe("R2StorageProvider", () => {
       await vecProvider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await vecProvider.removeEmbedding("page1");
 
-      const results = await vecProvider.queryEmbeddings([1, 0, 0], 5);
+      const { matches: results } = await vecProvider.queryEmbeddings([1, 0, 0], 5);
       expect(results).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // The over-fetched, locally-filtered window (DW-598)
+    // -----------------------------------------------------------------------
+
+    it("over-fetches to the metadata ceiling when `accept` is supplied, then filters and slices", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.upsertEmbedding("stale", [1, 0, 0], { model: "old" });
+      await p.upsertEmbedding("current", [1, 1, 0], { model: "new" });
+
+      const { matches, rejected } = await p.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      // Vectorize ranks server-side, so the nearest-but-refused vector would
+      // have eaten the single slot had the branch asked for topK: 1.
+      expect(queries).toEqual([20]);
+      expect(matches.map((m) => m.id)).toEqual(["current"]);
+      expect(rejected).toBe(1);
+    });
+
+    it("asks for exactly `topK` and rejects nothing when no predicate is supplied", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.upsertEmbedding("page1", [1, 0, 0], { model: "old" });
+      const { matches, rejected } = await p.queryEmbeddings([1, 0, 0], 3);
+      expect(queries).toEqual([3]);
+      expect(matches).toHaveLength(1);
+      expect(rejected).toBe(0);
+    });
+
+    it("scopes `rejected` to the OVER-FETCHED WINDOW, not the corpus", async () => {
+      // The honest limit of the Vectorize branch, pinned rather than left in a
+      // comment. Vectorize ranks server-side, so this branch can only see the
+      // window it asked for: with 25 stored vectors and a floor of 20, five are
+      // never returned and cannot be counted. `rejected` therefore reports what
+      // the WINDOW turned away — a corpus-scoped count is not obtainable here
+      // without a second, unfiltered probe query.
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const p = new R2StorageProvider(vecEnv);
+
+      // 25 stale vectors, ranked by descending similarity to [1, 0, 0] so the
+      // 20 the branch over-fetches to are a deterministic prefix.
+      for (let i = 0; i < 25; i++) {
+        await p.upsertEmbedding(`stale-${i}`, [25 - i, i, 0], { model: "old" });
+      }
+
+      const { matches, rejected } = await p.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches).toEqual([]);
+      // 20, not 25: the ceiling the branch over-fetched to, which is exactly
+      // what the interface means by "best-effort" for a server-ranking
+      // provider. The KV fallback on the same corpus reports all 25.
+      expect(rejected).toBe(20);
+
+      const kvOnly = new R2StorageProvider(createMockEnv());
+      for (let i = 0; i < 25; i++) {
+        await kvOnly.upsertEmbedding(`stale-${i}`, [25 - i, i, 0], { model: "old" });
+      }
+      expect(
+        (await kvOnly.queryEmbeddings([1, 0, 0], 1, (m) => m.model === "new")).rejected,
+      ).toBe(25);
+    });
+
+    it("never narrows the window below the caller's topK", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.queryEmbeddings([1, 0, 0], 50, () => true);
+      expect(queries).toEqual([50]);
     });
 
     it("getEmbeddingById fetches a stored vector via getByIds", async () => {
@@ -600,6 +1009,136 @@ describe("R2StorageProvider", () => {
       // remains and is filtered at query time by the caller.
       await expect(vecProvider.clearEmbeddings()).resolves.toBeUndefined();
       expect(await vecProvider.getEmbeddingById("page1")).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Batched writes + bulk embedding upsert (DW-293)
+  // -------------------------------------------------------------------------
+
+  describe("withBatchedWrites", () => {
+    it("puts every member into the bucket and returns the body's value", async () => {
+      const answer = await provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/a.md", "alpha");
+        await batch.writeAsset("batch/b.bin", new Uint8Array([1, 2, 3]).buffer);
+        return "returned";
+      });
+
+      expect(answer).toBe("returned");
+      expect(await provider.readFile("batch/a.md")).toBe("alpha");
+      expect([...new Uint8Array(await provider.readAsset("batch/b.bin"))])
+        .toEqual([1, 2, 3]);
+    });
+
+    it("propagates the body's own error", async () => {
+      const boom = new Error("body gave up");
+      await expect(provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/one.md", "1");
+        throw boom;
+      })).rejects.toBe(boom);
+
+      // The write that landed before the throw is still there — a batch never
+      // rolls its members back on either provider.
+      expect(await provider.readFile("batch/one.md")).toBe("1");
+    });
+
+    it("refuses a write issued after the scope has exited", async () => {
+      // R2 defers nothing, so this guard buys no durability here. It exists so
+      // the CONTRACT is identical on both providers: a body that leaks the
+      // writer must fail the same way in dev as it does on Workers.
+      let leaked!: Parameters<Parameters<typeof provider.withBatchedWrites>[0]>[0];
+      await provider.withBatchedWrites(async (batch) => {
+        leaked = batch;
+      });
+
+      await expect(leaked.writeFile("batch/after.md", "after"))
+        .rejects.toThrow(/used after its scope exited/);
+      expect(await provider.fileExists("batch/after.md")).toBe(false);
+    });
+  });
+
+  describe("upsertEmbeddings", () => {
+    /** The provider's internal KV key for the Vectorize-less fallback blob. */
+    const EMBEDDINGS_KV_KEY = "_idx:embeddings";
+
+    it("issues ONE Vectorize upsert for the whole set, repeated ids collapsed", async () => {
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      const vecProvider = new R2StorageProvider(vecEnv);
+
+      await vecProvider.upsertEmbeddings([
+        { id: "a", vector: [1, 0, 0], metadata: { tag: "a" } },
+        { id: "b", vector: [0, 1, 0], metadata: { tag: "b" } },
+        { id: "a", vector: [0, 0, 1], metadata: { tag: "a-again" } },
+      ]);
+
+      // One request, not one per vector — the whole point of the bulk door.
+      expect(upsert).toHaveBeenCalledTimes(1);
+      const sent = upsert.mock.calls[0][0];
+      // Two vectors, not three: the repeated id resolves HERE rather than
+      // leaving the managed index to order two writes of one id in one request.
+      expect(sent.map((v) => v.id)).toEqual(["a", "b"]);
+      expect(await vecProvider.getEmbeddingById("a")).toEqual({
+        id: "a",
+        vector: [0, 0, 1],
+        metadata: { tag: "a-again" },
+      });
+    });
+
+    it("issues ONE KV put whose merged order follows the merge rule", async () => {
+      await provider.upsertEmbeddings([
+        { id: "first", vector: [1, 0], metadata: { tag: "1" } },
+        { id: "second", vector: [0, 1], metadata: { tag: "2" } },
+      ]);
+
+      const put = vi.spyOn(env.YOPEDIA_CONFIG, "put");
+      await provider.upsertEmbeddings([
+        { id: "new", vector: [1, 1], metadata: { tag: "new-a" } },
+        { id: "new", vector: [2, 2], metadata: { tag: "new-b" } },
+        { id: "first", vector: [9, 9], metadata: { tag: "updated" } },
+        { id: "later", vector: [3, 3], metadata: { tag: "later" } },
+      ]);
+
+      // One load / merge / put for the set, where the per-vector door rewrote
+      // the whole blob once each.
+      expect(put).toHaveBeenCalledTimes(1);
+      const stored = await env.YOPEDIA_CONFIG.get(EMBEDDINGS_KV_KEY, "json") as
+        Array<{ id: string; metadata: Record<string, string> }>;
+      // Stored entries keep their positions; new ids append in the order they
+      // FIRST appeared; the last write for a repeated id wins.
+      expect(stored.map((e) => e.id)).toEqual(["first", "second", "new", "later"]);
+      expect(stored.find((e) => e.id === "first")!.metadata.tag).toBe("updated");
+      expect(stored.find((e) => e.id === "new")!.metadata.tag).toBe("new-b");
+    });
+
+    it("writes nothing at all for an empty set", async () => {
+      const put = vi.spyOn(env.YOPEDIA_CONFIG, "put");
+      await provider.upsertEmbeddings([]);
+      expect(put).not.toHaveBeenCalled();
+
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      await new R2StorageProvider(vecEnv).upsertEmbeddings([]);
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    it("chunks a set larger than one Vectorize request rather than rejecting it", async () => {
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      const vecProvider = new R2StorageProvider(vecEnv);
+
+      const entries = Array.from({ length: 2_500 }, (_, i) => ({
+        id: `v${i}`,
+        vector: [i, 0],
+        metadata: { tag: `${i}` },
+      }));
+      await vecProvider.upsertEmbeddings(entries);
+
+      // 2500 over a 1000-vector chunk: three requests, every vector sent once.
+      expect(upsert).toHaveBeenCalledTimes(3);
+      const sentIds = upsert.mock.calls.flatMap((call) => call[0].map((v) => v.id));
+      expect(sentIds).toHaveLength(2_500);
+      expect(new Set(sentIds).size).toBe(2_500);
     });
   });
 
@@ -665,5 +1204,103 @@ describe("initCloudflareStorage", () => {
     const s2 = initCloudflareStorage(env2);
     expect(s1).not.toBe(s2);
     expect(getStorage()).toBe(s2);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The settings store, ON THE CLOUDFLARE BACKEND (DW-272)
+// ---------------------------------------------------------------------------
+
+/**
+ * `readConfig` / `saveConfig` driven through `R2StorageProvider`.
+ *
+ * DW-272's complaint was that the scheme had NO Cloudflare coverage at all: the
+ * two-file pairing it replaced could not be read atomically on R2, and the
+ * compare-and-set that replaced it is the one part of the design whose
+ * correctness is a property of the R2 API rather than of `config.ts`. Every
+ * other test of the scheme runs on the filesystem provider or against a mocked
+ * `saveConfig`, so this is the only place the two meet.
+ *
+ * The EXISTING mock bucket, deliberately: a bespoke harness here would be a
+ * second thing to keep true to R2, and this one already models the raw/quoted
+ * etag split the conditional put depends on.
+ */
+describe("the settings store on R2", () => {
+  let resetStorage: () => void;
+  let initCloudflareStorage: (
+    env: CloudflareEnv,
+  ) => import("../storage/types").StorageProvider;
+  let config: typeof import("../config");
+
+  beforeEach(async () => {
+    const storageMod = await import("../storage");
+    resetStorage = storageMod._resetStorage;
+    initCloudflareStorage = storageMod.initCloudflareStorage;
+    config = await import("../config");
+    resetStorage();
+    config._resetConfigCache();
+    initCloudflareStorage(createMockEnv());
+  });
+
+  afterEach(() => {
+    config._resetConfigCache();
+    resetStorage();
+  });
+
+  it("round-trips the token INSIDE the one object, stripped on the way out", async () => {
+    const first = await config.readConfig();
+    expect(first).toMatchObject({
+      status: "ok",
+      config: {},
+      version: config.UNSTAMPED_CONFIG_VERSION,
+      // Nothing to read means nothing to write against.
+      etag: null,
+    });
+
+    const saved = await config.saveConfig(
+      { provider: "openai", firecrawlApiKey: "fc-secret" },
+      first.status === "ok" ? first.etag : null,
+    );
+    expect(saved).toMatchObject({ status: "ok" });
+
+    const read = await config.readConfig();
+    expect(read).toMatchObject({
+      status: "ok",
+      // The reserved key never reaches a consumer.
+      config: { provider: "openai", firecrawlApiKey: "fc-secret" },
+      version: saved.status === "ok" ? saved.version : "",
+    });
+    // …and an object that exists always has an etag to write against.
+    expect(read.status === "ok" && read.etag).toBeTruthy();
+
+    // ONE object in the bucket, carrying both halves — no sibling to pair.
+    const raw = JSON.parse(
+      await (await import("../storage")).getStorage().readFile(".llm-wiki-config.json"),
+    );
+    expect(raw.__settingsVersion).toBe(saved.status === "ok" ? saved.version : "");
+    expect(raw.provider).toBe("openai");
+  });
+
+  it("REFUSES a save whose compare-and-set was superseded", async () => {
+    await config.saveConfig({ provider: "openai" });
+    const read = await config.readConfig();
+    expect(read.status).toBe("ok");
+    const etag = read.status === "ok" ? read.etag : null;
+
+    // Another writer lands between this reader's read and its write.
+    const other = await config.saveConfig({ provider: "google" });
+    expect(other).toMatchObject({ status: "ok" });
+
+    const lost = await config.saveConfig({ provider: "anthropic" }, etag);
+    expect(lost).toEqual({ status: "conflict" });
+
+    // The other writer's value still stands, untouched.
+    config._resetConfigCache();
+    expect(await config.readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "google" },
+      version: other.status === "ok" ? other.version : "",
+    });
   });
 });

@@ -1,0 +1,47 @@
+{
+  "DW-422": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Gate PreviewColumn's fetch effect, dataVersion checks and live-region writes on surface visibility (extending the existing SurfaceVisibilityProvider), resuming with one refresh on return; apply the same shape to ModeCanvas.",
+    "key": "1",
+    "label": "Pause while withdrawn",
+    "resolution": ""
+  },
+  "DW-443": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make validateUrlSafety async, add a Node implementation that resolves DNS and pins the resolved address through to connect time, and a Workers implementation that relies on an egress proxy or allowlist; document which protection each target actually has.",
+    "key": "1",
+    "label": "Per-runtime guard",
+    "resolution": ""
+  },
+  "DW-612": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Route an owner admitted by stable id through getOwnerHandle() when deriving the tenant, so id-owners always address the canonical silo regardless of their current handle. Audit every write door that derives a tenant from principal.handle for the same substitution and pin that a drifted-handle owner's write lands where the reads look.",
+    "key": "1",
+    "label": "Canonical tenant for id-owners",
+    "resolution": ""
+  },
+  "DW-613": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Compute isOwner on the server and pass it as a prop down to NavHeader, ArticleActions and RevisionHistory, so the client gate is the server's answer rather than an independent re-derivation, and reparameterize the harness to drive the two sides from different facts so a divergence is visible.",
+    "key": "1",
+    "label": "Pass a server-computed flag",
+    "resolution": ""
+  },
+  "DW-753": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a CI job that installs Playwright browsers, starts the dev server via playwright.config.ts's webServer, and runs pnpm test:e2e, with the runtime and flake budget recorded. Update AGENTS.md:115 so the lane is no longer described as local-only.",
+    "key": "1",
+    "label": "Enroll test:e2e in CI",
+    "resolution": ""
+  }
+}

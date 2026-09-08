@@ -1,0 +1,1294 @@
+diff --git a/src/lib/__tests__/wikis.test.ts b/src/lib/__tests__/wikis.test.ts
+index ce2c2f07..4dc49d14 100644
+--- a/src/lib/__tests__/wikis.test.ts
++++ b/src/lib/__tests__/wikis.test.ts
+@@ -342,7 +342,7 @@ describe("input validation", () => {
+  * would let "bumps once" pass against an implementation that just STORES `1`,
+  * and let the "does not bump" rows pass against a counter that is failing open.
+  */
+-describe("create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209)", () => {
++describe("create, re-template, rename and delete move the refresh signal (DW-49, DW-57, DW-209, DW-210, DW-382)", () => {
+   it("bumps exactly once per create, not once per seeded file", async () => {
+     // The FIRST create is what lifts the counter off zero, so the second one's
+     // `before + 1` is arithmetic on the stored value rather than a literal an
+@@ -630,6 +630,196 @@ describe("create, re-template and rename move the refresh signal (DW-49, DW-57,
+       ),
+     ).toBe(true);
+   });
++
++  it("bumps exactly once per delete, which is a preview-visible byte move (DW-382)", async () => {
++    // `purpose.md` and `schema.md` are GONE. The deleting client re-renders off
++    // its own response, but another client with the Workbench open on one of
++    // them is keyed on `dataVersion` and has nothing else to learn this from —
++    // a delete moves no `currentWikiId` for anyone but the caller.
++    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
++    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
++    await setCurrentWiki(OWNER, keep.id);
++    const before = await readDataVersion();
++    expect(before).toBeGreaterThan(0); // the creates' own bumps
++
++    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
++
++    // Once, not once per removal: the registry write, the directory removal and
++    // the inline sweep all moved bytes, and the signal is monotonic.
++    expect(await readDataVersion()).toBe(before + 1);
++    expect(await exists(wikiDir(drop.id))).toBe(false);
++  });
++
++  it("does not bump for a delete of an unknown wiki id", async () => {
++    await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const before = await readDataVersion();
++    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
++
++    expect(await deleteWiki(OWNER, "00000000-0000-4000-8000-000000000000")).toBeNull();
++
++    // The locked body returns before its first write, so there is nothing new
++    // to see and a refresh would be pure churn.
++    expect(await readDataVersion()).toBe(before);
++  });
++
++  it("does not bump when a delete is refused for the current wiki", async () => {
++    const first = await createWiki(OWNER, { name: "One", scenario: "business" });
++    const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
++    expect((await getCurrentWiki(OWNER))?.id).toBe(second.id);
++    const before = await readDataVersion();
++
++    await expect(deleteWiki(OWNER, second.id)).rejects.toThrow(ClientInputError);
++
++    // The refusal happens above `writeRegistry`, so not a byte moved.
++    expect(await readDataVersion()).toBe(before);
++    expect(await exists(wikiDir(second.id))).toBe(true);
++    expect(await exists(wikiDir(first.id))).toBe(true);
++  });
++
++  it("bumps a delete whose directory removal failed (DW-382)", async () => {
++    // The registry entry is already gone, so the Wiki is absent from every read
++    // in the app — and that absence is exactly what the signal announces.
++    // Skipping the bump here would drop it on the one path where the registry
++    // and the disk have diverged.
++    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
++    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
++    await setCurrentWiki(OWNER, keep.id);
++    const before = await readDataVersion();
++
++    const removal = vi
++      .spyOn(getStorage(), "deleteDirectory")
++      .mockRejectedValue(new Error("the directory is busy"));
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    try {
++      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
++    } finally {
++      warn.mockRestore();
++      removal.mockRestore();
++    }
++
++    expect(await readDataVersion()).toBe(before + 1);
++    // The bytes really are still there — so the bump above is not being earned
++    // by a removal that quietly succeeded.
++    expect(await exists(wikiDir(drop.id))).toBe(true);
++  });
++
++  it("still reports a delete when the counter store rejects putIndex (DW-382)", async () => {
++    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
++    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
++    await setCurrentWiki(OWNER, keep.id);
++    const before = await readDataVersion();
++
++    const putIndex = vi
++      .spyOn(getStorage(), "putIndex")
++      .mockRejectedValue(new Error("kv is gone"));
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let deleted: WikiRecord | null;
++    let warned: unknown[][] = [];
++    try {
++      deleted = await deleteWiki(OWNER, drop.id);
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++      putIndex.mockRestore();
++    }
++
++    // A counter hiccup must not turn a delete that has landed into a failure
++    // the owner then retries into a 404.
++    expect(deleted?.id).toBe(drop.id);
++    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
++    expect(await readDataVersion()).toBe(before);
++    expect(
++      warned.some(
++        ([scope, message]) =>
++          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
++      ),
++    ).toBe(true);
++  });
++
++  it("bumps a re-template whose rollback could not put every file back (DW-210)", async () => {
++    // The one shape where the operation FAILED and the artifacts still changed:
++    // `restoreSeededFiles` is fail-soft per entry, so a restore that cannot
++    // write leaves new template bytes on disk under an error the caller reports
++    // as a failure. Nothing else would ever tell an open Preview elsewhere.
++    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const purposeFile = abs("tenants", TENANT, "wikis", wiki.id, "purpose.md");
++    const purposeBefore = await fs.readFile(purposeFile, "utf8");
++    const before = await readDataVersion();
++    expect(before).toBeGreaterThan(0);
++
++    const storage = getStorage();
++    const write = storage.writeFile.bind(storage);
++    let purposeWrites = 0;
++    const spy = vi
++      .spyOn(storage, "writeFile")
++      .mockImplementation(async (target: string, content: string) => {
++        // The registry write faults, so the seed has already overwritten all
++        // three files by the time the compensation runs…
++        if (target.endsWith("wikis.json")) {
++          return Promise.reject(new Error("the registry is unavailable"));
++        }
++        // …and the SECOND write to purpose.md — the restore's — is what fails,
++        // so the template bytes the seed put there stay.
++        if (target.endsWith("purpose.md")) {
++          purposeWrites += 1;
++          if (purposeWrites > 1) {
++            return Promise.reject(new Error("the artifact store is unavailable"));
++          }
++        }
++        return write(target, content);
++      });
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    try {
++      // The ORIGINAL error is still what propagates — the bump is a tail, not a
++      // rediagnosis.
++      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
++        "the registry is unavailable",
++      );
++    } finally {
++      warn.mockRestore();
++      spy.mockRestore();
++    }
++
++    // The bytes genuinely moved, so the bump is earned.
++    expect(await fs.readFile(purposeFile, "utf8")).not.toBe(purposeBefore);
++    expect(await readDataVersion()).toBe(before + 1);
++  });
++
++  it("does not bump a re-template whose rollback put everything back (DW-210)", async () => {
++    // The boundary of the row above: a CLEAN restore leaves the artifacts
++    // byte-for-byte what they were, so a refetch would be pure churn.
++    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const purposeFile = abs("tenants", TENANT, "wikis", wiki.id, "purpose.md");
++    const purposeBefore = await fs.readFile(purposeFile, "utf8");
++    const before = await readDataVersion();
++
++    const storage = getStorage();
++    const write = storage.writeFile.bind(storage);
++    const spy = vi
++      .spyOn(storage, "writeFile")
++      .mockImplementation(async (target: string, content: string) =>
++        target.endsWith("wikis.json")
++          ? Promise.reject(new Error("the registry is unavailable"))
++          : write(target, content),
++      );
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let warned: unknown[][] = [];
++    try {
++      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
++        "the registry is unavailable",
++      );
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++      spy.mockRestore();
++    }
++
++    // Nothing was warned about, so every entry really did go back — without
++    // this the row would also pass against a restore that failed silently.
++    expect(warned.filter(([scope]) => scope === "wikis")).toEqual([]);
++    expect(await fs.readFile(purposeFile, "utf8")).toBe(purposeBefore);
++    expect(await readDataVersion()).toBe(before);
++  });
+ });
+ 
+ describe("applying a different scenario template", () => {
+@@ -935,6 +1125,22 @@ async function ageDirectory(
+   await fs.utimes(dir, when, when);
+ }
+ 
++/**
++ * Date every mtime under `dir` AHEAD of now — a skewed provider clock, or an
++ * archive restored with its original timestamps.
++ *
++ * `ageDirectory` with a negative age, because "how far from now" is the same
++ * knob in both directions and a second walker would be the same code twice.
++ * The default is well past {@link ORPHAN_SWEEP_GRACE_MS}, so it lands on the
++ * far side of the tolerance rather than inside it.
++ */
++function futureDateDirectory(
++  dir: string,
++  aheadMs = ORPHAN_SWEEP_GRACE_MS * 4,
++): Promise<void> {
++  return ageDirectory(dir, -aheadMs);
++}
++
+ /** Backdate a Wiki's `updatedAt` so "bumped" is an observation, not a coin flip. */
+ async function backdate(wikiId: string, when = "2000-01-01T00:00:00.000Z"): Promise<void> {
+   const file = abs(wikiRegistryPath(OWNER));
+@@ -1632,6 +1838,299 @@ describe("the orphan-directory sweep", () => {
+       warned.some(([, message]) => String(message).includes("to the next sweep")),
+     ).toBe(false);
+   });
++
++  it("warns, and never sweeps, an orphan whose newest write is in the future (DW-290)", async () => {
++    // The age gates a DELETE, so an unverifiable age must never authorise one —
++    // this still skips. What changes is that it stops being reported as the
++    // routine outcome: unlike a young directory this one does NOT clear itself
++    // with time, and until the wall clock passes that date every pass will skip
++    // it again. At INFO that is indistinguishable from a create in flight.
++    await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const skewed = await plantOrphan("eeeeeeee-1111-4111-8111-111111111111");
++    await futureDateDirectory(skewed);
++    const stamp = (await fs.stat(path.join(skewed, "purpose.md"))).mtime.toISOString();
++
++    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let removed: number;
++    let logged: unknown[][] = [];
++    let warned: unknown[][] = [];
++    try {
++      removed = await sweepOrphanWikiDirectories(OWNER);
++      logged = info.mock.calls.map((call) => [...call]);
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++      info.mockRestore();
++    }
++
++    expect(removed).toBe(0);
++    expect(await exists(skewed)).toBe(true);
++    // ONE warn, naming the future date itself — an operator reading the bucket
++    // needs the date to know how long these bytes are stuck for.
++    const skew = warned.filter(
++      ([scope, message]) =>
++        scope === "wikis" &&
++        String(message).includes('skipped orphaned wiki directory "eeeeeeee-1111-4111-8111-111111111111"'),
++    );
++    expect(skew).toHaveLength(1);
++    expect(String(skew[0][1])).toContain(stamp);
++    expect(String(skew[0][1])).toContain("further ahead than the whole 15-minute grace window");
++    // …and NOT the grace-window line, which would say the opposite thing.
++    expect(
++      logged.some(([, message]) =>
++        String(message).includes("skipped orphaned wiki directory"),
++      ),
++    ).toBe(false);
++  });
++
++  it("keeps the ordinary grace-window line for a small forward skew (DW-290)", async () => {
++    // Forward skew INSIDE the window is exactly the provider/isolate jitter the
++    // grace window exists to absorb — promoting it to a warn would fire on
++    // every healthy cron tick against a clock a few seconds out.
++    await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const jittery = await plantOrphan("eeeeeeee-2222-4222-8222-222222222222");
++    await futureDateDirectory(jittery, ORPHAN_SWEEP_GRACE_MS / 2);
++
++    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let removed: number;
++    let logged: unknown[][] = [];
++    let warned: unknown[][] = [];
++    try {
++      removed = await sweepOrphanWikiDirectories(OWNER);
++      logged = info.mock.calls.map((call) => [...call]);
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++      info.mockRestore();
++    }
++
++    expect(removed).toBe(0);
++    expect(await exists(jittery)).toBe(true);
++    expect(
++      logged.some(
++        ([scope, message]) =>
++          scope === "wikis" &&
++          String(message).includes("younger than the 15-minute grace window"),
++      ),
++    ).toBe(true);
++    expect(
++      warned.some(([, message]) => String(message).includes("further ahead than")),
++    ).toBe(false);
++  });
++
++  it("rotates the per-pass window so an unsweepable head cannot starve the tail (DW-383)", async () => {
++    // Removal is the only thing that advances a fixed `slice(0, cap)`, so a head
++    // of `cap` directories that can NEVER be removed pins the window over itself
++    // and everything behind it is deferred forever — by a warn that says "next
++    // sweep" and means "never". Here NOTHING is removable (every candidate's age
++    // read throws), so the only observable is which directories were CONSIDERED,
++    // and that is precisely what has to move.
++    await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const OVERFLOW = 3;
++    const ids: string[] = [];
++    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
++      const id = `dddddddd-0000-4000-8000-${String(index).padStart(12, "0")}`;
++      await plantOrphan(id);
++      ids.push(id);
++    }
++
++    const storage = getStorage();
++    const list = storage.listFiles.bind(storage);
++    // `fs.readdir` order is not specified and the window's start is an index
++    // into this list, so it is sorted here — which is also how R2 enumerates.
++    const listing = vi
++      .spyOn(storage, "listFiles")
++      .mockImplementation(async (prefix: string) => {
++        if (ids.some((id) => prefix.endsWith(id))) {
++          throw new Error("the directory is unreadable");
++        }
++        return (await list(prefix)).sort((a, b) => a.name.localeCompare(b.name));
++      });
++
++    /**
++     * Which candidates one pass reached, run at a chosen point on the clock.
++     * `newestWriteTime` warns per directory it could not read, and under this
++     * spy that is every candidate the pass actually walked.
++     */
++    async function consideredAt(at: number): Promise<Set<string>> {
++      const clock = vi.spyOn(Date, "now").mockReturnValue(at);
++      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++      try {
++        expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
++        const seen = new Set<string>();
++        for (const [, message] of warn.mock.calls) {
++          const text = String(message);
++          if (!text.includes("could not read the age")) continue;
++          for (const id of ids) if (text.includes(id)) seen.add(id);
++        }
++        return seen;
++      } finally {
++        warn.mockRestore();
++        clock.mockRestore();
++      }
++    }
++
++    const base = Math.floor(Date.now() / ORPHAN_SWEEP_GRACE_MS) * ORPHAN_SWEEP_GRACE_MS;
++    let first: Set<string>;
++    let again: Set<string>;
++    let second: Set<string>;
++    try {
++      first = await consideredAt(base);
++      // STABLE INSIDE A BUCKET: several deletes in the same fifteen minutes must
++      // sweep identically rather than shuffling which candidates they walk.
++      again = await consideredAt(base + ORPHAN_SWEEP_GRACE_MS - 1);
++      second = await consideredAt(base + ORPHAN_SWEEP_GRACE_MS);
++    } finally {
++      listing.mockRestore();
++    }
++
++    // The cap still holds on every pass — rotation moves the window, it does
++    // not widen it.
++    expect(first.size).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
++    expect([...again].sort()).toEqual([...first].sort());
++    expect(second.size).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
++    // …and the next bucket's window is a DIFFERENT capful, so between them
++    // every candidate has been considered. A fixed prefix would make these two
++    // sets identical and leave the last three unreachable forever.
++    expect(new Set([...first, ...second]).size).toBe(ids.length);
++    // Nothing was removed at any point — this row is about reach, not progress.
++    for (const id of ids) expect(await exists(wikiDir(id))).toBe(true);
++  });
++
++  it("clears a stale discard marker from a directory the registry names (DW-291)", async () => {
++    // Three unlikely things in sequence — the half-create's directory removal
++    // fails, its tombstone write lands, and the id is afterwards claimed — leave
++    // a live Wiki wearing evidence of its own death. Nothing acts on it, so the
++    // fault is not a lost Wiki; it is a lie in the bucket with no way to date it.
++    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
++    const marker = path.join(wikiDir(wiki.id), ".discarded");
++    await fs.writeFile(marker, "2020-01-01T00:00:00.000Z\n");
++    const schemaBefore = await readWikiArtifact(OWNER, wiki.id, "schema.md");
++
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let removed: number;
++    let warned: unknown[][] = [];
++    try {
++      removed = await sweepOrphanWikiDirectories(OWNER);
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++    }
++
++    // Only the MARKER goes: this is the one place in the module that writes to
++    // a directory the registry claims, so it must never reach `deleteDirectory`.
++    expect(removed).toBe(0);
++    expect(await exists(marker)).toBe(false);
++    expect(await exists(wikiDir(wiki.id))).toBe(true);
++    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
++    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBe(schemaBefore);
++    expect(await profileBytes(wiki.id)).toBeTruthy();
++    expect(
++      warned.some(
++        ([scope, message]) =>
++          scope === "wikis" &&
++          String(message).includes(
++            `cleared a stale discard marker from wiki directory "${wiki.id}"`,
++          ),
++      ),
++    ).toBe(true);
++    // Idempotent: a second scheduled pass has no marker left to clear.
++    const second = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    try {
++      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
++      expect(
++        second.mock.calls.some(([, message]) =>
++          String(message).includes("cleared a stale discard marker"),
++        ),
++      ).toBe(false);
++    } finally {
++      second.mockRestore();
++    }
++  });
++
++  it("does not probe claimed directories from the sweep inside a delete (DW-291)", async () => {
++    // `deleteWiki` is a user-facing request holding `wikis:<tenant>`; clearing
++    // costs one `fileExists` per registry-claimed directory, which is up to a
++    // capful of extra round trips on a path that today costs one `listFiles`.
++    // The cron tick already tolerates the full walk, and a marker that has been
++    // wrong for however long can be wrong for a few more minutes.
++    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
++    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
++    await setCurrentWiki(OWNER, keep.id);
++    const marker = path.join(wikiDir(keep.id), ".discarded");
++    await fs.writeFile(marker, "stale\n");
++
++    const storage = getStorage();
++    const probe = vi.spyOn(storage, "fileExists");
++    try {
++      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
++    } finally {
++      probe.mockRestore();
++    }
++
++    // Not one probe, and the marker is exactly where it was.
++    expect(
++      probe.mock.calls.filter(([target]) => String(target).endsWith("/.discarded")),
++    ).toEqual([]);
++    expect(await exists(marker)).toBe(true);
++
++    // The scheduled entry point is the one that clears it.
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    try {
++      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
++    } finally {
++      warn.mockRestore();
++    }
++    expect(await exists(marker)).toBe(false);
++  });
++
++  it("warns and carries on when clearing a stale marker fails (DW-291)", async () => {
++    // Per directory, like every other probe in the sweep: one stuck marker must
++    // not cost the pass the directories after it, and must never fail the pass.
++    const stuck = await createWiki(OWNER, { name: "Stuck", scenario: "business" });
++    const fine = await createWiki(OWNER, { name: "Fine", scenario: "reading" });
++    const stuckMarker = path.join(wikiDir(stuck.id), ".discarded");
++    const fineMarker = path.join(wikiDir(fine.id), ".discarded");
++    await fs.writeFile(stuckMarker, "stale\n");
++    await fs.writeFile(fineMarker, "stale\n");
++
++    const storage = getStorage();
++    const remove = storage.deleteFile.bind(storage);
++    const spy = vi
++      .spyOn(storage, "deleteFile")
++      .mockImplementation(async (target: string) => {
++        if (target.includes(stuck.id)) throw new Error("the marker is locked");
++        return remove(target);
++      });
++    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
++    let removed: number;
++    let warned: unknown[][] = [];
++    try {
++      removed = await sweepOrphanWikiDirectories(OWNER);
++      warned = warn.mock.calls.map((call) => [...call]);
++    } finally {
++      warn.mockRestore();
++      spy.mockRestore();
++    }
++
++    expect(removed).toBe(0);
++    expect(await exists(stuckMarker)).toBe(true);
++    expect(await exists(fineMarker)).toBe(false);
++    expect(
++      warned.some(
++        ([scope, message]) =>
++          scope === "wikis" &&
++          String(message).includes(
++            `clearing the stale discard marker on wiki directory "${stuck.id}" failed`,
++          ),
++      ),
++    ).toBe(true);
++    // Both wikis are untouched — a failed clear is not a failed sweep.
++    expect(await exists(wikiDir(stuck.id))).toBe(true);
++    expect(await exists(wikiDir(fine.id))).toBe(true);
++  });
+ });
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/src/lib/__tests__/workbench-data-version.test.ts b/src/lib/__tests__/workbench-data-version.test.ts
+index 31cc7c39..c6184ee7 100644
+--- a/src/lib/__tests__/workbench-data-version.test.ts
++++ b/src/lib/__tests__/workbench-data-version.test.ts
+@@ -1139,33 +1139,43 @@ describe("the bump lives at the exact write-owner tails", () => {
+     ]);
+   });
+ 
+-  it("has exactly four sites inside wikis.ts, each outside the tenant lock", async () => {
++  it("routes every wikis.ts tail through one bump site, outside the tenant lock", async () => {
+     // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
+     // otherwise buy a blanket exemption for a module with seven exported
+     // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
+     // test above pins its own count.
+     //
+-    // Four, since DW-209: `writeWikiArtifact` (a Schema edit) plus `createWiki`
+-    // and `applyScenarioTemplate` (DW-49), because seeding writes `purpose.md`
+-    // and `schema.md` through the tail-less `putWikiArtifact` and a re-template
++    // FIVE functions and SIX tails, through ONE `bumpDataVersion` call. The
++    // tail used to be spelled out per caller, which is six near-identical
++    // `try/catch` blocks differing only in the phrase they warn with; they
++    // share the private `bumpRefreshSignal` helper instead, so this test counts
++    // the helper's calls and pins the single site the helper itself owns.
++    //
++    // `writeWikiArtifact` (a Schema edit) plus `createWiki` and
++    // `applyScenarioTemplate` (DW-49), because seeding writes `purpose.md` and
++    // `schema.md` through the tail-less `putWikiArtifact` and a re-template
+     // moves nothing else a Preview is keyed on — without the bump a Preview
+-    // READING either artifact keeps the old template's bytes — plus `renameWiki`,
++    // READING either artifact keeps the old template's bytes. Plus `renameWiki`,
+     // which retitles `purpose.md`'s heading and moves the name the Workbench
+     // renders while changing no `currentWikiId`, so the counter is the only
+-    // thing that can un-stale an open Preview.
++    // thing that can un-stale an open Preview. Plus `deleteWiki` (DW-382), which
++    // takes both artifacts away: the deleting client re-renders off its own
++    // response, but another client with the Workbench open on one of them has
++    // nothing else to learn it from. `applyScenarioTemplate` carries TWO,
++    // because a rollback that could not put every file back leaves changed
++    // bytes under an error it still re-throws (DW-210).
+     //
+-    // The rest are deliberately absent for three DIFFERENT reasons, and lumping
++    // The rest are deliberately absent for two DIFFERENT reasons, and lumping
+     // them together would hide the one that matters. `putWikiArtifact`,
+     // `seedWikiArtifacts` and `retitlePurpose` write exactly the bytes a Preview
+     // renders — they are absent because they run INSIDE `wikis:<tenant>`, where
+     // taking `DATA_VERSION_LOCK` would nest two keys, so their CALLERS carry the
+-    // tail instead; that is the whole reason the four above are callers.
+-    // `sweepOrphanWikiDirectories` and `deleteWiki` REMOVE such bytes, but only
+-    // for a Wiki that is by then unreachable — the sweep's directories are
+-    // unreferenced and the current Wiki is undeletable — so no Preview can be
+-    // open on what they take. `setCurrentWiki` is the only one that genuinely
+-    // writes nothing a Preview renders: it moves `currentId` in `wikis.json` and
+-    // nothing else, and the selection change is its own refresh trigger.
++    // tail instead; that is the whole reason the five above are callers.
++    // `sweepOrphanWikiDirectories` removes such bytes, but only for directories
++    // no registry entry references, so no Preview can be open on what it takes.
++    // `setCurrentWiki` genuinely writes nothing a Preview renders: it moves
++    // `currentId` in `wikis.json` and nothing else, and the selection change is
++    // its own refresh trigger.
+ 
+     /**
+      * Comments removed, so a call QUOTED in a docblock is never counted as a
+@@ -1178,13 +1188,31 @@ describe("the bump lives at the exact write-owner tails", () => {
+ 
+     const source = stripComments(await readSource("lib/wikis.ts"));
+ 
++    // ONE `bumpDataVersion` call in the whole module, and it is the helper's.
+     // BOTH forms, and both are load-bearing. The await form is what the
+     // ordering checks below navigate by. The IDENTIFIER form is what sees a
+-    // bump that was moved inside the lock and fired unawaited — `void
+-    // bumpDataVersion()`, or a `.then()` chain — which the await form cannot
+-    // match at all and which would leave the count looking untouched.
+-    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(4);
+-    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(4);
++    // bump fired unawaited — `void bumpDataVersion()`, or a `.then()` chain —
++    // which the await form cannot match at all and which would leave the count
++    // looking untouched.
++    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(1);
++    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
++
++    // …and it lives in `bumpRefreshSignal`, which takes no lock of its own. A
++    // bump that migrated out of the helper into a caller would keep the counts
++    // above intact only by removing it from here, so this is what makes "one
++    // site" mean "one site THERE".
++    const helperAt = source.indexOf("async function bumpRefreshSignal(");
++    expect(helperAt).toBeGreaterThan(-1);
++    const helperClose = source.indexOf("\n}\n", helperAt);
++    expect(helperClose).toBeGreaterThan(helperAt);
++    const helper = source.slice(helperAt, helperClose);
++    expect(helper).toContain("await bumpDataVersion();");
++    expect(helper).not.toContain("withWikiLock");
++    expect(helper).not.toContain("withFileLock");
++
++    // The declaration plus six call sites. A seventh tail added anywhere in the
++    // module fails here and has to be justified in the list below.
++    expect(source.match(/bumpRefreshSignal\s*\(/g) ?? []).toHaveLength(7);
+ 
+     /**
+      * One function's body, from its `export` line to the `}` that closes it.
+@@ -1203,14 +1231,21 @@ describe("the bump lives at the exact write-owner tails", () => {
+       return source.slice(at, close);
+     };
+ 
+-    for (const name of [
+-      "writeWikiArtifact",
+-      "createWiki",
+-      "applyScenarioTemplate",
+-      "renameWiki",
+-    ]) {
++    for (const [name, tails] of [
++      ["writeWikiArtifact", 1],
++      ["createWiki", 1],
++      // Two: the committed path, and the incomplete-rollback path that bumps
++      // before re-throwing (DW-210).
++      ["applyScenarioTemplate", 2],
++      ["renameWiki", 1],
++      ["deleteWiki", 1],
++    ] as const) {
+       const body = bodyOf(name);
+-      const bump = body.indexOf("await bumpDataVersion();");
++      expect(
++        body.match(/await bumpRefreshSignal\(/g) ?? [],
++        `${name} carries its tails`,
++      ).toHaveLength(tails);
++      const bump = body.indexOf("await bumpRefreshSignal(");
+       expect(bump).toBeGreaterThan(-1);
+       // OUTSIDE `wikis:<tenant>`. `withFileLock` is not reentrant and
+       // `bumpDataVersion` takes `DATA_VERSION_LOCK`, so a bump moved inside the
+@@ -1233,25 +1268,38 @@ describe("the bump lives at the exact write-owner tails", () => {
+           .filter((at) => at > -1)
+           .sort((a, b) => a - b)[0] ?? -1;
+       expect(lock, `${name} opens the wiki lock`).toBeGreaterThan(-1);
+-      const closes = ["\n  });\n", "\n  );\n"]
++      // The close is matched at the INDENT of the line the lock opens on, not
++      // at a fixed two spaces: `applyScenarioTemplate` nests its acquisition
++      // inside a `try` (the only way to carry the rollback's completeness past
++      // a re-throw), so its callback closes one level deeper. Matching any
++      // depth instead would let a nested `});` INSIDE a callback pass for the
++      // lock's own close and quietly weaken every row here.
++      const opensAt = body.lastIndexOf("\n", lock) + 1;
++      const indent = /^[ \t]*/.exec(body.slice(opensAt))?.[0] ?? "";
++      const closes = [`\n${indent}});\n`, `\n${indent});\n`]
+         .map((close) => body.indexOf(close, lock))
+         .filter((at) => at > -1)
+         .sort((a, b) => a - b);
+-      expect(closes.length).toBeGreaterThan(0);
+-      expect(bump).toBeGreaterThan(closes[0]);
++      expect(closes.length, `${name} closes the wiki lock`).toBeGreaterThan(0);
++      // EVERY tail, not just the first: a function with two of them must have
++      // both outside the lock.
++      for (let at = bump; at > -1; at = body.indexOf("await bumpRefreshSignal(", at + 1)) {
++        expect(at, `${name} tail at ${at} is outside the lock`).toBeGreaterThan(closes[0]);
++      }
+     }
+ 
+-    // The four counted above are now accounted for one apiece by four
+-    // DISJOINT bodies, so no other function in the module has one — including
+-    // `seedWikiArtifacts`, which is the whole reason the tails live at the
+-    // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
+-    // as well, because that is the refactor this guard exists to catch and a
+-    // count mismatch names no function.
++    // The six counted above are now accounted for by five DISJOINT bodies, so
++    // no other function in the module has one — including `seedWikiArtifacts`,
++    // which is the whole reason the tails live at the callers: it always runs
++    // while `wikis:<tenant>` is held. Asserted directly as well, because that is
++    // the refactor this guard exists to catch and a count mismatch names no
++    // function.
+     const seederAt = source.indexOf("async function seedWikiArtifacts(");
+     expect(seederAt).toBeGreaterThan(-1);
+     const seederClose = source.indexOf("\n}\n", seederAt);
+     expect(seederClose).toBeGreaterThan(seederAt);
+     expect(source.slice(seederAt, seederClose)).not.toContain("bumpDataVersion");
++    expect(source.slice(seederAt, seederClose)).not.toContain("bumpRefreshSignal");
+   });
+ 
+   it("has exactly one site inside raw.ts, on the path that actually wrote bytes", async () => {
+diff --git a/src/lib/wikis.ts b/src/lib/wikis.ts
+index fc3949ae..fa36366f 100644
+--- a/src/lib/wikis.ts
++++ b/src/lib/wikis.ts
+@@ -531,9 +531,18 @@ async function snapshotSeededFiles(
+  * restore of the other two — and `content === null` restores "did not exist" as
+  * a delete, tolerating ENOENT because a seed that faulted before that write
+  * never created it.
++ *
++ * RETURNS WHETHER EVERY ENTRY WENT BACK (DW-210). Warning was the whole report
++ * for a long time, and a log line is not something the caller can act on: an
++ * INCOMPLETE restore is the one failure shape that leaves NEW template bytes on
++ * disk, so it is the one shape whose caller still owes an open Preview a
++ * refresh. `true` therefore means "the artifacts are as they were" and `false`
++ * means "some of them are not"; the per-entry warns above stay exactly where
++ * they were, because they name WHICH file and this boolean cannot.
+  */
+-async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void> {
++async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<boolean> {
+   const storage = getStorage();
++  let complete = true;
+   for (const entry of snapshot) {
+     try {
+       if (entry.content === null) {
+@@ -547,6 +556,7 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
+         await storage.writeFile(entry.path, entry.content);
+       }
+     } catch (error) {
++      complete = false;
+       logger.warn(
+         "wikis",
+         `restoring "${entry.path}" after a failed re-template failed — this wiki may now describe two different scenario templates`,
+@@ -554,6 +564,7 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
+       );
+     }
+   }
++  return complete;
+ }
+ 
+ /**
+@@ -785,6 +796,34 @@ function normalizeArtifactEditReason(
+   return [...collapsed].slice(0, MAX_ARTIFACT_EDIT_REASON_CHARS).join("");
+ }
+ 
++/**
++ * Move the refresh signal after a write that an open Preview cannot otherwise
++ * learn about. NEVER THROWS.
++ *
++ * ONE COPY OF AN IDIOM SIX CALLERS SHARE. Every lifecycle writer in this module
++ * ends the same way — the bytes have landed, `dataVersion` is the only thing
++ * that tells another client's Preview to refetch them, and a counter hiccup
++ * must not turn a landed write into a reported failure. Spelled out per caller
++ * that is six near-identical `try/catch` blocks whose only difference is the
++ * phrase in the warn, and six places for the next one to drift.
++ *
++ * ALWAYS CALLED OUTSIDE `withWikiLock`. `bumpDataVersion` takes
++ * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant, so a call from
++ * inside a locked body would nest two lock keys in an order nothing else in the
++ * codebase takes them in. Callers reach this only after their lock has been
++ * released, and only when the locked body actually wrote something.
++ *
++ * `after` is the phrase that completes "the refresh signal did not move
++ * after …", so it reads as a gerund naming the operation and its Wiki.
++ */
++async function bumpRefreshSignal(after: string): Promise<void> {
++  try {
++    await bumpDataVersion();
++  } catch (error) {
++    logger.warn("wikis", `the refresh signal did not move after ${after}`, error);
++  }
++}
++
+ /**
+  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
+  *
+@@ -998,15 +1037,7 @@ export async function writeWikiArtifact(
+   } catch (error) {
+     logger.warn("wikis", `logging the artifact edit of "${file}" failed`, error);
+   }
+-  try {
+-    await bumpDataVersion();
+-  } catch (error) {
+-    logger.warn(
+-      "wikis",
+-      `the refresh signal did not move after editing "${file}"`,
+-      error,
+-    );
+-  }
++  await bumpRefreshSignal(`editing "${file}"`);
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -1091,15 +1122,7 @@ export async function createWiki(
+ 
+   // Only reached when the locked body committed — the compensation branch above
+   // re-throws, so a discarded create never moves the signal.
+-  try {
+-    await bumpDataVersion();
+-  } catch (error) {
+-    logger.warn(
+-      "wikis",
+-      `the refresh signal did not move after creating wiki "${created.id}"`,
+-      error,
+-    );
+-  }
++  await bumpRefreshSignal(`creating wiki "${created.id}"`);
+   return created;
+ }
+ 
+@@ -1124,12 +1147,21 @@ export async function createWiki(
+  * from the owner. What stops that draft being saved over the new template is
+  * the If-Match write precondition (DW-38), which answers 412 — not this tail.
+  *
+- * The tail is outside the lock, fail-soft, and skipped on both throwing or
+- * empty-handed paths: the unknown-id `null` (which writes nothing) and the
+- * `restoreSeededFiles` branch (which re-throws). "Re-throws" is not quite "wrote
+- * nothing", though: `restoreSeededFiles` is fail-soft PER ENTRY, so a restore
+- * that cannot write leaves some new template bytes on disk with no bump to
+- * announce them (DW-210) — rare, already-degraded, and out of scope here.
++ * The tail is outside the lock, fail-soft, and skipped on the empty-handed
++ * path: the unknown-id `null` writes nothing, so there is nothing to refresh
++ * to.
++ *
++ * IT IS NOT SKIPPED ON EVERY THROWING PATH (DW-210). "Re-throws" is not the
++ * same as "wrote nothing": {@link restoreSeededFiles} is fail-soft PER ENTRY,
++ * so a restore that cannot write leaves some NEW template bytes on disk under
++ * an error the caller reports as a failure — the one state where the operation
++ * failed and the artifacts still changed. An open Preview elsewhere would go on
++ * rendering the pre-template bytes forever, because a re-template moves nothing
++ * else it is keyed on. So the incomplete-restore case bumps BEFORE re-throwing:
++ * the bump is fail-soft as everywhere else, it happens outside the lock (the
++ * `try` below exists only to carry the fact past `withWikiLock`), and the error
++ * that propagates is still the original one. A CLEAN restore does not bump —
++ * the bytes are byte-for-byte what they were, so a refetch would be churn.
+  */
+ export async function applyScenarioTemplate(
+   owner: string,
+@@ -1145,57 +1177,63 @@ export async function applyScenarioTemplate(
+   if (!isCreatableScenario(scenario)) {
+     throw new ClientInputError("Choose one Scenario Template.");
+   }
+-  const applied = await withWikiLock(owner, async (held) => {
+-    const registry = await readRegistry(owner);
+-    const wiki = registry.wikis.find((item) => item.id === wikiId);
+-    if (!wiki) return null;
+-    // Snapshot BEFORE the first overwrite. The in-memory mutation below needs
+-    // no undo — the registry is re-read on every call, so a failed write simply
+-    // leaves the stored `scenario` where it was; the FILES are what persist.
+-    const snapshot = await snapshotSeededFiles(owner, wiki.id);
+-    wiki.scenario = scenario;
+-    wiki.updatedAt = new Date().toISOString();
+-    try {
+-      await seedWikiArtifacts(held, owner, wiki);
+-      await writeRegistry(owner, registry);
+-    } catch (error) {
+-      // What makes "put the old artifacts back" the correct undo rather than a
+-      // guess: `StorageProvider.writeFile` is SPECIFIED atomic from the
+-      // caller's view (`storage/types.ts`), so a throw from the registry write
+-      // means those bytes never landed and the stored `scenario` is still the
+-      // old one the snapshot belongs to.
+-      //
+-      // Both providers honour that contract: R2 does a single-object PUT and
+-      // `FilesystemStorageProvider` writes a sibling tmp file and renames it
+-      // over the destination (DW-161), so no write this compensation reasons
+-      // about can leave a truncated file it would restore around. What the
+-      // contract still does not promise is durability of the newest bytes
+-      // across a power loss — but that leaves the PREVIOUS whole file, which is
+-      // exactly the state this branch already handles.
+-      await restoreSeededFiles(snapshot);
+-      throw error;
++  // Set inside the locked body, read after it — the bump it gates takes
++  // `DATA_VERSION_LOCK`, so it cannot happen where the fact is discovered.
++  let restoreIncomplete = false;
++  let applied: WikiRecord | null;
++  try {
++    applied = await withWikiLock(owner, async (held) => {
++      const registry = await readRegistry(owner);
++      const wiki = registry.wikis.find((item) => item.id === wikiId);
++      if (!wiki) return null;
++      // Snapshot BEFORE the first overwrite. The in-memory mutation below needs
++      // no undo — the registry is re-read on every call, so a failed write simply
++      // leaves the stored `scenario` where it was; the FILES are what persist.
++      const snapshot = await snapshotSeededFiles(owner, wiki.id);
++      wiki.scenario = scenario;
++      wiki.updatedAt = new Date().toISOString();
++      try {
++        await seedWikiArtifacts(held, owner, wiki);
++        await writeRegistry(owner, registry);
++      } catch (error) {
++        // What makes "put the old artifacts back" the correct undo rather than a
++        // guess: `StorageProvider.writeFile` is SPECIFIED atomic from the
++        // caller's view (`storage/types.ts`), so a throw from the registry write
++        // means those bytes never landed and the stored `scenario` is still the
++        // old one the snapshot belongs to.
++        //
++        // Both providers honour that contract: R2 does a single-object PUT and
++        // `FilesystemStorageProvider` writes a sibling tmp file and renames it
++        // over the destination (DW-161), so no write this compensation reasons
++        // about can leave a truncated file it would restore around. What the
++        // contract still does not promise is durability of the newest bytes
++        // across a power loss — but that leaves the PREVIOUS whole file, which is
++        // exactly the state this branch already handles.
++        restoreIncomplete = !(await restoreSeededFiles(snapshot));
++        throw error;
++      }
++      // COMMITTED — the seed and the registry write both landed, so the bytes the
++      // snapshot above holds are gone from the artifact path for good unless they
++      // are recorded now (DW-213). Inside the lock this callback already holds,
++      // after the `try/catch` so it runs on the committed path ONLY, and fail-soft
++      // so a history miss cannot turn a stored re-template into a reported
++      // failure. The `catch` keeps `restoreSeededFiles` as its only compensation.
++      await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario);
++      return wiki;
++    });
++  } catch (error) {
++    // The compensation could not put every file back, so the artifacts on disk
++    // are neither the old template nor cleanly the new one — and they DID
++    // change. Announce them, then re-throw what actually broke.
++    if (restoreIncomplete) {
++      await bumpRefreshSignal(`a partly rolled-back re-template of wiki "${wikiId}"`);
+     }
+-    // COMMITTED — the seed and the registry write both landed, so the bytes the
+-    // snapshot above holds are gone from the artifact path for good unless they
+-    // are recorded now (DW-213). Inside the lock this callback already holds,
+-    // after the `try/catch` so it runs on the committed path ONLY, and fail-soft
+-    // so a history miss cannot turn a stored re-template into a reported
+-    // failure. The `catch` keeps `restoreSeededFiles` as its only compensation.
+-    await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario);
+-    return wiki;
+-  });
++    throw error;
++  }
+ 
+   // Unknown id: nothing was written, so there is nothing to refresh to.
+   if (!applied) return null;
+-  try {
+-    await bumpDataVersion();
+-  } catch (error) {
+-    logger.warn(
+-      "wikis",
+-      `the refresh signal did not move after re-templating wiki "${applied.id}"`,
+-      error,
+-    );
+-  }
++  await bumpRefreshSignal(`re-templating wiki "${applied.id}"`);
+   return applied;
+ }
+ 
+@@ -1350,15 +1388,7 @@ export async function renameWiki(
+ 
+   // Unknown id: nothing was written, so there is nothing to refresh to.
+   if (!renamed) return null;
+-  try {
+-    await bumpDataVersion();
+-  } catch (error) {
+-    logger.warn(
+-      "wikis",
+-      `the refresh signal did not move after renaming wiki "${renamed.id}"`,
+-      error,
+-    );
+-  }
++  await bumpRefreshSignal(`renaming wiki "${renamed.id}"`);
+   return renamed;
+ }
+ 
+@@ -1405,17 +1435,47 @@ export const ORPHAN_SWEEP_GRACE_MS = 15 * 60 * 1000;
+  * next pass's `listFiles`, so the next scheduled tick starts on the remainder
+  * with no resume state to persist, corrupt or reconcile.
+  *
+- * THE RESIDUAL: a candidate that is SKIPPED rather than removed is still listed
+- * next pass and still occupies a slot. That is now only the two AGE skips — too
+- * young, or an age that could not be read — because the tombstone probe is
+- * resolved BEFORE the cap, so an untombstoned directory against a lost registry
+- * never reaches it. The young case is self-clearing by construction, and the
+- * unreadable-age case is the already-documented one; a large enough set of
+- * permanently unreadable directories could still starve the tail of the list,
+- * which is accepted against the alternative of an unbounded walk.
++ * THE RESIDUAL, AND WHAT {@link rotatingSweepWindow} DOES ABOUT IT (DW-383): a
++ * candidate that is SKIPPED rather than removed is still listed next pass and
++ * still occupies a slot. When removal is the only progress, a head of
++ * permanently unsweepable directories — more than a capful of unreadable ages,
++ * or of writes dated into the future — starves everything behind it FOREVER,
++ * because a fixed `slice(0, cap)` hands back the identical prefix on every
++ * pass. Rotating the window by the cap per grace-window bucket fixes that
++ * without a cursor: the skips still cost their slot, but the slot moves.
+  */
+ export const ORPHAN_SWEEP_CANDIDATE_CAP = 25;
+ 
++/**
++ * The at-most-{@link ORPHAN_SWEEP_CANDIDATE_CAP} slice of `list` this pass
++ * considers — a window that ROTATES rather than a fixed prefix (DW-383).
++ *
++ * THE FAULT IT CLOSES. `slice(0, cap)` is only self-advancing while candidates
++ * are being REMOVED; a candidate that is skipped is listed again next pass in
++ * the same position, so a head of `cap` directories that can never be swept —
++ * unreadable ages, writes dated into the future — pins the window over itself
++ * and every candidate behind it is deferred forever, by a truncation warn that
++ * says "next sweep" and means "never".
++ *
++ * `Math.floor(now / ORPHAN_SWEEP_GRACE_MS)` is the bucket, so the start
++ * advances by exactly one capful per grace window and every candidate is
++ * considered within `ceil(list.length / cap)` buckets. Deriving it from the
++ * CLOCK rather than from a counter is what keeps this stateless — the Block If
++ * on a persisted cursor — and makes it STABLE within a bucket, so several
++ * deletes in the same fifteen minutes sweep identically instead of shuffling.
++ *
++ * A list that fits the cap is returned whole, so this is a no-op in the healthy
++ * case and the modulo is never reached with a start past the end.
++ */
++function rotatingSweepWindow<T>(list: T[], now: number): T[] {
++  if (list.length <= ORPHAN_SWEEP_CANDIDATE_CAP) return list;
++  const start = (Math.floor(now / ORPHAN_SWEEP_GRACE_MS) * ORPHAN_SWEEP_CANDIDATE_CAP) % list.length;
++  return Array.from(
++    { length: ORPHAN_SWEEP_CANDIDATE_CAP },
++    (_, offset) => list[(start + offset) % list.length],
++  );
++}
++
+ /**
+  * The most recent write anywhere under `dir`, in epoch millis — or NULL when
+  * that cannot be established.
+@@ -1468,6 +1528,56 @@ async function newestWriteTime(dir: string): Promise<number | null> {
+   }
+ }
+ 
++/**
++ * Clear the {@link WIKI_DISCARD_TOMBSTONE} from directories the registry NAMES.
++ * NEVER THROWS (DW-291).
++ *
++ * WHY A CLAIMED DIRECTORY CAN CARRY ONE AT ALL. Only
++ * {@link discardCreatedWikiDirectory} writes the marker, and only for an id
++ * whose create failed — but "the create failed" is the CALLER's view. Three
++ * unlikely things in sequence (the directory removal fails, the tombstone write
++ * lands, and the id is afterwards named by a registry the tenant restores or a
++ * retry re-uses) leave a live Wiki wearing evidence of its own death. Nothing
++ * acts on it — {@link sweepOrphans} only ever reads the marker on directories
++ * the registry does NOT name — so the fault is not a lost Wiki; it is a lie in
++ * the bucket that the next person reading it has no way to date or discount.
++ *
++ * THE DIRECTORY IS NOT TOUCHED, only the marker file: this is the one place in
++ * the module that writes to a directory the registry claims, so it deletes
++ * exactly one known path and never `deleteDirectory`.
++ *
++ * FAIL-SOFT PER DIRECTORY, like every other probe in the sweep — an unreadable
++ * marker is not evidence of anything, and one stuck delete must not cost the
++ * pass the directories after it. The clear is warned about rather than logged
++ * at INFO because it is a repair, not a routine outcome: it should happen once
++ * per affected directory in the lifetime of a deployment, and a second one for
++ * the same id means the write site is still producing them.
++ */
++async function clearStaleDiscardTombstones(
++  owner: string,
++  claimed: string[],
++): Promise<void> {
++  const storage = getStorage();
++  for (const name of claimed) {
++    const marker = wikiDiscardTombstonePath(owner, name);
++    try {
++      if (!(await storage.fileExists(marker))) continue;
++      await storage.deleteFile(marker);
++    } catch (error) {
++      logger.warn(
++        "wikis",
++        `clearing the stale discard marker on wiki directory "${name}" failed — leaving it for the next sweep`,
++        error,
++      );
++      continue;
++    }
++    logger.warn(
++      "wikis",
++      `cleared a stale discard marker from wiki directory "${name}" — the registry names this wiki, so the marker was evidence of a create that did not stay failed`,
++    );
++  }
++}
++
+ /**
+  * Remove one orphaned `wikis/<uuid>/` directory per entry that no registry
+  * record claims. Returns how many were removed.
+@@ -1499,31 +1609,69 @@ async function newestWriteTime(dir: string): Promise<number | null> {
+  * whose seed AND whose discard both failed — without letting a lost `wikis.json`
+  * cost the tenant a single artifact.
+  *
+- * AT MOST {@link ORPHAN_SWEEP_CANDIDATE_CAP} CANDIDATES PER PASS (DW-289). The
+- * cap is applied to the candidate LIST, after the O(1) tombstone probe and
+- * before the first age read, so the PER-CANDIDATE work under `wikis:<tenant>` —
+- * `newestWriteTime`'s recursive stat walk and `deleteDirectory` — is bounded by
+- * the cap rather than by however many orphan directories exist. It does NOT
+- * bound the `listFiles` enumeration above it, which still lists every entry
+- * under `wikis/` (and paginates on R2) inside the lock; that is one round trip
+- * per page rather than per candidate, and bounding it would need the cursor this
+- * deliberately does not keep. Truncation is warned about naming how many were
+- * deferred, and the next scheduled pass picks them up. The return value is
+- * unchanged — how many directories THIS pass removed.
++ * AT MOST {@link ORPHAN_SWEEP_CANDIDATE_CAP} CANDIDATES PER PASS (DW-289), and
++ * a DIFFERENT capful each grace window (DW-383). The cap is applied to the
++ * candidate LIST, after the O(1) tombstone probe and before the first age read,
++ * so the PER-CANDIDATE work under `wikis:<tenant>` — `newestWriteTime`'s
++ * recursive stat walk and `deleteDirectory` — is bounded by the cap rather than
++ * by however many orphan directories exist. It does NOT bound the `listFiles`
++ * enumeration above it, which still lists every entry under `wikis/` (and
++ * paginates on R2) inside the lock; that is one round trip per page rather than
++ * per candidate, and bounding it would need the cursor this deliberately does
++ * not keep. Which capful is decided by {@link rotatingSweepWindow}, so a head of
++ * permanently unsweepable directories cannot starve the tail. Truncation is
++ * warned about naming how many were deferred, and the next pass picks them up.
++ * The return value is unchanged — how many directories THIS pass removed.
++ *
++ * A SKIP IS NOT ALWAYS BENIGN (DW-290). Too young is the expected outcome and
++ * stays at INFO; a newest write dated further ahead than the WHOLE grace window
++ * is not jitter between a provider clock and the isolate's, so it warns instead
++ * — those bytes cannot age out until the wall clock passes that date, however
++ * many passes run, and nothing else would ever say so.
++ *
++ * ON A SCHEDULED PASS IT ALSO CLEARS STALE TOMBSTONES (DW-291). A
++ * {@link WIKI_DISCARD_TOMBSTONE} on a directory the registry DOES name is a
++ * marker that outlived its meaning: the id was claimed after all, so nothing
++ * here will ever act on it, and it sits in the bucket looking like evidence of
++ * a failed create. Clearing it costs one `fileExists` per claimed directory, so
++ * it is gated to the scheduled caller — see {@link sweepOrphanWikiDirectories}
++ * — and bounded by the same rotating window. The directory and its artifacts
++ * are never touched; only the marker file is.
+  *
+  * Residual, and documented rather than fixed: an isolate killed BETWEEN the seed
+  * and the registry write on a first-ever create leaves an UNTOMBSTONED directory
+  * (the catch never ran), which stays unreclaimable until the tenant owns a Wiki.
+  * Bounded by the same guard, and the safe side of it.
+  */
+-async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<number> {
++async function sweepOrphans(
++  owner: string,
++  registry: WikiRegistry,
++  options?: {
++    /**
++     * Clear {@link WIKI_DISCARD_TOMBSTONE} markers from directories the
++     * registry NAMES (DW-291). Scheduled callers only — see the note above.
++     */
++    reclaimStaleTombstones?: boolean;
++  },
++): Promise<number> {
++  // ONE `now` for the whole pass: the rotating window, the age cutoff and the
++  // future-write horizon must agree, and re-reading the clock between them
++  // would let a pass straddle a bucket boundary and consider two windows.
++  const now = Date.now();
+   const tombstonedOnly = registry.wikis.length === 0;
+   const known = new Set(registry.wikis.map((wiki) => wiki.id));
+   const entries = await getStorage().listFiles(wikisRootPath(owner));
+-  const found = entries
++  const directories = entries
+     .filter((entry) => entry.isDirectory)
+     .map((entry) => entry.name)
+-    .filter((name) => WIKI_ID_RE.test(name) && !known.has(name));
++    .filter((name) => WIKI_ID_RE.test(name));
++  const found = directories.filter((name) => !known.has(name));
++  if (options?.reclaimStaleTombstones) {
++    await clearStaleDiscardTombstones(
++      owner,
++      rotatingSweepWindow(directories.filter((name) => known.has(name)), now),
++    );
++  }
+   if (tombstonedOnly && found.length > 0) {
+     // Only when there is actually something being held back — and keyed on the
+     // PRE-CAP list, so the line fires for the same states it always did rather
+@@ -1573,8 +1721,9 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
+   // Capped HERE, on the candidate list, before a single `newestWriteTime` or
+   // `deleteDirectory` below — capping the REMOVALS instead would leave the
+   // per-candidate walk that holds `wikis:<tenant>` unbounded, which is the cost
+-  // this bounds (DW-289).
+-  const candidates = eligible.slice(0, ORPHAN_SWEEP_CANDIDATE_CAP);
++  // this bounds (DW-289). Which capful rotates with the clock (DW-383), so the
++  // deferral the warn below promises is a deferral and not a permanent skip.
++  const candidates = rotatingSweepWindow(eligible, now);
+   if (eligible.length > candidates.length) {
+     logger.warn(
+       "wikis",
+@@ -1583,17 +1732,35 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
+       } to the next sweep`,
+     );
+   }
+-  const cutoff = Date.now() - ORPHAN_SWEEP_GRACE_MS;
++  const cutoff = now - ORPHAN_SWEEP_GRACE_MS;
++  // The far side of the same tolerance. A clock difference big enough to date a
++  // write further ahead than the WHOLE grace window is not the provider/isolate
++  // jitter the window absorbs — it is a skewed clock or a restored archive, and
++  // the age gates a DELETE, so it still skips (never sweeps) but stops being
++  // reported as the routine outcome.
++  const horizon = now + ORPHAN_SWEEP_GRACE_MS;
+   let removed = 0;
+   for (const name of candidates) {
+     const dir = wikiDirPath(owner, name);
+     const newest = await newestWriteTime(dir);
+     if (newest === null || newest > cutoff) {
+       // The in-flight-create guard. `newestWriteTime` already warned when the
+-      // age was unreadable, so only the young case needs a line of its own —
+-      // and at INFO, because it is the expected, benign outcome that repeats on
+-      // every pass for as long as the directory stays young.
+-      if (newest !== null) {
++      // age was unreadable, so only the readable skips need a line of their own.
++      if (newest !== null && newest > horizon) {
++        // DW-290. Unlike the young case this does NOT clear itself with time:
++        // the directory stays a candidate on every pass until the wall clock
++        // reaches that date, and until then it is silently unreclaimable.
++        logger.warn(
++          "wikis",
++          `skipped orphaned wiki directory "${name}": its newest write is dated ${new Date(
++            newest,
++          ).toISOString()}, further ahead than the whole ${
++            ORPHAN_SWEEP_GRACE_MS / 60_000
++          }-minute grace window — a skewed clock or a restored archive, so its bytes stay until the clock passes that date`,
++        );
++      } else if (newest !== null) {
++        // At INFO, because it is the expected, benign outcome that repeats on
++        // every pass for as long as the directory stays young.
+         logger.info(
+           "wikis",
+           `skipped orphaned wiki directory "${name}": its newest write is younger than the ${
+@@ -1641,6 +1808,14 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
+  * See {@link sweepOrphans} for what it will and will not remove — in particular
+  * {@link ORPHAN_SWEEP_GRACE_MS}, which is what makes a scheduled caller safe
+  * beside a concurrent create.
++ *
++ * THE SCHEDULED CALLER IS ALSO THE ONE THAT CLEARS STALE TOMBSTONES (DW-291).
++ * That work costs one `fileExists` per registry-claimed directory, which is up
++ * to a capful of extra round trips under `wikis:<tenant>` on a path that today
++ * costs one `listFiles` in the healthy case. {@link deleteWiki} is a user-facing
++ * request holding that same lock and must not grow them; a cron tick already
++ * tolerates the full walk, and a marker that has been wrong for however long
++ * can be wrong for a few more minutes.
+  */
+ export async function sweepOrphanWikiDirectories(owner: string): Promise<number> {
+   // Deployment read-only (DW-314), BEFORE the lock. This one is not reached by
+@@ -1651,7 +1826,9 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
+   // gate here is what a DIRECT caller of this exported entry point meets.
+   assertWritable(READ_ONLY_REFUSAL.wikiDirectorySweep);
+   return withWikiLock(owner, async () =>
+-    sweepOrphans(owner, await readRegistry(owner)),
++    sweepOrphans(owner, await readRegistry(owner), {
++      reclaimStaleTombstones: true,
++    }),
+   );
+ }
+ 
+@@ -1682,6 +1859,22 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
+  *
+  * Pages, Sources, the page index and `tenants/<t>/wiki/**` are untouched: they
+  * are tenant-wide, not per-Wiki, so a delete never removes content.
++ *
++ * IT MOVES THE REFRESH SIGNAL, for the reason {@link renameWiki} does (DW-382).
++ * A delete is a Preview-visible byte move: `purpose.md` and `schema.md` are
++ * gone, and another client with the Workbench open on one of them has nothing
++ * else to learn that from — the deleting client re-renders off its own
++ * response, but the switcher, the list and an open Preview elsewhere are keyed
++ * on `dataVersion` and would go on rendering a Wiki that no longer exists. The
++ * tail is outside the lock (`bumpDataVersion` takes `DATA_VERSION_LOCK` and
++ * `withFileLock` is not reentrant), fires only when the locked body returned a
++ * record — an unknown id writes nothing, and the current Wiki throws before the
++ * registry write — and is fail-soft, so a counter hiccup cannot turn a delete
++ * that has already landed into a reported failure and a retry that 404s.
++ *
++ * It bumps even when `deleteDirectory` or the inline sweep failed: the registry
++ * entry has gone, so the Wiki is already absent from every read in the app, and
++ * that absence is exactly what the signal is announcing.
+  */
+ export async function deleteWiki(
+   owner: string,
+@@ -1696,7 +1889,7 @@ export async function deleteWiki(
+   // `DELETE /api/wikis/[id]` already refuses first, so this is the backstop for
+   // a direct library caller.
+   assertWritable(READ_ONLY_REFUSAL.wikiDelete);
+-  return withWikiLock(owner, async () => {
++  const deleted = await withWikiLock(owner, async () => {
+     const registry = await readRegistry(owner);
+     const wiki = registry.wikis.find((item) => item.id === wikiId);
+     if (!wiki) return null;
+@@ -1728,6 +1921,11 @@ export async function deleteWiki(
+     }
+     return wiki;
+   });
++
++  // Unknown id: nothing was written, so there is nothing to refresh to.
++  if (!deleted) return null;
++  await bumpRefreshSignal(`deleting wiki "${deleted.id}"`);
++  return deleted;
+ }
+ 
+ /** Read one seeded artifact, or null when it is missing. */

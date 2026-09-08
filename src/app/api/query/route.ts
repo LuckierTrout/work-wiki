@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, type QueryFormat } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { LLM_DEADLINE_COPY, isOwnLlmDeadline } from "@/lib/llm-deadline";
 import { logger } from "@/lib/logger";
 
 function parseFormat(value: unknown): QueryFormat {
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
     const principal = await getPrincipal();
     if (!principal) {
       return NextResponse.json(
-        { error: "Sign in required to query WorkWiki." },
+        { error: "Sign in required to query work-wiki." },
         { status: 401 },
       );
     }
@@ -75,7 +76,25 @@ export async function POST(request: NextRequest) {
     logger.error("query", "Query error", error);
     return NextResponse.json(
       {
-        error: getErrorMessage(error),
+        // DW-545. `query()` reaches `callLLM` several times over, each spreading
+        // the same `llmTimeoutOption()`, so the owner's own deadline lands here
+        // as a `TimeoutError` and used to reach them as `getErrorMessage`'s
+        // passthrough of the SDK's words: "The operation was aborted due to
+        // timeout". That names a signal, not the limit they set.
+        //
+        // This route, not just its streaming neighbour, because
+        // `useStreamingQuery` re-queries THIS one whenever the stream route
+        // answers non-2xx and PREFERS the message it gets back
+        // (`src/hooks/useStreamingQuery.ts`). Left unmapped, the transport
+        // words here overwrite the sentence `/api/query/stream` already emits —
+        // so both routes ask `isOwnLlmDeadline` and answer identically.
+        //
+        // 500 and not 504, for the same reason the stream route gives: this is
+        // a verdict about a limit the OWNER set, not a gateway's verdict about
+        // us. Anything else keeps the error's own words, exactly as today.
+        error: isOwnLlmDeadline(error)
+          ? LLM_DEADLINE_COPY
+          : getErrorMessage(error),
       },
       { status: 500 },
     );

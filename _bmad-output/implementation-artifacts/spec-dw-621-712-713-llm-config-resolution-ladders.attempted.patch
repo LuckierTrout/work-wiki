@@ -1,0 +1,364 @@
+diff --git a/src/lib/__tests__/llm-key-cold-config.test.ts b/src/lib/__tests__/llm-key-cold-config.test.ts
+index d104a765..704b0b2f 100644
+--- a/src/lib/__tests__/llm-key-cold-config.test.ts
++++ b/src/lib/__tests__/llm-key-cold-config.test.ts
+@@ -152,6 +152,12 @@ describe("hasLLMKey() sees a store nothing warmed (DW-548)", () => {
+     // graceful skip for a thrown `No LLM API key found…` at every one of them.
+     // Nothing in production passes `workload`, so the `false` is honest.
+     //
++    // `analyzeSource` (`src/lib/ingest.ts`) is the sharpest of the ~25: it gates
++    // on this function and then calls `callLLM` with NO `try` around it, so the
++    // gate opening turns today's empty-analysis degrade into a failed ingest.
++    // The reasoning is recorded on `hasLLMKey`'s own docblock; this case is what
++    // stops a later reading of DW-621 from quietly re-widening it.
++    //
+     // THE WHOLE ARGUMENT, though: this `false` is not costless either. For a
+     // `chatProvider`-only store `chat.ts:865` throws "No LLM provider is
+     // configured." after `ChatCanvas` has already reported the chat model
+diff --git a/src/lib/__tests__/llm.test.ts b/src/lib/__tests__/llm.test.ts
+index 06c73435..fd2dbd4a 100644
+--- a/src/lib/__tests__/llm.test.ts
++++ b/src/lib/__tests__/llm.test.ts
+@@ -755,11 +755,81 @@ describe("the pre-switch keyless guard: who it catches and who it lets past", ()
+       `The Custom provider needs an API key. Set it in ${pointer}.`,
+     );
+ 
+-    // NO model-state equality on purpose. The two ladders genuinely diverge
+-    // once both credentials are present — `getConfiguredModel` resolves the
+-    // model from its own arguments and never reads `cfg.model` or `LLM_MODEL`,
+-    // which `getModel` does — so asserting parity there would pin a difference
+-    // that is real and deferred, not a copy that drifted.
++    // THE THIRD GAP STATE, which used to be a documented divergence (DW-713).
++    // With both credentials present and no model anywhere, this branch resolved
++    // the model from its own arguments alone — never `cfg.model`, never
++    // `LLM_MODEL` — so the two ladders could not be compared here at all. It
++    // takes the primary ladder's answer from `getResolvedCredentials` now, so
++    // the model gap is an equality like the two above.
++    process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
++    _resetConfigCache();
++    expect(await primaryRefusal()).toBe(await refusal({ provider: "custom" }));
++    expect(await primaryRefusal()).toBe(
++      `The Custom provider needs a model name. Set it in ${pointer}.`,
++    );
++  });
++
++  it("builds a STORED custom model instead of refusing it (DW-713)", async () => {
++    // THE BUG. `getModel` builds this exact store fine — `cfg.model` is a leg of
++    // its ladder — while this branch skipped from `options.model` straight to
++    // `DEFAULT_MODELS`, which has no `custom` entry on purpose. So an owner who
++    // had saved a complete Custom provider was told it "needs a model name" at
++    // `agent-runtime.ts`'s door, for a model sitting in the store.
++    seedConfig({
++      provider: "custom",
++      model: "my-model",
++      customApiKey: "sk-custom",
++      customBaseUrl: "https://example.invalid/v1",
++    });
++    const model = await getConfiguredModel({ provider: "custom" });
++    // THE SAME NAME `getModel()` BUILDS, asserted as an equality between the two
++    // ladders rather than against a literal: the point is that one ladder is
++    // derived from the other, not that both happen to spell "my-model".
++    expect(model.modelId).toBe("my-model");
++    // A bare `getConfiguredModel()` falls straight through to `getModel(cfg)`,
++    // so this IS the primary ladder's answer.
++    expect(model.modelId).toBe((await getConfiguredModel()).modelId);
++  });
++
++  it("refuses a stored model that belongs to ANOTHER provider (DW-713)", async () => {
++    // THE GUARD. The stored model is the PRIMARY provider's, so it may only be
++    // spent on that provider. Unguarded, `claude-x` would reach an OpenAI-shaped
++    // custom client as a request for a model that endpoint has never heard of —
++    // a wire error about nothing, which is the state the refusal below exists to
++    // replace. Both credential halves are present, so the model is the only gap.
++    seedConfig({
++      provider: "anthropic",
++      model: "claude-x",
++      customApiKey: "sk-custom",
++      customBaseUrl: "https://example.invalid/v1",
++    });
++    expect(await refusal({ provider: "custom" })).toBe(
++      `The Custom provider needs a model name. Set it in ${pointer}.`,
++    );
++  });
++
++  it("takes LLM_MODEL here too, and options.model still outranks it (DW-713)", async () => {
++    // The other leg `getResolvedCredentials` owns, and the ordering that had to
++    // survive the fix: `options.model` is the CALLER's explicit choice — an
++    // agent's model override, or the workload settings' own model — so it stays
++    // above the store, and the store sits above the `OLLAMA_MODEL` /
++    // `DEFAULT_MODELS` tail.
++    seedConfig({
++      provider: "custom",
++      model: "stored-model",
++      customApiKey: "sk-custom",
++      customBaseUrl: "https://example.invalid/v1",
++    });
++    process.env.LLM_MODEL = "env-model";
++    _resetConfigCache();
++
++    expect((await getConfiguredModel({ provider: "custom" })).modelId).toBe(
++      "env-model",
++    );
++    expect(
++      (await getConfiguredModel({ provider: "custom", model: "explicit-model" }))
++        .modelId,
++    ).toBe("explicit-model");
+   });
+ 
+   it("still BUILDS a fully configured custom provider on this ladder", async () => {
+diff --git a/src/lib/__tests__/wiki-retrieve.test.ts b/src/lib/__tests__/wiki-retrieve.test.ts
+index 5c4a160d..3683f989 100644
+--- a/src/lib/__tests__/wiki-retrieve.test.ts
++++ b/src/lib/__tests__/wiki-retrieve.test.ts
+@@ -8,8 +8,19 @@ vi.mock("../embeddings", () => ({
+ }));
+ vi.mock("../config", async (importOriginal) => {
+   const actual = await importOriginal<typeof import("../config")>();
++  // Declared INSIDE the factory because `vi.mock` is hoisted above every
++  // module-scope const — and shared with the async read below so that a case
++  // seeding one store seeds both by default. Only the DW-712 cases pull the two
++  // apart, which is the whole of what a cold cache is.
++  const loadConfigSync = vi.fn(() => ({ vectorSearchEnabled: false }));
+   return {
+     ...actual,
++    loadConfigSync,
++    // MOCKED TOO (DW-712). Left real, this resolved against whatever the
++    // suite's temp `DATA_DIR` happened to hold, so the awaited read this file
++    // now depends on was unobservable — and the cold-cache regression it exists
++    // to catch was unrepresentable.
++    loadConfig: vi.fn(async () => loadConfigSync()),
+     getVectorSearchSettings: vi.fn(() => ({
+       enabled: false,
+       provider: null,
+@@ -25,7 +36,6 @@ vi.mock("../config", async (importOriginal) => {
+       configured: true,
+       usesPrimary: true,
+     })),
+-    loadConfigSync: vi.fn(() => ({ vectorSearchEnabled: false })),
+     // Wrappers over the REAL resolvers, not replacements: the DW-619 case below
+     // asserts which snapshot object they were handed, which only means anything
+     // if the resolution itself is the production one. Nothing else in this file
+@@ -41,6 +51,7 @@ import {
+   getCustomBaseUrl,
+   getOllamaBaseUrl,
+   getVectorSearchSettings,
++  loadConfig,
+   loadConfigSync,
+ } from "../config";
+ import { _resetStorage } from "../storage";
+@@ -62,6 +73,8 @@ import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fi
+ const mockedVector = vi.mocked(searchByVector);
+ const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
+ const mockedLoadConfig = vi.mocked(loadConfigSync);
++/** The AWAITED read `assembleWikiContext` takes (DW-712). */
++const mockedLoadConfigAsync = vi.mocked(loadConfig);
+ const mockedChatModelSettings = vi.mocked(getChatModelSettings);
+ const mockedCustomBaseUrl = vi.mocked(getCustomBaseUrl);
+ const mockedOllamaBaseUrl = vi.mocked(getOllamaBaseUrl);
+@@ -485,6 +498,87 @@ describe("assemble and search", () => {
+     expect(mockedOllamaBaseUrl.mock.calls[0][0]).toBe(settingsCfg);
+   });
+ 
++  it("describes the store on a COLD cache, from the awaited read (DW-712)", async () => {
++    // DW-712, DW-548's class one door further out. `/api/retrieve` warms
++    // nothing, so `chatModelForRetrieve`'s default `loadConfigSync()` answered
++    // the cold-cache `{}` — and re-stamped it for another 5 s — telling an API
++    // caller that a correctly configured wiki had `configured: false` and no
++    // endpoint. The snapshot has to come from an AWAITED `loadConfig()`.
++    //
++    // The two reads are pulled APART here, which is the whole of what a cold
++    // cache is: sync sees nothing, the awaited read is the only thing that can
++    // see the store.
++    mockedChatModelSettings.mockClear();
++    mockedCustomBaseUrl.mockClear();
++    mockedLoadConfig.mockReturnValue({} as never);
++    const stored = {
++      vectorSearchEnabled: false,
++      customBaseUrl: "https://cold.example/v1",
++    };
++    mockedLoadConfigAsync.mockResolvedValueOnce(stored as never);
++    mockedChatModelSettings.mockReturnValueOnce({
++      provider: "custom",
++      providerSource: "config",
++      model: "cold-model",
++      modelSource: "config",
++      configured: true,
++      usesPrimary: false,
++    } as never);
++
++    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
++    const assembled = await assembleWikiContext("alpha", { principal: null });
++
++    expect(assembled.chatModel).toEqual({
++      provider: "custom",
++      model: "cold-model",
++      configured: true,
++      baseUrl: "https://cold.example/v1",
++    });
++    // ONE generation, not two: both legs are handed the very object the awaited
++    // read answered. Reverting to a bare `chatModelForRetrieve()` leaves them
++    // holding the `{}` above, which is the regression this case exists for.
++    expect(mockedChatModelSettings.mock.calls[0][0]).toBe(stored);
++    expect(mockedCustomBaseUrl.mock.calls[0][0]).toBe(stored);
++  });
++
++  it("does NOT thread an empty awaited answer over the warm default (DW-712)", async () => {
++    // The other half of the rule, copied from `configSnapshot` in `llm.ts`:
++    // `loadConfig()` answers `{}` both for "no config file" and for "the store
++    // could not be read", and on that second branch it does not prime the cache
++    // either — so the PREVIOUS generation is still warm behind
++    // `loadConfigSync()`. Threading `{}` would turn a transient read failure
++    // into a payload reporting an unconfigured wiki, which is the very lie the
++    // fix above removes. Passing nothing means "read it yourself".
++    mockedChatModelSettings.mockClear();
++    mockedCustomBaseUrl.mockClear();
++    const warm = {
++      vectorSearchEnabled: false,
++      customBaseUrl: "https://warm.example/v1",
++    };
++    mockedLoadConfig.mockReturnValue(warm as never);
++    mockedLoadConfigAsync.mockResolvedValueOnce({} as never);
++    mockedChatModelSettings.mockReturnValueOnce({
++      provider: "custom",
++      providerSource: "config",
++      model: "warm-model",
++      modelSource: "config",
++      configured: true,
++      usesPrimary: false,
++    } as never);
++
++    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
++    const assembled = await assembleWikiContext("alpha", { principal: null });
++
++    expect(assembled.chatModel).toEqual({
++      provider: "custom",
++      model: "warm-model",
++      configured: true,
++      baseUrl: "https://warm.example/v1",
++    });
++    // The resolver fell to its own default read, not to the empty answer.
++    expect(mockedChatModelSettings.mock.calls[0][0]).toBe(warm);
++  });
++
+   it("Sources-only returns source paths", async () => {
+     await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha concept page" }]);
+     await saveRawSource("alpha-src", "alpha original transcript");
+diff --git a/src/lib/llm.ts b/src/lib/llm.ts
+index c666757d..106071f3 100644
+--- a/src/lib/llm.ts
++++ b/src/lib/llm.ts
+@@ -245,6 +245,29 @@ export async function retryWithBackoff<T>(
+  * lint rule in this repo would catch it. `llm-key-cold-config.test.ts` scans
+  * `src/` for exactly that slip, which is also why this sentence does not spell
+  * the offending call out: the scan reads this file too.
++ *
++ * `chatProvider` / `ingestProvider` ARE NOT READ HERE, ON PURPOSE (DW-621).
++ * This gate answers one question — "can the PRIMARY route make a call" — and
++ * every one of its ~20 consumers takes that route immediately after: `callLLM`,
++ * `callLLMStream` and `callVisionLLM` go through {@link getModel}, and the bare
++ * `getConfiguredModel()` calls (`action-extractor.ts`, `todo-extract.ts`,
++ * `source-monitors.ts`) pass no options at all. That route resolves
++ * `cfg.provider ?? env.provider` in `getResolvedCredentials` and ignores the
++ * workload fields entirely; nothing in `src/` passes `workload:` yet, by design
++ * (see {@link LlmWorkload}). So for a store that names a provider ONLY through
++ * `chatProvider` or `ingestProvider`, a `true` answer here would be a promise
++ * the resolvers cannot keep: `analyzeSource` in `src/lib/ingest.ts` gates on
++ * this function and then calls `callLLM` with no `try` around it, so the gate
++ * opening would turn today's empty-analysis degrade into a thrown
++ * `No LLM API key found…` and take the ingest with it — ~20 graceful skips
++ * traded for a cosmetic honesty gain.
++ *
++ * THE DISHONESTY IS REAL BUT BELONGS AT THE CALL SITES. A `chatProvider`-only
++ * store makes `chat.ts` refuse with "No LLM provider is configured." after the
++ * retrieve payload has already reported that chat model configured. That is
++ * fixed by wiring the workload route through `chat.ts` and `ingest.ts` (Epics 2
++ * and 3, filed as DW-711), not by widening this predicate — which would only
++ * move the throw down into `getModel()`.
+  */
+ export async function hasLLMKey(): Promise<boolean> {
+   // Fast path: check env vars via shared helper
+@@ -509,8 +532,30 @@ export async function getConfiguredModel(options?: {
+         `The ${providerLabel(provider)} provider is not configured on this server. Set it in ${LLM_MODELS_POINTER}.`,
+       );
+     }
++    // THE STORED MODEL, TAKEN FROM ITS OWNER (DW-713). This branch used to skip
++    // from `options.model` straight to `OLLAMA_MODEL`/`DEFAULT_MODELS`, reading
++    // neither `LLM_MODEL` nor `cfg.model` — so a `custom` provider whose model
++    // was saved in the store built fine through `getModel` and was refused
++    // "needs a model name" here, at `agent-runtime`'s door. `custom` is where it
++    // bites because `DEFAULT_MODELS.custom` deliberately does not exist: it is
++    // the one provider with no tail to fall back to.
++    //
++    // DERIVED, NOT RE-TYPED: `getResolvedCredentials` owns the ladder
++    // (`LLM_MODEL` → `cfg.model` → `OLLAMA_MODEL` → `DEFAULT_MODELS`), so
++    // asking it is what keeps the two ladders from drifting. It is threaded the
++    // same `cfg` as `apiKeyForProvider` and the base-URL accessors below, so
++    // every leg of this client comes from one config generation.
++    //
++    // GUARDED ON PROVIDER IDENTITY: the stored model belongs to the store's
++    // PRIMARY provider, so it may only be spent on that provider. Without this,
++    // a store of `{provider: "anthropic", model: "claude-x"}` would hand
++    // `claude-x` to an explicitly requested OpenAI or custom client.
++    const credentials = getResolvedCredentials(cfg);
++    const storedModel =
++      provider === credentials.provider ? credentials.model : null;
+     const resolvedModel =
+       model?.trim() ||
++      storedModel?.trim() ||
+       ((provider === "ollama" || provider === "ollama-cloud")
+         ? process.env.OLLAMA_MODEL
+         : undefined) ||
+diff --git a/src/lib/wiki-retrieve.ts b/src/lib/wiki-retrieve.ts
+index 3c1804c3..db58fa44 100644
+--- a/src/lib/wiki-retrieve.ts
++++ b/src/lib/wiki-retrieve.ts
+@@ -24,6 +24,7 @@ import {
+   getCustomBaseUrl,
+   getOllamaBaseUrl,
+   getVectorSearchSettings,
++  loadConfig,
+   loadConfigSync,
+ } from "./config";
+ import type { AppConfig } from "./config";
+@@ -556,6 +557,14 @@ function numberBodies(hits: readonly RetrieveHit[]): {
+  * four parts of ONE answer, and resolving them from separate entries into the
+  * 5 s-TTL cache let a payload pair one generation's provider with another's
+  * endpoint — or with the cold-cache `{}` (DW-619).
++ *
++ * THE DEFAULT IS A FALLBACK, NOT THE ROUTE (DW-712). `/api/retrieve` warms
++ * nothing, so on a cold process `loadConfigSync()` answers `{}` — and re-stamps
++ * it for another 5 s — which told an API caller that a correctly configured
++ * wiki had `configured: false`, DW-548's class one door further out. The caller
++ * that can afford to wait (`assembleWikiContext`, already `async`) awaits the
++ * real read and hands the snapshot in; the default stays for the empty answer
++ * and for any synchronous caller.
+  */
+ function chatModelForRetrieve(
+   cfg: AppConfig = loadConfigSync(),
+@@ -581,7 +590,25 @@ export async function assembleWikiContext(
+ ): Promise<AssembledContext> {
+   const tokenBudget = clampTokenBudget(options.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT);
+   const historyDepth = clampHistoryDepth(options.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT);
+-  const chatModel = chatModelForRetrieve();
++
++  // WARMED ONCE, ABOVE THE `!trimmed` RETURN (DW-712), because the payload
++  // describes the deployment rather than the query: an empty query gets the
++  // same `chatModel` a real one does, and getting there by a second read would
++  // be a second config generation.
++  //
++  // An EMPTY answer is NOT threaded — the same rule `configSnapshot` spells out
++  // in `src/lib/llm.ts`. `loadConfig()` returns `{}` both for "no config file"
++  // and for "the store could not be read", and on that second branch it does
++  // not prime the cache either, so the PREVIOUS generation is still warm behind
++  // `loadConfigSync()`. Threading `{}` from it would turn a transient read
++  // failure into a payload reporting an unconfigured wiki, which is the very
++  // lie this fix removes. Passing nothing means "read it yourself", which is
++  // exactly what this call did before.
++  const storedConfig = await loadConfig();
++  const chatModel =
++    Object.keys(storedConfig).length > 0
++      ? chatModelForRetrieve(storedConfig)
++      : chatModelForRetrieve();
+   const emptyUsage = {
+     pages: 0,
+     history: 0,

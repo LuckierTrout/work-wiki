@@ -8,6 +8,7 @@ session_plan/
 .env
 .env.local
 .llm-wiki-config.json
+.llm-wiki-config.version
 tsconfig.tsbuildinfo
 timelapse.mp4
 generate_video.py

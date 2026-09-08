@@ -5,7 +5,10 @@ import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { enqueueTask } from "@/lib/tasks";
 import { MAX_BATCH_URLS } from "@/lib/constants";
 import { getErrorMessage } from "@/lib/errors";
+import { createGuidanceCache } from "@/lib/guidance-cache";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { addToVault, vaultOwnedBy } from "@/lib/vault";
 
 /** A batch URL that couldn't be enqueued (queue absent) and was run inline. */
@@ -22,6 +25,23 @@ export async function POST(request: NextRequest) {
     const principal = (await getPrincipal()) ?? getServicePrincipal(request);
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
+    }
+
+    // Deployment read-only (DW-187). Answered HERE — after the 401, before any
+    // work — and not left to the kernel writer, because this door meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: every URL is either enqueued as
+    //     a task or run inline, and each inline run writes its own
+    //     `raw/<slug>.md` before the page write.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: one fetch plus two LLM calls PER URL,
+    //     up to the batch cap, all ahead of the first refusal.
+    // Ordered after `getPrincipal()` so an unauthenticated caller still learns
+    // it is unauthenticated, matching `DELETE /api/ingest/history`.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.ingest },
+        { status: 403 },
+      );
     }
     const body = await request.json();
     const { urls, tags } = body;
@@ -94,11 +114,25 @@ export async function POST(request: NextRequest) {
     // hammers the LLM. Off-Workers (local dev / tests) the queue is absent, so
     // each URL runs inline and its result is reported — mirroring the per-source
     // inline fallback the single-ingest routes use.
+    //
+    // ONE guidance memo for the INLINE fallback (DW-324). It is consumed only
+    // by the `ingestUrl` calls below: without it, each URL that runs inline
+    // resolves the Workspace Purpose and re-reads the Names & Terms dictionary
+    // from scratch, N times inside one HTTP request. The URLs that ENQUEUE
+    // never see it — each queued task is its own later request and resolves
+    // guidance fresh, which is what a queued task should do.
+    //
+    // So the scope this widens is "the documents this request runs itself":
+    // one user action, one consistent set of guidance, with a Purpose or
+    // dictionary edit landing mid-run deliberately invisible to the rest of
+    // that run. The handle lives only as long as this request; the next one
+    // mints its own.
     const ingestOptions = {
       ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {}),
       author: principal.handle,
       owner: principal.handle,
       triggeredBy: principal.handle,
+      guidanceCache: createGuidanceCache(),
     };
 
     let queued = 0;
@@ -167,6 +201,15 @@ export async function POST(request: NextRequest) {
       ...(failed > 0 ? { failed } : {}),
     });
   } catch (error) {
+    // Mid-request flag flip: the gate above already answered for a deployment
+    // that was read-only on arrival, so a `ReadOnlyError` here came from the
+    // kernel page writer. It is a refusal, not a server fault.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("ingest", "Batch ingest error", error);
     return NextResponse.json(
       {

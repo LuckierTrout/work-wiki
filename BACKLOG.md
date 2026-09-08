@@ -165,7 +165,7 @@ complete.
 ## LLM Wiki functional parity
 
 - [ ] Reach outcome-level feature parity with `nashsu/llm_wiki` while keeping
-  WorkWiki cloud-first, owner-only, and independently implemented. The pinned
+  work-wiki cloud-first, owner-only, and independently implemented. The pinned
   source audit, capability matrix, cloud adaptations, six delivery phases, and
   acceptance criteria are recorded in
   [`docs/llm-wiki-functional-parity-roadmap.md`](docs/llm-wiki-functional-parity-roadmap.md).
@@ -175,8 +175,11 @@ complete.
   research with Review proposals; private agent workspaces, resumable forms,
   and a separate bounded sandbox worker; PDF figure extraction/caption caching
   plus EPUB/MOBI/Org/ODF/RTF; complete archive round-trip, browser clipper, and
-  journaled local source-folder sync; and KaTeX plus English/Chinese interface
-  translation. Dedicated UX polish now adds an exact-command sandbox approval
+  journaled local source-folder sync; and KaTeX math rendering. The interface
+  translation shipped here was retired on 2026-08-16 — the recorded preference
+  (`AGENTS.md`) is English-only, so the zh-CN catalog, its selector, and the
+  locale cookie were removed rather than maintained. Dedicated UX polish now
+  adds an exact-command sandbox approval
   docket, PDF figure lightbox/page jumps, remembered clipper tags with secure
   vault confirmation, and a Knowledge Studio local-sync heartbeat manager. The
   exact local proof and remaining narrow parity deltas are in the roadmap.

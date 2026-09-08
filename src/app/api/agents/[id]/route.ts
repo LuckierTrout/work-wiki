@@ -10,6 +10,7 @@ import type { UpdateAgentOptions } from "@/lib/agents";
 import { listReadableWikiPages } from "@/lib/wiki";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -263,6 +264,21 @@ export async function PUT(req: Request, { params }: RouteParams) {
 
     return NextResponse.json({ agent: updated });
   } catch (err) {
+    // Deployment read-only (DW-188), and PARTIAL BY DESIGN. NO route-level
+    // gate: `updateAgent` reaches a kernel writer only on the `addPages` arm,
+    // which writes the identity PAGE before `registerAgent` persists the
+    // profile — so only that arm aborts with neither written. Every field
+    // except `addPages` — all fifteen others, several of them tool-grant and
+    // autonomy switches — skips the kernel and lands on `registerAgent`'s bare
+    // `storage.writeFile`, so those edits still return 200 while read-only.
+    // The split is per REQUEST, not per field: a PUT carrying `addPages`
+    // alongside scalar edits refuses the WHOLE request and loses those edits
+    // with it, so the 200 belongs only to a request with no `addPages` at all.
+    // That is the boundary `DEPLOY.md` documents, not an oversight this catch
+    // hides. The catch only has to classify it.
+    if (isReadOnlyError(err)) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
     if (err instanceof AgentOwnershipError) {
       return NextResponse.json({ error: err.message }, { status: 403 });
     }

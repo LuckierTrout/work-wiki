@@ -13,8 +13,8 @@ export default function NewPageError({
     <PageError
       title="New page error"
       description="Something went wrong creating a new wiki page."
-      backHref="/wiki"
-      backLabel="← Back to wiki"
+      backHref="/"
+      backLabel="← Home"
       error={error}
       reset={reset}
     />

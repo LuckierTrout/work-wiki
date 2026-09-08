@@ -1,0 +1,461 @@
+/**
+ * Story 1.2 — the UI invariants the AC states, pinned by source scan.
+ *
+ * This is the `node` project, so it reads the components as text following the
+ * `single-ia.test.ts` convention. What it pins is what a scan is genuinely good
+ * at: that nobody reintroduces a blank Wiki option, drops `aria-modal` from the
+ * one confirm overlay, edits the empty-state copy the AC quotes verbatim, or
+ * puts a second Wiki switcher back on the canvas.
+ *
+ * `vitest.config.ts` now ships a second `dom` project, so the behaviour a scan
+ * cannot see is asserted on rendered DOM instead — `create-wiki-flow.test.tsx`
+ * for this card's dialogs, and `workbench/__tests__/wiki-canvas-duplication.test.tsx`
+ * for the one-of-each counts in the assembled shell. Prefer those for anything
+ * observable; keep the scans here for source-shape invariants only.
+ */
+import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import {
+  CREATABLE_SCENARIOS,
+  SCENARIO_LABELS,
+  WIKI_ARTIFACT_FILES,
+} from "../wiki-scenarios";
+import { PREVIEW_HISTORY_COPY, PREVIEW_UNSELECTED_COPY } from "../workbench-preview";
+import { WIKI_EMPTY_COPY, WIKI_UNAVAILABLE_COPY } from "../workbench-tree";
+
+const COMPONENTS = path.resolve(__dirname, "../../components");
+
+function read(component: string): Promise<string> {
+  return readFile(path.join(COMPONENTS, component), "utf8");
+}
+
+/**
+ * Source with its comments removed, matching `workbench-split.test.ts`: a ban on
+ * a label or a symbol is about what the component DOES, and the file's own prose
+ * explaining where that control moved to must not read as a violation.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+describe("CreateWikiDialog offers exactly the five Scenario Templates", () => {
+  it("renders the five labels from the shared map and nothing else", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).toContain("CREATABLE_SCENARIOS");
+    expect(source).toContain("SCENARIO_LABELS");
+    expect(CREATABLE_SCENARIOS.map((value) => SCENARIO_LABELS[value])).toEqual([
+      "Research",
+      "Reading",
+      "Personal Growth",
+      "Business",
+      "General",
+    ]);
+  });
+
+  it("has no blank or custom option anywhere in the picker", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).not.toMatch(/custom/i);
+    expect(source).not.toMatch(/\bBlank\b/);
+  });
+
+  it("preselects Business and states the no-blank-wiki rule", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).toContain('DEFAULT_SCENARIO: CreatableScenario = "business"');
+    expect(source.replace(/\s+/g, " ")).toContain(
+      "Pick one Scenario Template. This writes purpose.md, Schema, and this wiki’s own Workspace Purpose. There is no blank wiki.",
+    );
+  });
+
+  it("labels the name input with a real label, not a placeholder", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).toContain("Wiki name");
+    expect(source).toMatch(/htmlFor=\{nameId\}/);
+    expect(source).not.toContain("placeholder=");
+    // The cap is the server parser's, imported — not a restated literal.
+    expect(source).toContain("maxLength={MAX_WIKI_NAME_CHARS}");
+  });
+
+  it("is one accessible overlay level with a single primary action", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).toContain('role="dialog"');
+    expect(source).toContain('aria-modal="true"');
+    expect(source).toContain("aria-labelledby");
+    // Toggle-button semantics, not `aria-current` (which means "current item
+    // in a set of navigation links" and announces no selection here).
+    expect(source).toContain("aria-pressed={selected}");
+    expect(source).not.toMatch(/aria-current=/);
+    expect(source.match(/btn primary/g) ?? []).toHaveLength(1);
+    expect(source).toContain("btn ghost");
+  });
+});
+
+describe("both dialogs share one accessibility implementation", () => {
+  it("neither dialog forks the focus trap", async () => {
+    for (const component of ["ConfirmDialog.tsx", "CreateWikiDialog.tsx"]) {
+      const source = await read(component);
+      expect(source).toContain("useDialogA11y");
+      expect(source).toContain('role="dialog"');
+      expect(source).toContain('aria-modal="true"');
+      expect(source).toContain("aria-labelledby");
+      // The trap itself lives in the hook — a copy here is the regression.
+      expect(source).not.toContain("focusables");
+      expect(source).not.toContain('event.key !== "Tab"');
+    }
+  });
+
+  it("the shared hook traps Tab, restores focus, locks scroll, and spares select-Esc", async () => {
+    const hook = await readFile(
+      path.resolve(__dirname, "../../hooks/useDialogA11y.ts"),
+      "utf8",
+    );
+    expect(hook).toContain("dialogRef.current?.focus()");
+    expect(hook).toContain("opener.focus()");
+    expect(hook).toContain('document.body.style.overflow = "hidden"');
+    expect(hook).toContain("stopPropagation");
+    expect(hook).toContain('event.key !== "Tab"');
+    // Focus that has drifted outside is pulled back in, not left to walk the
+    // background; and an open <select> dropdown eats its own Esc.
+    expect(hook).toContain("root.contains(active)");
+    expect(hook).toContain("HTMLSelectElement");
+  });
+
+  it("does not restore focus to an opener the action unmounted", async () => {
+    const hook = await readFile(
+      path.resolve(__dirname, "../../hooks/useDialogA11y.ts"),
+      "utf8",
+    );
+    // Creating the first wiki replaces the empty state that held the opening
+    // button, so `opener.focus()` on the detached node drops the keyboard user
+    // on <body>. The caller's fallback landmark takes over.
+    expect(hook).toContain("opener?.isConnected");
+    // The fallback is read into a local and checked the same way the opener is,
+    // because a node can also be attached-but-WITHDRAWN (DW-414) — inside a
+    // surface that has gone behind `hidden`, where focus is just as lost. The
+    // old `fallbackRef.current?.current?.focus()` spelling could not carry that
+    // check, so it is not what this pins any more.
+    expect(hook).toContain("const fallback = fallbackRef.current?.current ?? null;");
+    expect(hook).toContain("fallback?.isConnected && !withdrawn(fallback)");
+    expect(hook).toContain("fallback.focus()");
+
+    const workbench = await read("WikiWorkbench.tsx");
+    expect(workbench.match(/fallbackFocusRef=\{headingRef\}/g) ?? []).toHaveLength(2);
+    expect(workbench).toContain("tabIndex={-1}");
+  });
+});
+
+describe("WikiWorkbench empty state and preview copy", () => {
+  it("freezes the AC's two exact sentences at their one definition", () => {
+    // This file is the AC-invariants file, and the AC quotes both sentences
+    // VERBATIM — so somebody has to hold the wording still. Every other
+    // assertion in the repo now reads these constants, which is right for a
+    // render pin and useless as a copy pin: rewording `WIKI_EMPTY_COPY` would
+    // leave all of them green and only e2e would notice.
+    //
+    // Hence a VALUE assertion here and nowhere else, the same idiom
+    // `workbench-settings.test.ts` uses for `SETTINGS_LOAD_FAILED_COPY`. The
+    // constant is where the sentence lives (DW-285); this is where the AC says
+    // which sentence it has to be.
+    expect(WIKI_EMPTY_COPY).toBe("No wiki yet.");
+    expect(WIKI_UNAVAILABLE_COPY).toBe("Your wikis couldn’t be loaded. Reload to try again.");
+  });
+
+  it("renders the empty-state sentence from the module that owns it, not a literal", async () => {
+    // DW-285: the card used to restate the AC's sentence inline, so the wording
+    // had two definitions — and DW-176 settled which surface owns it, which a
+    // literal here cannot express.
+    //
+    // The pin is the RENDER SHAPE, not the identifier. `toContain("WIKI_EMPTY_COPY")`
+    // looks like it proves the card renders the constant and proves nothing of
+    // the sort: this file's own subject reworded five COMMENTS to name the
+    // symbol, so the scan stays green with the render site swapped back to a
+    // plain literal. Matching the JSX text child is what a scan can actually
+    // hold — paired with `not.toContain` on the sentence, which is the half
+    // that catches the literal coming back.
+    const source = await read("WikiWorkbench.tsx");
+    expect(source).toContain(">{WIKI_EMPTY_COPY}</p>");
+    expect(source).toContain('from "@/lib/workbench-tree"');
+    expect(source).not.toContain(WIKI_EMPTY_COPY);
+  });
+
+  it("takes the preview sentence from the module that owns it, not a literal", async () => {
+    // DW-177: every sibling sentence the Preview slot can show is an exported
+    // constant in `workbench-preview.ts`, and this one was the lone inline
+    // literal — the card restated it while `PREVIEW_EMPTY_COPY` and friends were
+    // imported one file away.
+    //
+    // The sentence is READ from the constant here, never retyped: the wording
+    // now has exactly one definition in `src`, so rewording it is a single edit
+    // and no green test can be left asserting the old text. What is pinned is
+    // the invariant a scan can actually keep — that the component imports the
+    // constant and restates nothing.
+    expect(PREVIEW_UNSELECTED_COPY.length).toBeGreaterThan(0);
+
+    const source = await read("WikiWorkbench.tsx");
+    expect(source).toContain("PREVIEW_UNSELECTED_COPY");
+    expect(source).toContain('from "@/lib/workbench-preview"');
+    expect(source).not.toContain(PREVIEW_UNSELECTED_COPY);
+  });
+
+  it("offers a single primary Create Wiki action on the empty state", async () => {
+    const source = await read("WikiWorkbench.tsx");
+    expect(source).toContain("Create Wiki");
+    expect(source.match(/btn primary/g) ?? []).toHaveLength(1);
+  });
+
+  it("lists the two seeded files and warns that both are overwritten", async () => {
+    const source = await read("WikiWorkbench.tsx");
+    // One list of artifact names, shared with the server module.
+    expect(source).toContain("WIKI_ARTIFACT_FILES");
+    expect(WIKI_ARTIFACT_FILES).toEqual(["purpose.md", "schema.md"]);
+    expect(source).toContain("Change template");
+    const warning = source.replace(/\s+/g, " ");
+    // The Workspace Purpose is per-wiki and a re-template rewrites it too, so
+    // the confirm has to name it, say what is LOST (a purpose hand-authored in
+    // Settings, not just a file), and say the blast radius stops at this wiki.
+    //
+    // The two halves are named SEPARATELY because they no longer share a fate
+    // (DW-213/DW-381): a committed re-template files the replaced `schema.md` as
+    // a revision — `EDITABLE_ARTIFACT_FILES` is exactly `["schema.md"]`, and
+    // `recordRetemplatedArtifacts` records that set — so the Preview's History
+    // panel lists it and reverts it, while `purpose.md` and the profile are
+    // written over with nothing kept. Calling the whole operation unrecoverable
+    // was true before that and is not now, and a confirm that overstates what it
+    // destroys is as wrong as one that understates it.
+    //
+    // Pinned as HEAD / TARGET / TAIL rather than as one string, because the
+    // sentence now interpolates the wiki it acts on (DW-284): the confirm has
+    // to NAME its target or an overwrite aimed at the wrong wiki reads
+    // identically to the right one — DW-148's premise, on the confirm that
+    // rewrites purpose.md and the Workspace Purpose unrecoverably. Split in
+    // three and not loosened to a substring: every unchanged clause is still
+    // pinned whole, so the interpolation cannot take any other wording with it.
+    expect(warning).toContain(
+      "This overwrites purpose.md, Schema, and the Workspace Purpose for",
+    );
+    // The TARGET, in the one disambiguated spelling the switcher options and
+    // the delete picker share — never a re-spelled `current.name`, which is not
+    // unique. Asserted on raw source, since JSX braces are what carry it.
+    expect(source).toContain("<strong>{current && wikiOptionLabel(current)}</strong>");
+    // Pointed at the IMPORT, not repeating the line above: what is worth
+    // holding separately is that the spelling is the SHARED one, so a local
+    // re-implementation drifting from the pickers fails here.
+    expect(source).toMatch(
+      /import \{[^}]*\bwikiOptionLabel\b[^}]*\} from "@\/lib\/wiki-scenarios";/s,
+    );
+    // Against the COLLAPSED string: the raw source wrapped this phrase across
+    // lines even before the change, so a `source`-side ban never could fire.
+    expect(warning).not.toContain("Workspace Purpose for this wiki");
+    // The TAIL, whole: the two halves no longer share a fate, and that is the
+    // part of the sentence this test has always existed to hold still.
+    expect(warning).toContain(
+      "a purpose you wrote in Settings will be replaced by the new template’s. The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered. Other wikis, Pages and Sources are not changed.",
+    );
+    // The sentence sends the owner to a panel by NAME, and that name is owned
+    // one module over. Joined here so renaming the disclosure fails on this row
+    // — which names the confirm — rather than leaving a confirm that directs
+    // people to a surface no longer called that. The copy itself stays inline
+    // JSX; this pins the word, not the sentence.
+    expect(warning).toContain(`the Preview’s ${PREVIEW_HISTORY_COPY} and can be restored`);
+  });
+
+  it("blocks the destructive confirm when the template would not change", async () => {
+    const source = await read("WikiWorkbench.tsx");
+    // TWO reasons `Overwrite` goes dead, joined in one expression. The no-op
+    // scenario is the original: the dialog opens on the wiki's CURRENT
+    // template, so the default path through a destructive confirm would rewrite
+    // purpose.md, the Schema and the Workspace Purpose to identical bytes.
+    //
+    // `latched` is DW-515's half — an overwrite whose outcome NOBODY KNOWS. The
+    // dialog does not close on that path, `busy` is back to false by the time
+    // the unconfirmed sentence appears, and the card's reset effect keys on the
+    // active wiki, which a re-template never moves; so before the latch the
+    // owner met a live `Overwrite` under a stale "the outcome is unknown"
+    // alert, over a card the refresh may already have moved onto the new
+    // scenario. A second press then rewrites purpose.md and the Workspace
+    // Purpose from the template again, discarding whatever the first one may
+    // already have written.
+    expect(source).toContain(
+      "confirmDisabled={pendingScenario === current?.scenario || latched}",
+    );
+  });
+
+  it("reports a failed overwrite inside the overlay, not behind it", async () => {
+    // The confirm dialog stays open on failure and its backdrop covers the
+    // section, so an error rendered by the host is invisible: the owner would
+    // see the spinner stop and nothing else.
+    const dialog = await read("ConfirmDialog.tsx");
+    expect(dialog).toContain('role="alert"');
+    expect(dialog).toContain("{error}");
+
+    const workbench = await read("WikiWorkbench.tsx");
+    expect(workbench).toContain("setTemplateError(");
+    // The card's own sentence still outranks everything: this dialog's request
+    // is the specific answer. The fallback behind it is the SHARED latch's
+    // message (DW-516) — the confirm can now be dead over a write the header
+    // switcher issued, in which case `templateError` is null and the overlay's
+    // backdrop covers every other sentence on the page.
+    expect(workbench).toContain(
+      "error={templateError ?? (latched ? latchMessage : null)}",
+    );
+  });
+
+  it("locks the controls that a request in flight would otherwise contradict", async () => {
+    const workbench = await read("WikiWorkbench.tsx");
+    // The scenario <select> lives inside the confirm dialog: changing it
+    // mid-request would display a template that was not the one applied.
+    expect(workbench).toContain("disabled={busy}");
+    // Overlapping switches settle out of order and roll back to a stale id.
+    // The guard follows the switcher: DW-33 retired this card's copy, so the
+    // left column header is where the invariant now lives — retargeted, not
+    // dropped.
+    //
+    // And so does a switch issued over one whose outcome NOBODY KNOWS (DW-409):
+    // `finally` clears `switching` the moment the aborted PUT lands, so the
+    // picker is live again while the unconfirmed sentence is still on screen —
+    // and the second PUT that follows can settle behind the first, leaving the
+    // shell on a wiki the owner had already left. The shared `latched` is the
+    // half that outlives the request; the `<select>` carries
+    // `disabled={switching}` alone — a latch that took it out of the tab order
+    // would stop a keyboard owner reading which wiki is even active — so the
+    // handler's early return is the whole refusal, and `aria-disabled` plus the
+    // description is what makes it audible (DW-517).
+    const switcher = await read("workbench/WikiSwitcher.tsx");
+    expect(switcher).toContain("disabled={switching}");
+    expect(switcher).toContain("if (switching || latched) return;");
+  });
+
+  it("leaves switching and the persistent create control to the header (DW-33)", async () => {
+    // The canvas card and the left column header both shipped a switcher and a
+    // create button, so Wiki mode put two of each in one viewport. The header
+    // is the single owner; these negatives are what stops the card's copies
+    // coming back.
+    // The MECHANICS, not one label spelling: a returning duplicate need not
+    // reuse the old copy. So the bans are on the machinery a wiki switcher
+    // cannot do without — enumerating `wikis` as options, the write route, the
+    // handler and its in-flight flag — plus the labels, matched
+    // case-insensitively over comment-stripped source so the file's own prose
+    // about the header is not a finding. The rendered COUNT is asserted in
+    // `workbench/__tests__/wiki-canvas-duplication.test.tsx`, which is where a
+    // relabelled control is caught.
+    const workbench = stripComments(await read("WikiWorkbench.tsx"));
+    expect(workbench).not.toContain("wikis.map");
+    expect(workbench).not.toContain("switchWiki");
+    expect(workbench).not.toContain("setSwitching");
+    expect(workbench).not.toContain("wiki-workbench-switcher");
+    expect(workbench).not.toContain("/api/wikis/current");
+    expect(workbench).not.toMatch(/new wiki/i);
+    expect(workbench).not.toMatch(/active wiki/i);
+
+    const switcher = await read("workbench/WikiSwitcher.tsx");
+    expect(switcher).toContain("Active wiki");
+    expect(switcher).toContain("/api/wikis/current");
+    expect(switcher).toContain("New Wiki");
+  });
+
+  it("hands the preview sentence's visibility to the shell's own state (DW-39)", async () => {
+    // A docked Preview column and `PREVIEW_UNSELECTED_COPY` describe the same
+    // slot, so both on screen at once is a contradiction. The canvas reaches the
+    // shell as `children` and cannot read `previewOpen`, so the class is the
+    // seam and the stylesheet decides. (The rule is EXERCISED — not just
+    // spelled — in `workbench/__tests__/wiki-canvas-duplication.test.tsx`.)
+    const workbench = await read("WikiWorkbench.tsx");
+    expect(workbench).toContain("wb-canvas-preview-note");
+    // …and the receipt grid's own hook (DW-180). The SAME attribute has a
+    // second consequence: hiding the note does not release the 320px track it
+    // was sitting in, so the grid collapses to one. Pinned here beside its
+    // sibling because a renamed hook orphans the rule silently — the class is
+    // the only thing joining the two files.
+    expect(workbench).toContain("wb-canvas-receipt-grid");
+
+    const css = await readFile(
+      path.resolve(__dirname, "../../app/globals.css"),
+      "utf8",
+    );
+    expect(css).toContain(
+      '.wb-shell[data-preview="true"] .wb-canvas-preview-note {',
+    );
+    expect(css).toContain(
+      '.wb-shell[data-preview="true"] .wb-canvas-receipt-grid {',
+    );
+  });
+
+  it("does not offer Create Wiki when the registry could not be read", async () => {
+    // `WIKI_EMPTY_COPY` is a claim about the registry. On a read failure the
+    // workbench cannot make it, and its primary action would seed a duplicate
+    // wiki and move every prompt onto its template on a transient error.
+    const workbench = await read("WikiWorkbench.tsx");
+    // The flag arrives on the provider, not as a prop of this card (DW-174):
+    // one wire from `wikiRegistry.unavailable`, so the header and the canvas
+    // cannot disagree about whether the registry was read.
+    expect(workbench).toContain("registryUnavailable");
+    expect(workbench).toContain("useWorkbenchData()");
+    // Same shape as the empty state above (DW-285), and for the same reason it
+    // is a SHAPE: the constant has to be the thing inside the alert, not merely
+    // a symbol mentioned somewhere in the file. The window ties `role="alert"`
+    // to the interpolation so a scan cannot be satisfied by a comment naming the
+    // symbol while the alert itself carries a retyped sentence. `not.toContain`
+    // on the text is the other half — a `toContain` there would now pass off
+    // this file's own prose rather than off anything the card renders.
+    expect(workbench).toMatch(/role="alert"[\s\S]{0,120}\{WIKI_UNAVAILABLE_COPY\}/);
+    expect(workbench).toContain('from "@/lib/workbench-tree"');
+    expect(workbench).not.toContain(WIKI_UNAVAILABLE_COPY);
+
+    const page = await readFile(
+      path.resolve(__dirname, "../../app/page.tsx"),
+      "utf8",
+    );
+    expect(page).toContain("unavailable: true");
+    expect(page).toContain("registryUnavailable: wikiRegistry.unavailable");
+  });
+
+  it("resets the create dialog on close, so reopening never paints a stale attempt", async () => {
+    const source = await read("CreateWikiDialog.tsx");
+    expect(source).toContain("if (open) return;");
+    expect(source).not.toContain("if (!open) return;\n    setScenario");
+  });
+
+  it("leaves the landing page h1 to the Workbench shell", async () => {
+    // The Workbench shell owns the landing page <h1> (the wb-title masthead —
+    // pinned as one token so the class can't drift off the h1); WikiWorkbench
+    // must not add another.
+    const workbench = await read("WikiWorkbench.tsx");
+    const shell = await read("workbench/Workbench.tsx");
+    expect(workbench).not.toMatch(/<h1[\s>]/);
+    expect(shell).toMatch(/<h1 className="wb-title">/);
+  });
+
+  it("refetches the server tree after each of its own kernel writes", async () => {
+    // Comment-stripped, like the DW-33 negatives below: this counts CALLS, and
+    // the file's own prose explains the refresh several times over — a
+    // paragraph naming it must not read as a third write.
+    const source = stripComments(await read("WikiWorkbench.tsx"));
+    // Two writes left on this card, and both make the server render stale:
+    // `create` (seeds a wiki and makes it active) and `applyTemplate`
+    // (rewrites purpose.md, Schema and the Workspace Purpose — the live wiki
+    // does not change, the bytes behind it do). The third was `switchWiki`,
+    // which went with the retired switcher (DW-33); the header's own switch
+    // refreshes in `WikiSwitcher.tsx`.
+    //
+    // FOUR calls for those two writes: each has a success path AND a
+    // deadline path (DW-283). An aborted request was abandoned on this side,
+    // so the server may have applied it — a catch that only printed a sentence
+    // would leave the owner reading "we don't know" over a screen that could
+    // never find out. Both halves are exercised in `create-wiki-flow.test.tsx`;
+    // what a scan adds is that neither refresh can be deleted without this
+    // count moving.
+    expect(source.match(/router\.refresh\(\)/g) ?? []).toHaveLength(4);
+  });
+});
+
+describe("one label map", () => {
+  it("has no second scenario form after structured Purpose editing is retired", async () => {
+    const source = await read("WorkspacePurposeSettings.tsx");
+    expect(source).not.toContain("SCENARIO_LABELS");
+    expect(source).not.toMatch(/<select|<textarea|<form/);
+    expect(source).not.toContain("/api/workspace-profile");
+    expect(source).toContain("Purpose has one editor now");
+  });
+});

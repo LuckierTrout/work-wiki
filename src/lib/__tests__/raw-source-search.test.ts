@@ -59,7 +59,7 @@ describe("original-source retrieval context", () => {
         url: "https://docs.example.com/launch",
         fetched: "2026-08-06",
         triggered_by: "alice",
-        raw_id: "abc123",
+        raw_id: "abc1230000000000",
       },
       "First line.\nThe launch owner is Priya.\nDelivery is due Friday.",
     );
@@ -77,10 +77,10 @@ describe("original-source retrieval context", () => {
       pageSlug: ENTRY.slug,
       startLine: 1,
       endLine: 3,
-      citationHref: "/api/raw/launch-memo?source=abc123",
+      citationHref: "/api/raw/launch-memo?source=abc1230000000000",
     });
     expect(result.context).toContain(
-      "[original source for launch-memo, lines 1-3](/api/raw/launch-memo?source=abc123)",
+      "[original source for launch-memo, lines 1-3](/api/raw/launch-memo?source=abc1230000000000)",
     );
   });
 
@@ -107,7 +107,7 @@ describe("original-source retrieval context", () => {
         url: "https://docs.example.com/launch",
         fetched: "2026-08-06",
         triggered_by: "alice",
-        raw_id: "abc123",
+        raw_id: "abc1230000000000",
       },
       "\n\nEvidence starts on raw line three.\n",
     );
@@ -123,7 +123,7 @@ describe("original-source retrieval context", () => {
         url: "https://docs.example.com/launch",
         fetched: "2026-08-06",
         triggered_by: "alice",
-        raw_id: "abc123",
+        raw_id: "abc1230000000000",
       },
       "The owner is Priya.",
     );

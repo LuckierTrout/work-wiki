@@ -1,7 +1,14 @@
-import { callLLM, hasLLMKey } from "./llm";
+import type { FinishReason } from "ai";
+import { callLLMWithFinish, hasLLMKey } from "./llm";
+import {
+  LLM_LENGTH_CAP_COPY,
+  LLM_STOPPED_EARLY_COPY,
+} from "./llm-deadline";
+import { logger } from "./logger";
 import { QUERY_MAX_OUTPUT_TOKENS, LISTED_OTHER_PAGES } from "./constants";
 import {
   listReadableWikiPages,
+  readWikiPageWithFrontmatter,
   writeWikiPageWithSideEffects,
   withPageCache,
   isAgentScopedType,
@@ -24,7 +31,7 @@ import {
   buildNamesTermsGuidance,
   expandQueryWithNamesTerms,
 } from "./names-terms";
-import { buildWorkspaceGuidance } from "./workspace-profile";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { UNTRUSTED_CONTENT_RULE, wrapUntrusted } from "./untrusted";
 import type { QueryResult } from "./types";
 import type { QueryFormat } from "./query-format";
@@ -200,10 +207,12 @@ export async function buildQuerySystemPrompt(
     const remainder = others.length - listed.length;
     const moreLine =
       remainder > 0 ? `\n…and ${remainder} more pages not listed here.\n` : "\n";
-    // The titles/summaries are collectively-editable, frontmatter-derived data
-    // (an attacker can plant instructions in a page title/summary), so the
-    // listing goes inside the same untrusted-content boundary as page bodies —
-    // the model may use the titles/slugs to cite, never obey text within.
+    // The titles/summaries are frontmatter-derived data whose text ultimately
+    // comes from ingested third-party sources (an attacker can plant
+    // instructions in a page title/summary), so the listing goes inside the
+    // same untrusted-content boundary as page bodies — the model may use the
+    // titles/slugs to cite, never obey text within. What makes it untrusted is
+    // where the text CAME FROM, not who is permitted to edit the page.
     indexSection = `\nThe wiki also contains these other pages (not loaded in full):\n${wrapUntrusted(
       indexListing,
       { source: "page index (titles + summaries)" },
@@ -216,6 +225,15 @@ export async function buildQuerySystemPrompt(
 
   // Append SCHEMA.md conventions so the query prompt stays in sync with the
   // wiki's page conventions — same pattern used by ingest.
+  //
+  // DW-19 — deliberately NO argument: the conventions are deployment-global.
+  // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
+  // resolved inside `readActiveWikiSchema`), NOT from the `owner` used by the
+  // `if (owner)` guidance block below — that one is per-caller and may be a
+  // different handle entirely. Correct while work-wiki is single-owner; a
+  // second tenant means threading a tenant argument through
+  // `loadPageConventions()` and passing it here. See the invariant on
+  // `readActiveWikiSchema` in `wikis.ts`.
   const conventions = await loadPageConventions();
   if (conventions) {
     systemPrompt += `\n\nThe wiki you are querying follows these conventions (from SCHEMA.md):\n\n${conventions}`;
@@ -246,6 +264,36 @@ export async function buildQuerySystemPrompt(
 // ---------------------------------------------------------------------------
 // Main query function
 // ---------------------------------------------------------------------------
+
+/**
+ * Which sentence — if any — the owner reads when the model stopped (DW-662).
+ *
+ * ONE DESCRIPTOR per ending, pairing the owner's sentence with the operator's
+ * log line, exactly as `/api/query/stream` does. Two adjacent bare strings are
+ * the same type: transposing them type-checks cleanly and would write the log
+ * line into the answer body while logging the notice. Binding them here means
+ * the call site names WHICH ending happened and cannot pick a mismatched half.
+ *
+ * `null` for `stop` — the model saying it finished — which is the only clean
+ * ending and therefore the only silent one. The log lines differ from the
+ * route's on purpose: this is the NON-streamed door, and an operator reading
+ * "query" warnings has to be able to tell which of the two answered.
+ */
+function stoppedEarlyNotice(
+  finishReason: FinishReason,
+): { copy: string; log: string } | null {
+  if (finishReason === "stop") return null;
+  if (finishReason === "length") {
+    return {
+      copy: LLM_LENGTH_CAP_COPY,
+      log: "Output token cap reached on a non-streamed query; the answer was cut short and the owner told",
+    };
+  }
+  return {
+    copy: LLM_STOPPED_EARLY_COPY,
+    log: `Model stopped before finishing a non-streamed query (${finishReason}); the answer was cut short and the owner told`,
+  };
+}
 
 /**
  * Query the wiki with a user question.
@@ -315,7 +363,7 @@ export async function query(
     const { context } = await buildContext(selectedSlugs);
 
     // No API key — return a helpful fallback
-    if (!hasLLMKey()) {
+    if (!(await hasLLMKey())) {
       const allSlugs = entries.map((e) => e.slug);
       const pageList = allSlugs.map((s) => `- ${s}`).join("\n");
       return {
@@ -333,9 +381,18 @@ export async function query(
       principal?.handle,
     );
 
-    const raw = await callLLM(systemPrompt, question, {
-      maxOutputTokens: QUERY_MAX_OUTPUT_TOKENS,
-    });
+    // DW-662. `callLLMWithFinish`, not `callLLM`: the model reports WHY it
+    // stopped, and this door commits what it returns as the answer. `length`
+    // means `QUERY_MAX_OUTPUT_TOKENS` CUT it; `content-filter`, `error`,
+    // `tool-calls` and `other` mean it stopped somewhere that is not the end.
+    // Discarding that field is how a fragment reached the owner looking
+    // finished — the silence DW-547 closed for `/api/query/stream` alone, on
+    // the sibling route that answers the same question.
+    const { text: raw, finishReason } = await callLLMWithFinish(
+      systemPrompt,
+      question,
+      { maxOutputTokens: QUERY_MAX_OUTPUT_TOKENS },
+    );
 
     // Bake yoyo illustrations into slides/HTML answers now, server-side: each
     // scene is generated once, stored in R2, and the directive is replaced with
@@ -353,7 +410,28 @@ export async function query(
     const allSlugs = entries.map((e) => e.slug);
     const sources = extractCitedSlugs(answer, allSlugs);
 
-    return { answer, sources, retrievedSources: selectedSlugs };
+    // DW-662. The notice is appended AFTER `extractCitedSlugs`, so no sentence
+    // this repo wrote is ever scanned for citations — `sources` describes the
+    // MODEL's answer and nothing else. Same blank-line rule as the stream
+    // route: the separator exists to hold the notice apart from the answer it
+    // interrupts, so a cut that landed before any text opens the body with the
+    // sentence alone rather than two empty lines. `stop` is the only clean
+    // ending and the only silent one; `length` keeps the cap sentence, which
+    // promises the rest is reachable by narrowing, and every other reason gets
+    // the sentence that promises nothing of the kind.
+    const notice = stoppedEarlyNotice(finishReason);
+    if (!notice) {
+      return { answer, sources, retrievedSources: selectedSlugs };
+    }
+    // The OPERATOR's line, never the owner's sentence — the two are bound in
+    // one descriptor for the same reason the stream route binds them (a
+    // transposition would put a log string into the answer body).
+    logger.warn("query", notice.log);
+    return {
+      answer: answer ? `${answer}\n\n${notice.copy}` : notice.copy,
+      sources,
+      retrievedSources: selectedSlugs,
+    };
   });
 }
 
@@ -376,6 +454,13 @@ export async function query(
  *
  * Returns the slug of the newly created wiki page.
  */
+export interface SaveAnswerOptions {
+  conversationId?: string;
+  conversationName?: string;
+  /** Default Chat save: slug under wiki/queries/<slug>.md. */
+  underQueries?: boolean;
+}
+
 export async function saveAnswerToWiki(
   title: string,
   rawContent: string,
@@ -384,8 +469,13 @@ export async function saveAnswerToWiki(
   contentType: "markdown" | "html" | "slides" = "markdown",
   owner?: string,
   author?: string,
+  extras?: SaveAnswerOptions,
 ): Promise<{ slug: string }> {
-  const slug = explicitSlug || slugify(title);
+  const baseSlug = explicitSlug || slugify(title);
+  const slug =
+    extras?.underQueries && baseSlug && !baseSlug.startsWith("queries/")
+      ? `queries/${baseSlug.replace(/^queries-/, "")}`
+      : baseSlug;
 
   if (!slug) {
     throw new Error("Title must produce a valid slug");
@@ -412,12 +502,16 @@ export async function saveAnswerToWiki(
   //    H1 (it renders in the sandboxed iframe — a document, or a deck for slides).
   //  - markdown: prepend an H1 if missing.
   const html = isHtml ? stripHtmlFence(content) : content;
+  const conversationLink =
+    extras?.conversationId
+      ? `Conversation: [${String(extras.conversationName || extras.conversationId).replace(/[[\]]/g, "")}](/?mode=chat&conversation=${encodeURIComponent(extras.conversationId)})\n\n`
+      : "";
   const needsH1 = !isArtifact && !content.trimStart().startsWith("# ");
   const pageContent = isHtml
     ? html
     : needsH1
-      ? `# ${title}\n\n${content}`
-      : content;
+      ? `# ${title}\n\n${conversationLink}${content}`
+      : `${conversationLink}${content}`;
 
   // Summary comes from plain text: tag-stripped for HTML; for markdown/slides,
   // heading-stripped — and with baked illustration images stripped so an image
@@ -476,6 +570,17 @@ export async function saveAnswerToWiki(
     frontmatterData,
     pageContent,
   );
+  // FRESH+STRICT (DW-495). `existing.content` is the merge base handed to the
+  // write below. Without `fresh` it can be a superseded `pageCache` entry an
+  // open bulk scan is holding; without `strict` a non-ENOENT storage blip reads
+  // back as `null`, and this call site's `null` silently selects `createOnly`
+  // over a page that IS stored — the answer is then either rejected as a
+  // conflict or written against bytes that are gone. Strict rethrows to the
+  // caller's route catch, which answers 500.
+  const existing = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
 
   // Hand off to the unified write pipeline. For markdown we pass the original
   // answer `content` as the cross-ref source so the related-pages prompt sees
@@ -489,6 +594,7 @@ export async function saveAnswerToWiki(
     logOp: "save",
     crossRefSource: isArtifact ? null : content,
     author: author ?? owner ?? "system",
+    ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     logDetails: ({ updatedSlugs }) =>
       `query answer saved as ${slug} · linked ${updatedSlugs.length} related page(s)`,
   });

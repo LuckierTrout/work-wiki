@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
@@ -9,6 +10,11 @@ import type {
   ActionItemPriority,
   ActionItemStatus,
 } from "@/lib/action-items";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const TABS: Array<{ value: ActionItemStatus | "all"; label: string }> = [
   { value: "inbox", label: "Proposed" },
@@ -51,12 +57,23 @@ const editControlStyle: CSSProperties = {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
 export function ActionInbox() {
+  const { hrefForSlug } = useSlugTenants();
   const [items, setItems] = useState<ActionItem[]>([]);
   const [tab, setTab] = useState<ActionItemStatus | "all">("inbox");
   const [loading, setLoading] = useState(true);
@@ -100,7 +117,14 @@ export function ActionInbox() {
       setItems((current) => current.map((item) => item.id === id ? data.item : item));
       return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be updated.");
+      // NOTHING CAME BACK (DW-717), so the PATCH may have landed in full and
+      // the row on screen is the stale one. `load` clears `error` on its way
+      // in, so the refetch runs BEFORE the sentence is set rather than wiping
+      // it — and the owner is told the outcome is unknown, never that the
+      // update failed.
+      const { message, unconfirmed } = writeFailure(reason, "update the task");
+      if (unconfirmed) await load();
+      setError(message);
       return false;
     }
   }
@@ -140,7 +164,13 @@ export function ActionInbox() {
       });
       setRememberNotice(`Saved as a ${rememberKind}. Add aliases anytime in Settings.`);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Couldn’t remember this owner.";
+      // No refetch here, and nothing to refetch: this surface renders no part
+      // of Names & Terms, so an unknown outcome has no stale render of its own
+      // to correct. What it does get is the honest sentence rather than
+      // "Couldn’t remember this owner." for a write that may have landed. The
+      // already-known branch still reads the ROUTE's message, which
+      // `writeFailure` relays unchanged on a stated refusal.
+      const { message } = writeFailure(reason, "remember this owner");
       setRememberNotice(
         /already assigned/i.test(message)
           ? "This owner is already recognized in Names & Terms."
@@ -183,7 +213,11 @@ export function ActionInbox() {
       setNewTitle("");
       setTab("inbox");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be added.");
+      // The POST may have created the task; the list on screen would not show
+      // it. See `update` for why the refetch precedes the sentence.
+      const { message, unconfirmed } = writeFailure(reason, "add the task");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setAdding(false);
     }
@@ -195,7 +229,11 @@ export function ActionInbox() {
       await request(`/api/action-items/${id}`, { method: "DELETE" });
       setItems((current) => current.filter((item) => item.id !== id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be deleted.");
+      // The DELETE may have landed, leaving a row on screen that is gone from
+      // the store — pressing Delete on it again is not the owner's next move.
+      const { message, unconfirmed } = writeFailure(reason, "delete the task");
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 
@@ -208,13 +246,13 @@ export function ActionInbox() {
   const proposed = scopedItems.filter((item) => item.status === "inbox").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 48, paddingBottom: 88 }}>
       <p className="fmark" style={{ marginBottom: 16 }}>private action ledger</p>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <h1 className="display" style={{ fontSize: "clamp(34px,4.4vw,56px)", margin: 0 }}>Your task inbox.</h1>
           <p style={{ color: "var(--ink-2)", fontSize: 17, margin: "10px 0 0", maxWidth: "58ch" }}>
-            WorkWiki proposes actions from new material. Nothing becomes active until you accept it.
+            work-wiki proposes actions from new material. Nothing becomes active until you accept it.
           </p>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -382,7 +420,24 @@ export function ActionInbox() {
                         {item.assignee && <span className="receipt" style={{ fontSize: 10.5 }}>owner · {item.assignee}</span>}
                         {item.dueDate && <span className="receipt" style={{ fontSize: 10.5 }}>due · {item.dueDate}</span>}
                         {typeof item.confidence === "number" && <span className="receipt" style={{ fontSize: 10.5 }}>{Math.round(item.confidence * 100)}% confidence</span>}
-                        {item.sourceSlug && <Link href={`/wiki/${item.sourceSlug}`} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
+                        {/* A cascade-deleted Source keeps its SLUG but loses
+                            its anchor (DW-593). `sourceMissing` is set by
+                            `markSourceMissing` when the cited page is gone, and
+                            this row used to link to it regardless — offering a
+                            live route into a page that no longer exists. The
+                            slug still shows, because the owner needs to know
+                            WHICH source went away to judge the to-do, and a
+                            vanished chip would read as "this cited nothing".
+                            The wording is `TodosCanvas`'s, so the two Todo
+                            surfaces say one thing about one state. */}
+                        {item.sourceSlug && (item.sourceMissing ? (
+                          <>
+                            <span className="receipt" style={{ fontSize: 10.5 }}>source · {item.sourceSlug}</span>
+                            <span className="receipt" style={{ fontSize: 10.5, color: "var(--rust)" }}>Source missing</span>
+                          </>
+                        ) : (
+                          <Link href={hrefForSlug(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>
+                        ))}
                       </div>
                     </div>
                     <div className="row" style={{ gap: 6, alignSelf: "start", flexWrap: "wrap", justifyContent: "end" }}>
@@ -399,6 +454,6 @@ export function ActionInbox() {
           })}
         </div>
       )}
-    </main>
+    </div>
   );
 }

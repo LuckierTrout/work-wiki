@@ -6,11 +6,26 @@ import type {
   IntegrationOutboxEvent,
   IntegrationSettings,
 } from "@/lib/integration-outbox";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -61,7 +76,16 @@ export function IntegrationDesk() {
       });
       setNotice("Integration settings saved. Newly accepted actions will enter the enabled outboxes.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save integration settings.");
+      // NOTHING CAME BACK (DW-717): the PUT may have been applied, so the
+      // fields on screen are the owner's draft rather than what is stored.
+      // `load` clears `error` on its way in, so the refetch runs BEFORE the
+      // sentence is set rather than wiping it.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "save the integration settings",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setSaving(false);
     }
@@ -74,7 +98,11 @@ export function IntegrationDesk() {
       setEvents((current) => current.map((event) => event.id === id ? data.event : event));
       setNotice("Delivery queued for retry.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not retry this delivery.");
+      // The retry may already be queued, and this row would still read
+      // `failed`. See `save` for why the refetch precedes the sentence.
+      const { message, unconfirmed } = writeFailure(reason, "retry this delivery");
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 
@@ -82,7 +110,7 @@ export function IntegrationDesk() {
   const failed = events.filter((event) => event.status === "failed").length;
 
   return (
-    <main className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
+    <div className="shell paper-route fade" style={{ paddingTop: 46, paddingBottom: 92 }}>
       <div className="spread" style={{ gap: 24, alignItems: "end" }}>
         <div>
           <p className="fmark" style={{ marginBottom: 16 }}>dispatch desk</p>
@@ -153,7 +181,7 @@ export function IntegrationDesk() {
           </article>
         ))}
       </section>
-    </main>
+    </div>
   );
 }
 

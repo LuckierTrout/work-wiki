@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { LintClient } from "./LintClient";
 
 /**
@@ -10,7 +10,7 @@ import { LintClient } from "./LintClient";
  */
 export default async function LintPage() {
   const principal = await getPrincipal();
-  if (!isOwnerHandle(principal?.handle)) {
+  if (!isOwnerPrincipal(principal)) {
     notFound();
   }
   return <LintClient />;

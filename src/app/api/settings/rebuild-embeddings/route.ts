@@ -2,18 +2,22 @@ import { NextResponse } from "next/server";
 import { rebuildVectorStore } from "@/lib/embeddings";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 
 export async function POST() {
   const principal = await getPrincipal();
-  if (!isOwnerHandle(principal?.handle)) {
+  if (!isOwnerPrincipal(principal)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   if (isReadOnly()) {
     return NextResponse.json(
-      { error: "Rebuilding embeddings is disabled in read-only mode." },
+      // Its OWN sentence, not the settings save's (DW-387): a rebuild edits no
+      // field, and the Rebuild button now describes the character-identical
+      // `EMBEDDING_REBUILD_READ_ONLY_COPY` rather than the form's.
+      { error: READ_ONLY_REFUSAL.embeddingRebuild },
       { status: 403 },
     );
   }

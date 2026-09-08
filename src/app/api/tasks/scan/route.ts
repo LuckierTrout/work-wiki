@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   scanForMaintenance,
   rebuildDerivedIndexes,
   purgeStaleJobs,
+  sweepOrphanWikiDirs,
+  reconcileWikiScenarios,
+  backfillWorkspaceProfiles,
+  rekeyForkedAssets,
+  reapStrandedScratchFiles,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -19,21 +26,82 @@ import {
 } from "@/lib/monitor-digests";
 import { listDueOutboxEvents } from "@/lib/integration-outbox";
 import { isOwnerBackupDue } from "@/lib/backups";
+import { getOwnerHandle } from "@/lib/owner";
 
 /**
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
  *
  * Service-token only (the sole caller is the task-consumer worker's cron). Scans
- * the wiki for maintenance work and enqueues `maintain` tasks. Gated by the
- * `AUTONOMOUS_MAINTENANCE` env: anything other than `"on"` means **dry-run** —
- * the scan still runs and logs/returns what it WOULD enqueue, but enqueues
- * nothing. `?dry=1` forces a dry-run regardless (for inspection). `?cap=N`
- * overrides the per-scan task cap.
+ * the wiki for maintenance work and enqueues `maintain` tasks.
+ *
+ * `AUTONOMOUS_MAINTENANCE` GATES PAGE AUTO-EDITS, NOT THE WHOLE RUN. Anything
+ * other than `"on"` means **dry-run** for the `maintain` queue — the scan still
+ * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
+ * is all `dry: true` in the response means. It does NOT mean the request
+ * changed nothing: the index rebuild, the ingest-job GC, the orphan
+ * wiki-directory sweep, the stranded-scratch reap, the wiki scenario-drift
+ * reconcile, the Workspace Purpose backfill and the forked-asset re-key are
+ * self-healing upkeep and one-time migration rather than unattended content
+ * edits, so THE FLAG does not hold any of them back — nor the scheduled-agent,
+ * source-monitor, digest, outbox and backup blocks. A default-flag deployment
+ * still heals its indexes and collects its garbage on every cron tick.
+ *
+ * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH, and it is the ONLY thing that
+ * holds those blocks back: every one of them — the index rebuild and the
+ * ingest-job GC included (DW-134) — is gated on `forceDry`, as is the enqueue.
+ * That is what makes it safe to point at a live deployment to see what a scan
+ * would do: a `?dry=1` pass writes no bytes at all, and reports the counts it
+ * did not earn as their empty values (`indexRebuild: {}`, `jobsPurged: 0`).
+ * `?cap=N` overrides the per-scan task cap.
+ *
+ * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
+ * deleted), `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
+ * no registry entry named, reclaimed for good — this route is that sweep's only
+ * scheduled trigger), `scratchFilesReaped` (`.tmp-<uuid>.tmp` files a dead
+ * process stranded in the data directory, invisible to every listing and
+ * reclaimed by nothing else — DW-292, and this route is that reaper's only
+ * trigger), `wikiScenariosReconciled` (registry entries whose `scenario` label
+ * disagreed with their own `purpose.md`/`schema.md` and were relabelled to
+ * match the artifacts — the divergence a re-template leaves when its
+ * `wikis.json` write lands and its artifact writes are rolled back, DW-676, and
+ * this route is that repair's only trigger of any kind) and
+ * `workspaceProfilesBackfilled` (Wikis handed a copy of
+ * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
+ * this route is that migration's only trigger of any kind, and the count is 0
+ * on every scan of a tenant that has nothing left to relocate) and
+ * `forkedAssetsRekeyed` (image assets a realm fork left under the pre-fork
+ * page's `assets/<slug>/` directory, moved onto the forked page's own slug so
+ * `/api/assets/[...path]` gates them on the right page — DW-738, this route is
+ * that migration's only trigger, and the count is 0 once nothing is mis-keyed).
  */
 export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
   if (!principal) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Deployment read-only (DW-314). After the service-principal 401 and before
+  // `scanForMaintenance`, because this scan writes bytes ON A TIMER: the index
+  // rebuild and the ingest-job GC run on every pass the cron makes (the cron
+  // never sends `?dry=1`), the orphan sweep DELETES wiki directories, and the
+  // DW-137 backfill relocates workspace profiles. None of those reach a kernel
+  // writer, so nothing behind this handler would have refused.
+  //
+  // REFUSES WHOLE rather than degrading to `dry`. `?dry=1` is the documented
+  // inspection switch and its 200 says "here is what a scan would do"; a
+  // read-only deployment answering that shape would report a scan that never
+  // ran, and `AUTONOMOUS_MAINTENANCE` semantics stay exactly as documented
+  // above. `POST /api/tasks/run` refuses the same way, but consumer ack/retry
+  // semantics do not apply to this door at all: it is never queue-delivered.
+  // The consumer's `scheduled()` cron POSTs it and logs the status plus the
+  // first 400 chars of the body, so there is no ack, no retry and no DLQ
+  // decision to make here — and an external monitor can match either the
+  // non-2xx status or the refusal sentence itself in the log stream.
+  if (isReadOnly()) {
+    return NextResponse.json(
+      { error: READ_ONLY_REFUSAL.maintenanceScan },
+      { status: 403 },
+    );
   }
 
   try {
@@ -53,11 +121,26 @@ export async function POST(req: Request) {
 
     // Self-heal the precomputed KV indexes (Phase 2) once per scan run. This is
     // read-derived and idempotent — it never edits pages or enqueues tasks — so
-    // it runs even in dry-run mode. Fully fail-soft (each rebuild is isolated).
-    const indexRebuild = await rebuildDerivedIndexes();
+    // `AUTONOMOUS_MAINTENANCE` does not hold it back and a default-flag
+    // deployment keeps healing its indexes. Gated on `forceDry` rather than
+    // `dry` for exactly that reason (DW-134): it WRITES the index files, so
+    // `?dry=1` — the documented inspection switch — has to suppress it, and
+    // reports the rebuild it did not run as the empty summary. Fully fail-soft
+    // (each rebuild is isolated).
+    let indexRebuild: Awaited<ReturnType<typeof rebuildDerivedIndexes>> = {};
+    if (!forceDry) {
+      indexRebuild = await rebuildDerivedIndexes();
+    }
 
-    // Purge stale ingest-job status files (fail-soft, like the index rebuild).
-    const jobsPurged = await purgeStaleJobs();
+    // Purge stale ingest-job status files. Gated exactly like the index rebuild
+    // above and for the same reasons (DW-134): it DELETES status files, so
+    // `?dry=1` suppresses it and the count reports 0, while
+    // `AUTONOMOUS_MAINTENANCE` — which gates unattended EDITS of page content —
+    // does not. Fail-soft, like the rebuild.
+    let jobsPurged = 0;
+    if (!forceDry) {
+      jobsPurged = await purgeStaleJobs();
+    }
 
     let enqueued = 0;
     if (!dry) {
@@ -136,16 +219,78 @@ export async function POST(req: Request) {
       }
     }
 
-    const backupOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim();
+    // The site owner, read through the ONE helper that reads
+    // `NEXT_PUBLIC_OWNER_HANDLE` (DW-157). `getOwnerHandle()` returns the
+    // trimmed handle or `null` where this used to yield `undefined`; every use
+    // below is truthiness-guarded, so the substitution is behavior-identical.
+    const backupOwner = getOwnerHandle();
     const backupDue = backupOwner ? await isOwnerBackupDue(backupOwner) : false;
     let backupEnqueued = false;
     if (!forceDry && backupOwner && backupDue) {
       backupEnqueued = await enqueueTask({ kind: "create-backup", owner: backupOwner });
     }
 
+    // Reclaim `wikis/<uuid>/` directories no registry entry names. Byte
+    // removal, so it is gated like the scheduled-agent/monitor/backup blocks
+    // above — skipped only under `?dry=1` inspection, and NOT held back by
+    // `AUTONOMOUS_MAINTENANCE`, which gates auto-EDITS of pages rather than GC.
+    // This is the only scheduled trigger the sweep has: `deleteWiki` is its
+    // other caller, and a tenant that never deletes never reclaims anything.
+    let orphanWikiDirsRemoved = 0;
+    if (!forceDry) {
+      orphanWikiDirsRemoved = await sweepOrphanWikiDirs();
+    }
+
+    // Reclaim `.tmp-<uuid>.tmp` scratch files a dead process left behind
+    // (DW-292). Gated exactly like the sweep above and for the same reasons: it
+    // removes bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE`
+    // — which gates unattended EDITS of page content — does not. This is the
+    // reaper's only trigger of any kind: the stranded files are hidden from
+    // `listFiles`, so nothing else in the app will ever see them again.
+    let scratchFilesReaped = 0;
+    if (!forceDry) {
+      scratchFilesReaped = await reapStrandedScratchFiles();
+    }
+
+    // Relabel registry entries whose `scenario` disagrees with their own
+    // purpose.md/schema.md (DW-676) — the divergence a re-template leaves when
+    // its `wikis.json` write lands and its artifact writes are rolled back.
+    // Gated exactly like the sweep above and for the same reasons: it writes
+    // bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE` — which
+    // gates unattended EDITS of page content — does not. This is the repair's
+    // only trigger of any kind, so a deployment that never scans keeps a
+    // switcher label its artifacts contradict.
+    let wikiScenariosReconciled = 0;
+    if (!forceDry) {
+      wikiScenariosReconciled = await reconcileWikiScenarios();
+    }
+
+    // Relocate the retired tenant-global Workspace Purpose onto the Wikis that
+    // have none of their own, then delete it (DW-137). Gated exactly like the
+    // sweep above and for the same reasons: it writes bytes, so `?dry=1`
+    // suppresses it, while `AUTONOMOUS_MAINTENANCE` — which gates unattended
+    // EDITS of page content — does not. This scan is the migration's only
+    // trigger, so a deployment that never scans never finishes migrating.
+    let workspaceProfilesBackfilled = 0;
+    if (!forceDry) {
+      workspaceProfilesBackfilled = await backfillWorkspaceProfiles();
+    }
+
+    // Move an already-forked page's image assets onto its own slug (DW-738) —
+    // the directory `ingestImage` keyed before `ingest()` uniquified the slug,
+    // where `/api/assets/[...path]` gates them on the OTHER page's visibility.
+    // Gated exactly like the sweep above and for the same reasons: it writes
+    // bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE` — which
+    // gates unattended EDITS of page content — does not. This scan is the
+    // migration's only trigger, so a deployment that never scans never repairs.
+    let forkedAssetsRekeyed = 0;
+    if (!forceDry) {
+      forkedAssetsRekeyed = await rekeyForkedAssets();
+    }
+
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} wikiScenariosReconciled=${wikiScenariosReconciled} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled} forkedAssetsRekeyed=${forkedAssetsRekeyed}`,
     );
 
     return NextResponse.json({
@@ -168,13 +313,17 @@ export async function POST(req: Request) {
       backupOwnerConfigured: Boolean(backupOwner),
       backupDue,
       backupEnqueued,
+      orphanWikiDirsRemoved,
+      wikiScenariosReconciled,
+      scratchFilesReaped,
+      workspaceProfilesBackfilled,
+      forkedAssetsRekeyed,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"
           ? {
               op: t.op,
               slug: t.slug,
-              ...(t.threadIndex !== undefined ? { threadIndex: t.threadIndex } : {}),
               ...(t.lintType !== undefined ? { lintType: t.lintType } : {}),
               ...(t.targetSlug !== undefined ? { targetSlug: t.targetSlug } : {}),
             }

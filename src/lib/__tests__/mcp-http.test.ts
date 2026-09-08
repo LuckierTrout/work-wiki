@@ -1,7 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+
+/**
+ * Spy — NOT stub — on the lint-fix dispatcher: the factory spreads
+ * `importOriginal`, so every tool below still runs the real implementation.
+ * The wrapper exists for the `fix_lint_issue` gate rows (DW-348), which have to
+ * tell "the door refused" from "the dispatcher refused". The two answer with
+ * the SAME sentence — `autoFixRefusal` owns it and both read from it — so the
+ * call record is the only thing that separates them.
+ */
+vi.mock("../lint-fix", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lint-fix")>();
+  return { ...actual, fixLintIssue: vi.fn(actual.fixLintIssue) };
+});
+
 import {
   dispatchMcp,
   MCP_TOOLS,
@@ -10,13 +24,23 @@ import {
   MCP_SERVER_INFO,
   _internal,
 } from "../mcp-http";
-import { ensureDirectories, writeWikiPage } from "../wiki";
-import { saveRevision } from "../revisions";
+import {
+  ensureDirectories,
+  readWikiPage,
+  readWikiPageWithFrontmatter,
+  writeWikiPage,
+} from "../wiki";
+import { listRevisions, readRevision, saveRevision } from "../revisions";
 import { _resetStorage } from "../storage";
 import { createVault, vaultSlugs } from "../vault";
-import { registerAgent } from "../agents";
+import { agentIdFor, getAgent, registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
+import { WRITE_DENIAL_REALM } from "../write-denial";
+import { autoFixRefusal, fixLintIssue } from "../lint-fix";
+import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
+
+const spiedFixLintIssue = vi.mocked(fixLintIssue);
 
 const ALICE: Principal = { id: "agent:a--yoyo", handle: "alice" };
 const BOB: Principal = { id: "user:bob", handle: "bob" };
@@ -92,8 +116,6 @@ describe("dispatchMcp — tools/list", () => {
     expect(names).toContain("wiki_graph");
     expect(names).toContain("activity_trail");
     expect(names).toContain("ingest_history");
-    expect(names).toContain("list_contributors");
-    expect(names).toContain("get_contributor");
     expect(names).toContain("delete_agent");
     expect(names).toContain("vault_delete");
     expect(names).toContain("vault_rename");
@@ -108,6 +130,841 @@ describe("dispatchMcp — tools/list", () => {
       expect(t).not.toHaveProperty("write");
       expect(t).not.toHaveProperty("run");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP ↔ stdio parity
+// ---------------------------------------------------------------------------
+// `mcp-http.ts`'s header promises "full parity with the stdio MCP server", but
+// the two tool sets are maintained by hand in separate files (`MCP_TOOLS` here,
+// `server.registerTool` calls in `src/mcp.ts`). The existing guards only compare
+// `mcp.json` against the stdio registrations and grep a prose count, so a tool
+// added or retired on one side alone slipped through. Pin the two directly.
+describe("MCP_TOOLS ↔ stdio registration parity", () => {
+  it("exposes exactly the tools createMcpServer() registers", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // _registeredTools is private in TypeScript but accessible at runtime —
+    // same idiom as mcp-annotations.test.ts / the mcp.json manifest-sync test.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stdioNames = Object.keys((server as any)._registeredTools);
+    const httpNames = MCP_TOOLS.map((t) => t.name);
+
+    const stdioSet = new Set(stdioNames);
+    const httpSet = new Set(httpNames);
+
+    const missingFromHttp = stdioNames.filter((n) => !httpSet.has(n));
+    const extraInHttp = httpNames.filter((n) => !stdioSet.has(n));
+
+    expect(
+      missingFromHttp,
+      `stdio registers tools the HTTP endpoint does not expose: ${missingFromHttp.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      extraInHttp,
+      `HTTP endpoint exposes tools the stdio server does not register: ${extraInHttp.join(", ")}`,
+    ).toEqual([]);
+
+    // No duplicate descriptors on the HTTP side (the first would win silently).
+    expect(httpNames.length).toBe(httpSet.size);
+    expect([...httpNames].sort()).toEqual([...stdioNames].sort());
+  });
+
+  // The door's argument gate (DW-563) reads `required` and `properties` off
+  // these same schemas, so a `required` name with no matching property would
+  // make a tool permanently uncallable — every request refused for a field the
+  // caller cannot supply, because nothing advertises it. Cheap to typo, and
+  // invisible until an agent hits it, so pin the shape rather than the tools.
+  //
+  // Element-level `required` needs the same guard for the same reason (DW-672):
+  // it is now ENFORCED, so a stale or mistyped name in `sections.items.required`
+  // refuses every well-formed call to that tool with
+  // `Missing required field: sections[0].titel` — a field no caller can supply
+  // because nothing advertises it. The element-contract parity row below cannot
+  // see this: it iterates `Object.keys(members)`, so a `required` entry with no
+  // matching member is never visited there. Hence the descent here.
+  it("declares every `required` name as a property, at the top level and in object array elements", () => {
+    const broken: string[] = [];
+    // One reading applied to a schema and, where it declares object array
+    // elements, to those `items` schemas too — the shape of the gate itself.
+    const walk = (
+      schema: { required?: unknown; properties?: Record<string, unknown> },
+      path: string,
+    ) => {
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      const properties = schema.properties ?? {};
+      for (const name of required) {
+        if (!Object.prototype.hasOwnProperty.call(properties, name as string)) {
+          broken.push(`${path}.${String(name)}`);
+        }
+      }
+      for (const [name, declaration] of Object.entries(properties)) {
+        const decl = declaration as { type?: unknown; items?: unknown };
+        if (decl.type !== "array") continue;
+        const items = decl.items as
+          | { type?: unknown; required?: unknown; properties?: Record<string, unknown> }
+          | undefined;
+        if (!items || items.type !== "object") continue;
+        walk(items, `${path}.${name}[]`);
+      }
+    };
+
+    for (const tool of MCP_TOOLS) {
+      walk(
+        tool.inputSchema as { required?: unknown; properties?: Record<string, unknown> },
+        tool.name,
+      );
+    }
+
+    expect(
+      broken,
+      `required names with no declared property: ${broken.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  // The gate can only decide a declared type `jsonType` can return, and it
+  // SKIPS anything else rather than refusing — the safe direction, because
+  // comparing against a type `jsonType` never returns (`"integer"`, or a union
+  // like `["string","null"]`) would refuse every value for that field and make
+  // the tool permanently uncallable. Skipping is silent, though, so a schema
+  // edit could quietly drop a field out of the gate with nothing to show for
+  // it. This is what makes that visible: today every declared type is one the
+  // gate decides, and a future `"integer"` has to come here and say so.
+  //
+  // The descent into `items.properties` matters as much as the top level
+  // (DW-672). Re-declaring `dataview_query.filters.items.properties.value` as
+  // `type: "integer"` drops that member out of the gate silently — the stdio
+  // door still refuses a mistyped `value` at `z.string().optional()` while this
+  // one waves it through, which is the transport-dependent tool this change set
+  // out to eliminate. Every other row in this file stays green through that
+  // edit; this is the one that sees it.
+  it("declares only types the argument gate can decide, in elements as well as at the top level", () => {
+    const decidable = new Set(["string", "number", "boolean", "object", "array"]);
+    const primitives = new Set(["string", "number", "boolean"]);
+    const undecidable: string[] = [];
+
+    const walk = (properties: Record<string, unknown>, path: string) => {
+      for (const [name, declaration] of Object.entries(properties)) {
+        const decl = declaration as { type?: unknown; items?: unknown };
+        if (!decidable.has(decl.type as string)) {
+          undecidable.push(`${path}.${name}: ${JSON.stringify(decl.type)}`);
+          continue;
+        }
+        if (decl.type !== "array") continue;
+        const items = decl.items as
+          | { type?: unknown; properties?: Record<string, unknown> }
+          | undefined;
+        const itemType = items?.type;
+        // `"object"` is decided too (DW-672): the element is read against the
+        // `items` schema's own `required` list and property types, so those
+        // MEMBERS have to be decidable as well — recurse. Anything OTHER than
+        // an object or a primitive is an element type nothing decides and
+        // nothing meant to skip.
+        if (itemType === "object") {
+          walk(items?.properties ?? {}, `${path}.${name}[]`);
+          continue;
+        }
+        if (!primitives.has(itemType as string)) {
+          undecidable.push(`${path}.${name}[]: ${JSON.stringify(itemType)}`);
+        }
+      }
+    };
+
+    for (const tool of MCP_TOOLS) {
+      walk(
+        (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {},
+        tool.name,
+      );
+    }
+
+    expect(
+      undecidable,
+      `declared types the gate silently skips: ${undecidable.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  // Matching names is not parity on its own: `ToolDef.write` is what gates the
+  // HTTP side (auth requirement in `dispatchMcp`, the vault-filing suffix on
+  // write-tool descriptions), and its stdio counterpart is
+  // `annotations.readOnlyHint`. A tool whose two flags disagree passes the
+  // name check above while behaving differently on each transport.
+  it("agrees with the stdio readOnlyHint annotation on every tool's write flag", async () => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (server as any)._registeredTools as Record<
+      string,
+      { annotations?: { readOnlyHint?: boolean } }
+    >;
+
+    const disagreements = MCP_TOOLS.filter((t) => {
+      const readOnlyHint = registered[t.name]?.annotations?.readOnlyHint;
+      // An absent hint is its own drift — every tool declares one today.
+      return readOnlyHint === undefined || t.write === readOnlyHint;
+    }).map(
+      (t) =>
+        `${t.name} (write: ${t.write}, readOnlyHint: ${registered[t.name]?.annotations?.readOnlyHint})`,
+    );
+
+    expect(
+      disagreements,
+      `write flag disagrees with the stdio readOnlyHint annotation: ${disagreements.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  // -- Field-level schema parity (DW-673) -----------------------------------
+  //
+  // The rows above compare tool NAMES, the write flag, and whether a `required`
+  // name is decidable at all. None of them looks inside a tool: a field the HTTP
+  // schema lists in `required` while the stdio zod says `.optional()`, or one
+  // declared `type: "number"` against a `z.string()`, would refuse every real
+  // call to that tool at ONE door while the other answered normally — a
+  // transport-dependent tool, and nothing on disk could see it.
+  //
+  // HOW THEY ASK. The stdio side is read through `entry.inputSchema.shape ??
+  // entry.inputSchema` (the idiom in `mcp.test.ts`), and every question is
+  // BEHAVIOURAL — `safeParse` and nothing else. No zod class name, no wrapper
+  // check, no `_def`: "is this field required" is `safeParse(undefined).success
+  // === false`, and "does it agree with `type: "string"`" is "accepts `"x"`,
+  // rejects `7`/`true`/`[]`/`{}`". A zod major can move its internals without
+  // moving any of that.
+  //
+  // WHY EVERY WAIVER IS WRITTEN DOWN. Some HTTP↔stdio asymmetry is legitimate and
+  // permanent — the HTTP door supplies the caller's identity from the
+  // authenticated principal, so it does not advertise the fields that carry it.
+  // A row that simply tolerated the FAMILY would also tolerate a real drift that
+  // happened to look like one.
+  //
+  // Two SHAPES of waiver, and they are honestly different. Most are closed lists
+  // of `tool.field` pairs (`PRINCIPAL_DERIVED_FIELDS`, `UNADVERTISED_STDIO_FIELDS`,
+  // `REQUIRED_ASYMMETRY_FIELDS`, `ENUM_NARROWED_FIELDS`, `OBJECT_ARRAY_FIELDS`),
+  // each with a minimality assertion: an entry that stops naming a real asymmetry
+  // fails the suite (the house pattern in AGENTS.md). `PRINCIPAL_DERIVED_NAMES` is
+  // NOT a closed list — the predicate is `includes(name)` and matches the name on
+  // ANY tool. That is deliberate and it is a RULE, not a tolerance: `attributed()`
+  // stamps `owner`/`author`/`triggeredBy` over whatever arrived, and
+  // `fileIntoVault` owns `vaultId`, so there is no HTTP path on which a
+  // caller-supplied value of one of these names is honoured. Enumerating the ~35
+  // pairs it currently covers would be a list nobody could read and every schema
+  // edit would have to touch. What keeps the rule honest instead is a member pin
+  // (each house name must still be one-sided on at least one tool) plus a COUNT
+  // FLOOR on how many pairs it waives — so the rule cannot quietly stop matching
+  // anything, or shrink to a fraction of the surface, without a row going red.
+  //
+  // If a row goes red for a field that is not covered, the fix is at one of the
+  // two doors — which one is a product decision, not a wider waiver.
+
+  /** One accepted value per decidable JSON Schema `type`. */
+  const TYPE_SAMPLES: Record<string, unknown> = {
+    string: "x",
+    number: 7,
+    boolean: true,
+    array: [],
+    object: {},
+  };
+
+  /**
+   * Names the HTTP door fills in from the authenticated principal.
+   *
+   * `attributed()` stamps `owner`/`author`/`triggeredBy` onto every write, `run`
+   * resolves `vaultId` from the target vault, and each of these is `.optional()`
+   * on the stdio side because a stdio caller has no principal to be read from.
+   * Advertising them here would invite an agent to claim someone else's identity
+   * and have it silently overridden. They still reach the handlers as undeclared
+   * keys, which the gate passes through.
+   *
+   * A RULE, not a closed list — see the header comment. `PRINCIPAL_DERIVED_FLOOR`
+   * is what stops the rule going vacuous: the count of `tool.field` pairs it
+   * waives today, asserted as a floor rather than an equality so that adding a
+   * write tool does not have to edit this number, while the rule silently
+   * matching nothing (or a handful) does go red.
+   */
+  const PRINCIPAL_DERIVED_NAMES = ["owner", "author", "triggeredBy", "vaultId"];
+  const PRINCIPAL_DERIVED_FLOOR = 30;
+
+  /** The same rule where the name is tool-specific rather than a house name. */
+  const PRINCIPAL_DERIVED_FIELDS = [
+    // `update_agent`'s `run` derives the id from `p.handle` via `agentIdFor` and
+    // then verifies ownership, so an HTTP caller cannot name another agent.
+    "update_agent.agent_id",
+  ];
+
+  /**
+   * Stdio-only fields the HTTP door simply does not advertise.
+   *
+   * Both are optional on the stdio side and neither is derived from anything:
+   * the HTTP schema just never grew them. No caller is refused — an undeclared
+   * key passes the gate and reaches the handler — so this is a documentation
+   * gap, not a behavioural one, and widening the HTTP schema is a product change
+   * rather than something a parity row should force.
+   */
+  const UNADVERTISED_STDIO_FIELDS = ["ingest_text.sourceUrl", "ingest_text.sourceType"];
+
+  /**
+   * Fields both doors declare where required-ness legitimately differs.
+   *
+   * Both are `owner` on a READ tool: the stdio door requires it because there is
+   * no principal to infer it from, while the HTTP door declares it optional and
+   * overrides it from the principal. Only this direction is waivable — a field
+   * the HTTP door REQUIRES and the stdio door does not would refuse HTTP calls
+   * the stdio door accepts, which is drift in the harmful direction.
+   */
+  const REQUIRED_ASYMMETRY_FIELDS = ["list_vaults.owner", "vault_pages.owner"];
+
+  /**
+   * Shared fields the HTTP door declares `type: "string"` and the stdio door
+   * narrows to a `z.enum`, mapped to one member it accepts.
+   *
+   * A narrowing is not a disagreement: every value the stdio door takes is a
+   * string, so the HTTP `type` is true, just less specific. It is written down
+   * because it is INDISTINGUISHABLE by `safeParse` from a field that refuses
+   * strings outright — hence the member, which proves the field still accepts
+   * one. The HTTP gate must not learn to enforce `enum`; the handlers (and
+   * `autoFixRefusal`) answer for bad members in better sentences.
+   *
+   * WHERE THE MEMBERS COME FROM, and it differs across the six. `fix_lint_issue`
+   * declares `enum: [...AUTO_FIXABLE_CHECK_TYPES]` on the HTTP side, so its
+   * members are machine-readable and the row below probes EVERY one of them —
+   * anything the HTTP door advertises has to be callable at the other. The other
+   * five advertise their members only inside a `description` string
+   * (`"Sort direction: asc | desc"`), so there is nothing to enumerate from and
+   * the single member below is all there is to probe. That is the reason this is
+   * a name→member map and not a name→members one.
+   */
+  const ENUM_NARROWED_FIELDS: Record<string, string> = {
+    "list_pages.sort": "title",
+    "query_wiki.format": "prose",
+    "save_query_answer.format": "markdown",
+    "lint_wiki.minSeverity": "error",
+    "fix_lint_issue.type": AUTO_FIXABLE_CHECK_TYPES[0],
+    "dataview_query.sortOrder": "asc",
+  };
+
+  /**
+   * The same narrowing, one nesting level down: a PRIMITIVE array whose elements
+   * the stdio door narrows to a `z.enum`.
+   *
+   * `lint_wiki.checks` is `items: { type: "string" }` here and
+   * `z.array(z.enum(ALL_CHECK_TYPES))` there. This entry exists because the
+   * element comparison found it — it was invisible while the type row only
+   * probed `[]`, which every `z.array(...)` accepts. It is the SAME family as
+   * `ENUM_NARROWED_FIELDS` (HTTP declares `string`, stdio narrows to an enum of
+   * strings), not a new kind of asymmetry and not a live disagreement, so it gets
+   * a sibling list with the same discipline rather than being folded into the
+   * top-level one — the two are read at different depths and must stay
+   * separately minimal.
+   */
+  const ENUM_NARROWED_ELEMENTS: Record<string, string> = {
+    "lint_wiki.checks": ALL_CHECK_TYPES[0],
+  };
+
+  /** The `items: { type: "object" }` fields whose ELEMENT contract is compared. */
+  const OBJECT_ARRAY_FIELDS = [
+    "seed_agent.sections",
+    "update_agent.addPages",
+    "dataview_query.filters",
+  ];
+
+  type Probe = { safeParse: (value: unknown) => { success: boolean } };
+  type Declaration = { type?: unknown; items?: unknown; enum?: unknown };
+
+  const has = (bag: object, name: string) =>
+    Object.prototype.hasOwnProperty.call(bag, name);
+
+  const httpProperties = (tool: (typeof MCP_TOOLS)[number]): Record<string, Declaration> =>
+    ((tool.inputSchema as { properties?: Record<string, Declaration> }).properties ??
+      {}) as Record<string, Declaration>;
+
+  const httpRequired = (tool: (typeof MCP_TOOLS)[number]): Set<string> => {
+    const declared = (tool.inputSchema as { required?: unknown }).required;
+    return new Set((Array.isArray(declared) ? declared : []).map(String));
+  };
+
+  /**
+   * A stdio shape entry that can actually answer a question, or `null`.
+   *
+   * `registerTool` is handed a plain record of zod schemas, and nothing checks
+   * that every value in it IS one. A field set to a bare object, a string, or a
+   * validator from some other library would otherwise make these rows die on
+   * `undefined.safeParse` / `probe.safeParse is not a function` — a TypeError at
+   * the point of reading, which says nothing about parity. Each row instead
+   * records a named failure and carries on, so one broken field cannot hide the
+   * state of the other forty tools.
+   */
+  const probeOf = (
+    shape: Record<string, Probe> | undefined,
+    name: string,
+  ): Probe | null => {
+    const candidate = shape?.[name] as Probe | undefined;
+    return typeof candidate?.safeParse === "function" ? candidate : null;
+  };
+
+  /** The enumerated tool by name, or `null` when the enumeration is stale. */
+  const toolNamed = (name: string) => MCP_TOOLS.find((t) => t.name === name) ?? null;
+
+  /** Every tool's stdio zod shape, keyed by tool name. */
+  const stdioShapes = async (): Promise<Record<string, Record<string, Probe>>> => {
+    const { createMcpServer } = await import("../../mcp");
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (server as any)._registeredTools as Record<string, any>;
+    const shapes: Record<string, Record<string, Probe>> = {};
+    for (const tool of MCP_TOOLS) {
+      const entry = registered[tool.name];
+      // `.shape` on a `z.object`, the bare record when `registerTool` was handed
+      // one — the same read `mcp.test.ts` uses.
+      shapes[tool.name] = (entry?.inputSchema?.shape ??
+        entry?.inputSchema ??
+        {}) as Record<string, Probe>;
+    }
+    return shapes;
+  };
+
+  it("declares every field at both doors, bar the enumerated one-sided families", async () => {
+    const shapes = await stdioShapes();
+    const httpOnly: string[] = [];
+    const unwaived: string[] = [];
+    // Split by waiver SHAPE, because the two are checked differently: the closed
+    // lists get exact minimality, the house-name rule gets a pin plus a floor.
+    const byHouseRule = new Set<string>();
+    const byClosedList = new Set<string>();
+
+    for (const tool of MCP_TOOLS) {
+      const properties = httpProperties(tool);
+      const shape = shapes[tool.name];
+      // HTTP-only has no waiver at all: the HTTP door advertising a field the
+      // stdio door cannot parse is an outright drift in `tools/list`.
+      for (const name of Object.keys(properties)) {
+        if (!has(shape, name)) httpOnly.push(`${tool.name}.${name}`);
+      }
+      for (const name of Object.keys(shape)) {
+        if (has(properties, name)) continue;
+        const field = `${tool.name}.${name}`;
+        if (PRINCIPAL_DERIVED_NAMES.includes(name)) {
+          byHouseRule.add(field);
+          continue;
+        }
+        if (
+          PRINCIPAL_DERIVED_FIELDS.includes(field) ||
+          UNADVERTISED_STDIO_FIELDS.includes(field)
+        ) {
+          byClosedList.add(field);
+          continue;
+        }
+        unwaived.push(field);
+      }
+    }
+
+    expect(
+      httpOnly,
+      `fields the HTTP door advertises that the stdio door does not accept: ${httpOnly.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      unwaived,
+      `stdio-only fields covered by neither the house-name rule nor a closed list: ${unwaived.join(", ")}`,
+    ).toEqual([]);
+
+    // The closed lists get exact minimality: an entry that no longer names a
+    // real one-sided field has to be deleted.
+    const stale = [...PRINCIPAL_DERIVED_FIELDS, ...UNADVERTISED_STDIO_FIELDS].filter(
+      (field) => !byClosedList.has(field),
+    );
+    expect(
+      stale,
+      `closed-list entries that no longer name a one-sided field: ${stale.join(", ")}`,
+    ).toEqual([]);
+
+    // The house-name RULE gets a member pin plus a count floor instead (see the
+    // header comment). The pin catches a name that stopped being one-sided
+    // anywhere — renamed on the stdio side, or newly advertised at this door.
+    const unmatched = PRINCIPAL_DERIVED_NAMES.filter(
+      (name) => ![...byHouseRule].some((field) => field.endsWith(`.${name}`)),
+    );
+    expect(
+      unmatched,
+      `house names that are no longer one-sided on any tool — the rule has stopped ` +
+        `describing the door: ${unmatched.join(", ")}`,
+    ).toEqual([]);
+    // The floor catches the rule going vacuous or collapsing without any single
+    // name disappearing. A floor, not an equality, so a new write tool does not
+    // have to edit this number.
+    expect(
+      byHouseRule.size,
+      `the house-name rule waives only ${byHouseRule.size} tool.field pairs, below ` +
+        `the floor of ${PRINCIPAL_DERIVED_FLOOR}. Either the principal-derived ` +
+        `fields stopped being stdio-only (a real change to audit at both doors) or ` +
+        `the rule stopped matching them. Waived: [${[...byHouseRule].sort().join(", ")}]`,
+    ).toBeGreaterThanOrEqual(PRINCIPAL_DERIVED_FLOOR);
+  });
+
+  it("agrees on required-ness for every field both doors declare", async () => {
+    const shapes = await stdioShapes();
+    const disagreements: string[] = [];
+    const waived: string[] = [];
+
+    const unreadable: string[] = [];
+
+    for (const tool of MCP_TOOLS) {
+      const properties = httpProperties(tool);
+      const required = httpRequired(tool);
+      const shape = shapes[tool.name];
+      for (const name of Object.keys(properties)) {
+        if (!has(shape, name)) continue; // row above owns one-sided fields
+        const field = `${tool.name}.${name}`;
+        const probe = probeOf(shape, name);
+        if (!probe) {
+          unreadable.push(field);
+          continue;
+        }
+        const atHttp = required.has(name);
+        // The behavioural question, not a wrapper check: does the field accept
+        // an absent value?
+        const atStdio = !probe.safeParse(undefined).success;
+        if (atHttp === atStdio) continue;
+        if (!atHttp && atStdio && PRINCIPAL_DERIVED_NAMES.includes(name)) {
+          waived.push(field);
+          continue;
+        }
+        disagreements.push(
+          `${field} (http ${atHttp ? "required" : "optional"}, stdio ${atStdio ? "required" : "optional"})`,
+        );
+      }
+    }
+
+    expect(
+      unreadable,
+      `stdio shape entries that are not zod schemas: ${unreadable.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      disagreements,
+      `required-ness disagrees between the doors: ${disagreements.join(", ")}`,
+    ).toEqual([]);
+    // Exact set, so this is both the waiver and its own minimality check.
+    expect(
+      waived.sort(),
+      `required-ness waivers no longer match REQUIRED_ASYMMETRY_FIELDS — ` +
+        `waived now: [${waived.sort().join(", ")}], enumerated: ` +
+        `[${[...REQUIRED_ASYMMETRY_FIELDS].sort().join(", ")}]. A field that ` +
+        `disappeared from the left is a stale entry to delete; one that appeared ` +
+        `is a new asymmetry to justify or a real drift to fix at a door.`,
+    ).toEqual([...REQUIRED_ASYMMETRY_FIELDS].sort());
+  });
+
+  it("agrees on declared type for every shared field, narrowing only where enumerated", async () => {
+    const shapes = await stdioShapes();
+    const undecidable: string[] = [];
+    const unreadable: string[] = [];
+    const wrongTypeAccepted: string[] = [];
+    const ownTypeRejected: string[] = [];
+    const elementMismatch: string[] = [];
+    const elementOwnTypeRejected: string[] = [];
+
+    /** The primitive `items.type` this row can compare an element against. */
+    const PRIMITIVE_ITEM_TYPES = ["string", "number", "boolean"];
+
+    for (const tool of MCP_TOOLS) {
+      const properties = httpProperties(tool);
+      const shape = shapes[tool.name];
+      for (const [name, declaration] of Object.entries(properties)) {
+        if (!has(shape, name)) continue;
+        const field = `${tool.name}.${name}`;
+        const declared = declaration.type;
+        if (typeof declared !== "string" || !has(TYPE_SAMPLES, declared)) {
+          undecidable.push(`${field}: ${JSON.stringify(declared)}`);
+          continue;
+        }
+        const probe = probeOf(shape, name);
+        if (!probe) {
+          unreadable.push(field);
+          continue;
+        }
+        if (!probe.safeParse(TYPE_SAMPLES[declared]).success) {
+          ownTypeRejected.push(field);
+        }
+        for (const [type, sample] of Object.entries(TYPE_SAMPLES)) {
+          if (type === declared) continue;
+          if (probe.safeParse(sample).success) {
+            wrongTypeAccepted.push(`${field} declared ${declared}, stdio accepts ${type}`);
+          }
+        }
+
+        // The array ELEMENT type, which the loop above cannot reach:
+        // `TYPE_SAMPLES.array` is `[]`, and EVERY `z.array(...)` accepts an empty
+        // array. So `tags: {items: {type: "string"}}` against a
+        // `z.array(z.number())` passed every assertion above — the same class of
+        // drift DW-673 exists to pin, one nesting level down, and the gate now
+        // refuses primitive elements by index at this door while the stdio door
+        // refused a different set. Object `items` are the next row's; here only
+        // the primitives, probed as a one-element array.
+        if (declared !== "array") continue;
+        const itemType = (declaration.items as Declaration | undefined)?.type;
+        if (typeof itemType !== "string" || !PRIMITIVE_ITEM_TYPES.includes(itemType)) {
+          continue;
+        }
+        // Rejecting the own-type element sample is the ELEMENT-level version of
+        // an enum narrowing, and is enumerated exactly as the top-level ones are
+        // rather than tolerated here.
+        if (!probe.safeParse([TYPE_SAMPLES[itemType]]).success) {
+          elementOwnTypeRejected.push(field);
+        }
+        for (const type of PRIMITIVE_ITEM_TYPES) {
+          if (type === itemType) continue;
+          if (probe.safeParse([TYPE_SAMPLES[type]]).success) {
+            elementMismatch.push(
+              `${field}[] declared ${itemType}, stdio accepts a ${type} element`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(
+      undecidable,
+      `HTTP types this row cannot compare: ${undecidable.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      unreadable,
+      `stdio shape entries that are not zod schemas: ${unreadable.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      wrongTypeAccepted,
+      `stdio accepts a type the HTTP schema does not declare: ${wrongTypeAccepted.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      elementMismatch,
+      `primitive array element types disagree between the doors: ${elementMismatch.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      elementOwnTypeRejected.sort(),
+      `the primitive arrays whose stdio schema rejects their own declared element ` +
+        `type no longer match ENUM_NARROWED_ELEMENTS — rejecting now: ` +
+        `[${elementOwnTypeRejected.sort().join(", ")}], enumerated: ` +
+        `[${Object.keys(ENUM_NARROWED_ELEMENTS).sort().join(", ")}]. A field that ` +
+        `appeared is either a new element-level z.enum narrowing to write down or a ` +
+        `genuine element-type disagreement to fix at a door; one that disappeared ` +
+        `is a stale entry.`,
+    ).toEqual(Object.keys(ENUM_NARROWED_ELEMENTS).sort());
+    // Exact set: a new narrowing has to be written down, and an entry that
+    // stopped narrowing has to be removed.
+    expect(
+      ownTypeRejected.sort(),
+      `the fields whose stdio schema rejects their own HTTP-declared type no ` +
+        `longer match ENUM_NARROWED_FIELDS — rejecting now: ` +
+        `[${ownTypeRejected.sort().join(", ")}], enumerated: ` +
+        `[${Object.keys(ENUM_NARROWED_FIELDS).sort().join(", ")}]. A field that ` +
+        `appeared is either a new z.enum narrowing to write down or a genuine ` +
+        `type disagreement to fix at a door; one that disappeared is a stale entry.`,
+    ).toEqual(Object.keys(ENUM_NARROWED_FIELDS).sort());
+  });
+
+  it("keeps every enumerated narrowing a narrowing — its advertised members still parse", async () => {
+    // Separates "narrowed to an enum" from "refuses strings outright", which the
+    // row above cannot tell apart. Without this, a field that became
+    // uncallable at the stdio door would sit in the enumeration looking fine.
+    //
+    // It also closes the row above's one blind spot. A field in this enumeration
+    // rejects its own HTTP-declared type sample BY DESIGN, so changing that
+    // declaration — `sortOrder` re-declared `type: "number"`, say — would leave
+    // the type row green while the HTTP gate refused every real caller with
+    // "expected number". The narrowing family is specifically "HTTP declares
+    // `string`, stdio narrows to an enum OF strings", so both halves are
+    // asserted here.
+    //
+    // WHERE THE HTTP SIDE ADVERTISES ITS MEMBERS, every one of them is probed:
+    // `fix_lint_issue.type` carries `enum: [...AUTO_FIXABLE_CHECK_TYPES]`, and a
+    // member this door advertises that the other refuses is a transport-dependent
+    // call. The other five name their members only in a `description` string, so
+    // the single enumerated member is all there is to probe there.
+    const shapes = await stdioShapes();
+    const refused: string[] = [];
+    const notStrings: string[] = [];
+    const staleEntries: string[] = [];
+
+    for (const [field, member] of Object.entries(ENUM_NARROWED_FIELDS)) {
+      const [toolName, name] = field.split(".");
+      const tool = toolNamed(toolName);
+      const declaration = tool ? httpProperties(tool)[name] : undefined;
+      if (!declaration) {
+        // A renamed or retired tool, or a field the HTTP door stopped
+        // declaring. Named rather than thrown — `MCP_TOOLS.find(...)!` would
+        // die here as "Cannot read properties of undefined".
+        staleEntries.push(field);
+        continue;
+      }
+      if (declaration.type !== "string" || typeof member !== "string") {
+        notStrings.push(`${field}: http declares ${JSON.stringify(declaration.type)}`);
+      }
+      const probe = probeOf(shapes[toolName], name);
+      if (!probe) {
+        staleEntries.push(`${field} (no readable stdio schema)`);
+        continue;
+      }
+      // The enumerated member always, plus every member the HTTP door
+      // advertises where it advertises any.
+      const advertised = Array.isArray(declaration.enum) ? declaration.enum : [];
+      for (const candidate of [member, ...(advertised as unknown[])]) {
+        if (!probe.safeParse(candidate).success) {
+          refused.push(`${field} rejects ${JSON.stringify(candidate)}`);
+        }
+      }
+    }
+
+    // The element-level siblings get the same pin, probed as a one-element array:
+    // `lint_wiki.checks` must still ACCEPT a real check type, or "narrowed to an
+    // enum" has become "refuses every element".
+    for (const [field, member] of Object.entries(ENUM_NARROWED_ELEMENTS)) {
+      const [toolName, name] = field.split(".");
+      const tool = toolNamed(toolName);
+      const declaration = tool ? httpProperties(tool)[name] : undefined;
+      const itemType = (declaration?.items as Declaration | undefined)?.type;
+      if (!declaration) {
+        staleEntries.push(field);
+        continue;
+      }
+      if (declaration.type !== "array" || itemType !== "string") {
+        notStrings.push(
+          `${field}: http declares ${JSON.stringify(declaration.type)} of ` +
+            `${JSON.stringify(itemType)}`,
+        );
+      }
+      const probe = probeOf(shapes[toolName], name);
+      if (!probe) {
+        staleEntries.push(`${field} (no readable stdio schema)`);
+        continue;
+      }
+      if (!probe.safeParse([member]).success) {
+        refused.push(`${field} rejects the element ${JSON.stringify(member)}`);
+      }
+    }
+
+    expect(
+      staleEntries,
+      `narrowing entries that no longer name a readable field at both doors: ${staleEntries.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      refused,
+      `enumerated narrowings that reject a member the HTTP door advertises: ${refused.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      notStrings,
+      `enumerated narrowings that are not "HTTP string, stdio enum of strings": ${notStrings.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("agrees on the element contract of every object array (DW-672/DW-673)", async () => {
+    // The nesting the argument gate now reads. A `required` member the stdio
+    // `z.object` calls optional (or the reverse) would make one door's
+    // element-level refusal the other door's success, which is exactly the
+    // asymmetry the gate was extended to close.
+    const shapes = await stdioShapes();
+
+    // Minimality first: the enumeration IS the set of object arrays on disk.
+    const onDisk: string[] = [];
+    for (const tool of MCP_TOOLS) {
+      for (const [name, declaration] of Object.entries(httpProperties(tool))) {
+        const items = declaration.items as Declaration | undefined;
+        if (declaration.type === "array" && items?.type === "object") {
+          onDisk.push(`${tool.name}.${name}`);
+        }
+      }
+    }
+    expect(
+      onDisk.sort(),
+      `the object arrays on disk no longer match OBJECT_ARRAY_FIELDS — on disk ` +
+        `now: [${onDisk.sort().join(", ")}], enumerated: ` +
+        `[${[...OBJECT_ARRAY_FIELDS].sort().join(", ")}]. A field that appeared is ` +
+        `a new element contract to add here (the gate already enforces it); one ` +
+        `that disappeared is a stale entry to delete.`,
+    ).toEqual([...OBJECT_ARRAY_FIELDS].sort());
+
+    const problems: string[] = [];
+    for (const field of onDisk) {
+      const [toolName, name] = field.split(".");
+      const tool = toolNamed(toolName);
+      const declaration = tool ? httpProperties(tool)[name] : undefined;
+      if (!declaration) {
+        problems.push(`${field}: no HTTP declaration`);
+        continue;
+      }
+      const items = declaration.items as {
+        properties?: Record<string, Declaration>;
+        required?: unknown;
+      };
+      const members = items.properties ?? {};
+      const required = new Set((Array.isArray(items.required) ? items.required : []).map(String));
+      // Guarded rather than `shapes[toolName][name]`: the stdio door declaring no
+      // such field (or a value that is not a zod schema) is a parity failure to
+      // NAME, not a `undefined.safeParse` TypeError that says nothing.
+      const probe = probeOf(shapes[toolName], name);
+      if (!probe) {
+        problems.push(`${field}: the stdio door declares no readable schema for it`);
+        continue;
+      }
+      const accepts = (element: unknown) => probe.safeParse([element]).success;
+
+      // The valid element, built from the HTTP declarations alone: the first
+      // advertised `enum` member where there is one, else a type sample.
+      const valid: Record<string, unknown> = {};
+      for (const [member, memberDecl] of Object.entries(members)) {
+        const advertised = Array.isArray(memberDecl.enum) ? memberDecl.enum : [];
+        valid[member] =
+          advertised.length > 0 ? advertised[0] : TYPE_SAMPLES[String(memberDecl.type)];
+      }
+      // Every probe below is a DELTA from this element, so if the baseline is
+      // rejected they all report nonsense — each optional member would come back
+      // as "stdio requires it", burying the one real disagreement under a member
+      // list. Report the baseline and move to the next field.
+      if (!accepts(valid)) {
+        problems.push(
+          `${field}: stdio rejects an element built from the HTTP declarations ` +
+            `(${JSON.stringify(valid)}) — every per-member probe below it would be ` +
+            `noise, so they were skipped`,
+        );
+        continue;
+      }
+
+      for (const member of Object.keys(members)) {
+        const without = { ...valid };
+        delete without[member];
+        const omittable = accepts(without);
+        if (required.has(member) && omittable) {
+          problems.push(`${field}.${member}: HTTP requires it, stdio accepts it absent`);
+        }
+        if (!required.has(member) && !omittable) {
+          problems.push(`${field}.${member}: HTTP declares it optional, stdio requires it`);
+        }
+        // Wrong-typed, exhaustively: every decidable type other than the declared
+        // one. A single sample would miss a `z.union([z.string(), z.number()])`
+        // against a `type: "string"` member, which is the drift this is for. (A
+        // member the stdio `z.object` does not declare at all is caught right
+        // here too — zod strips unknown keys, so it would accept every one of
+        // these.)
+        const declaredType = String(members[member].type);
+        for (const [type, sample] of Object.entries(TYPE_SAMPLES)) {
+          if (type === declaredType) continue;
+          if (!accepts({ ...valid, [member]: sample })) continue;
+          problems.push(
+            `${field}.${member}: stdio accepts a ${type} (${JSON.stringify(sample)}) ` +
+              `against type ${JSON.stringify(members[member].type)}`,
+          );
+        }
+        // Every member the HTTP door advertises has to be callable at the other.
+        const advertised = Array.isArray(members[member].enum) ? members[member].enum : [];
+        for (const option of advertised as unknown[]) {
+          if (!accepts({ ...valid, [member]: option })) {
+            problems.push(
+              `${field}.${member}: stdio rejects the advertised enum member ${JSON.stringify(option)}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(
+      problems,
+      `object array element contracts disagree: ${problems.join("; ")}`,
+    ).toEqual([]);
   });
 });
 
@@ -142,11 +999,55 @@ describe("dispatchMcp — tools/call auth gating", () => {
     expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
   });
 
+  /**
+   * DW-122 — the one place the merged cloak may be broken, and only there.
+   *
+   * This tool answers a single sentence for "missing" and "denied" alike, on
+   * purpose: a distinguishable denial would make it a private-page existence
+   * oracle. The commons realm is the exception, because a realm-denied page is
+   * PUBLIC — naming it reveals nothing a `read_page` would not. So the realm
+   * explanation replaces the cloak exactly when a page was read AND the realm
+   * predicate holds for it, and the cloak stands everywhere else.
+   */
+  it("reingest explains the realm on a readable public knowledge page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Realm Page", owner: "alice", created: "2025-01-01", visibility: "public" };
+    await writeWikiPage("realm-reingest", serializeFrontmatter(fm as Frontmatter, "# Realm Page\n\nPublic knowledge."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "realm-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // `dispatchMcp` prefixes a thrown error with "Error: " on its way into the
+    // tool result, so the sentence is asserted as a suffix rather than
+    // re-spelled with the prefix baked in.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.reingest);
+  });
+
+  it("reingest keeps the cloak on another user's private page", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = { title: "Alice Private", owner: "alice", created: "2025-01-01", visibility: "private" };
+    await writeWikiPage("private-reingest", serializeFrontmatter(fm as Frontmatter, "# Alice Private\n\nSecret."));
+
+    const res = await dispatchMcp(
+      { id: 1, method: "tools/call", params: { name: "reingest", arguments: { slug: "private-reingest" } } },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // Indistinguishable from the missing-slug case above — and, critically,
+    // carrying no word about what kind of page it is.
+    expect(r.content[0].text).toMatch(/not found or you don't have permission/i);
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
+  });
+
   it("every write tool is gated and every read tool is open", () => {
     const writes = MCP_TOOLS.filter((t) => t.write).map((t) => t.name);
     const reads = MCP_TOOLS.filter((t) => !t.write).map((t) => t.name);
     expect(writes).toEqual(
-      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "reconcile_page", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
+      expect.arrayContaining(["ingest_url", "batch_ingest_urls", "ingest_text", "ingest_image", "ingest_pdf", "ingest_x_mention", "create_page", "update_page", "delete_page", "save_query_answer", "reingest", "update_metadata", "fix_lint_issue", "merge_pages", "delete_agent", "vault_delete", "vault_rename"]),
     );
     expect(reads).toEqual(
       expect.arrayContaining(["search_wiki", "read_page", "list_pages", "query_wiki", "lint_wiki", "query_history"]),
@@ -155,6 +1056,378 @@ describe("dispatchMcp — tools/call auth gating", () => {
 
   it("exposes a batch cap constant", () => {
     expect(MCP_MAX_BATCH).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The generic argument gate (DW-563)
+// ---------------------------------------------------------------------------
+/**
+ * `dispatchMcp` reads the `inputSchema` each `ToolDef` already declares and
+ * refuses arguments that contradict it, before `tool.run`.
+ *
+ * WHY THESE ROWS EXIST. `batch_ingest_urls` with `urls: "https://x"` used to
+ * reach `handleBatchIngest`, where a string's `.length` and index access make it
+ * array-like enough to be reported back as `Malformed URLs at indices 0, 1, 2…`
+ * — one complaint per CHARACTER, about a field the caller passed once. The
+ * stdio door answers the same body at `z.array(z.string())`. Every other
+ * `ToolDef.run` spreads-and-casts the same way, so the rows below drive the GATE
+ * through `dispatchMcp` rather than any one tool's `run`: they are about the
+ * door, and a per-tool suite could not tell the two apart.
+ *
+ * Every row goes through `dispatchMcp` with a principal, because a refusal that
+ * arrived from the auth check instead of the gate would prove nothing.
+ */
+describe("dispatchMcp — the argument gate", () => {
+  type ToolCallResult = { isError?: boolean; content: { text: string }[] };
+
+  // `arguments` is typed `Record<string, unknown>` on the wire type, and some
+  // rows below deliberately send something else — that is the case under test.
+  const call = async (
+    name: string,
+    args: unknown,
+    principal: Principal | null = ALICE,
+  ): Promise<ToolCallResult> => {
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args } as Record<string, unknown>,
+      },
+      principal,
+    );
+    return res!.result as ToolCallResult;
+  };
+
+  const text = async (res: Promise<ToolCallResult>) => (await res).content[0].text;
+
+  const refusal = async (res: Promise<ToolCallResult>) => {
+    const r = await res;
+    expect(r.isError).toBe(true);
+    return r.content[0].text;
+  };
+
+  it("lets a well-shaped call through to its handler", async () => {
+    // The control, and it deliberately uses a URL the HANDLER rejects: the
+    // array-of-strings shape is what the gate judges, and "Malformed URLs at
+    // indices 0" can only have been written by `handleBatchIngest`, past the
+    // gate, without this suite reaching the network.
+    expect(await refusal(call("batch_ingest_urls", { urls: ["not-a-url"] }))).toContain(
+      "Malformed URLs at indices 0",
+    );
+  });
+
+  it("refuses a string where the schema declares an array, before the handler", async () => {
+    // The ledger's case (DW-563). The old answer indexed the string's
+    // characters; the new one names the field and the type it wanted.
+    const message = await refusal(call("batch_ingest_urls", { urls: "https://x" }));
+
+    expect(message).toBe("Error: Invalid request field `urls`: expected array");
+    expect(message).not.toContain("indices 0, 1, 2");
+  });
+
+  it("refuses a missing `required` name in the doors' shared vocabulary", async () => {
+    // Same sentence `@/lib/lint-fix` and `POST /api/lint/fix` answer with.
+    expect(await refusal(call("batch_ingest_urls", {}))).toBe(
+      "Error: Missing required field: urls",
+    );
+  });
+
+  it("refuses an explicit null — absent is unset, null is a value", async () => {
+    // `LINT_FIX_REQUEST`'s `z.string().optional()` accepts a missing key and
+    // `undefined` but answers "received null" for an explicit null. Reading
+    // null as "unset" here would make one body a 400 at the REST door and a
+    // silent success at this one.
+    expect(await refusal(call("read_page", { slug: null }))).toBe(
+      "Error: Invalid request field `slug`: expected string",
+    );
+  });
+
+  it("refuses a bad element inside a primitive array, naming its index", async () => {
+    // `items.type` is the last thing the gate reads. The index is the point:
+    // "expected string" about a ten-element `tags` is not actionable without it.
+    expect(
+      await refusal(call("create_page", { slug: "s", content: "c", tags: [1] })),
+    ).toBe("Error: Invalid request field `tags[0]`: expected string");
+  });
+
+  it("refuses arguments that are not a JSON object at all", async () => {
+    expect(await refusal(call("read_page", "slug"))).toBe(
+      "Error: Invalid request arguments: expected a JSON object",
+    );
+  });
+
+  it("refuses an explicit null envelope the same way it refuses a null field", async () => {
+    // One rule, applied at both levels. `arguments: null` used to be coalesced
+    // to `{}` by a `?? {}` in `dispatchMcp`, so `list_agents` SUCCEEDED on a
+    // body whose `arguments` was null while the gate one line down refused
+    // `{slug: null}` as "a value, not unset" — the gate contradicting itself
+    // between the envelope and the fields inside it. `list_agents` is the sharp
+    // case because it has no `required` list: nothing else would have objected.
+    expect(await refusal(call("list_agents", null))).toBe(
+      "Error: Invalid request arguments: expected a JSON object",
+    );
+  });
+
+  it("refuses a string where the schema declares a number", async () => {
+    // The parity this buys is the stdio door's `z.number()`. `limit`, `cap` and
+    // `timestamp` are declared `type: "number"` across many tools, and a
+    // string-shaped `limit` previously travelled into the handler — where
+    // `"10"` is not `10` and the failure, if any, surfaces far from the field.
+    // Refused before any storage read, so this row needs no fixtures.
+    expect(await refusal(call("search_wiki", { query: "x", limit: "10" }))).toBe(
+      "Error: Invalid request field `limit`: expected number",
+    );
+  });
+
+  // -- Object array elements (DW-672) ---------------------------------------
+  // These rows replace a single negative one that asserted the gate did NOT
+  // speak about object array elements, on the grounds that element-level
+  // `required` was out of scope for DW-563 and the only alternative then on
+  // offer was to freeze `src/lib/agents.ts`'s "Cannot read properties of
+  // undefined" as the contract. The gate now reads one structural step down,
+  // so the answer is a designed sentence and can be pinned.
+
+  const SECTIONED = (sections: unknown) => ({
+    agent_id: "gatetest",
+    name: "Gate Test",
+    description: "d",
+    sections,
+  });
+
+  it("refuses a missing `required` member of an object array element by indexed path", async () => {
+    // The ledger's body (DW-672). `handleSeedAgent` validates nothing — it maps
+    // and delegates — so before this gate read `items`, `sections: [{slug:"s"}]`
+    // travelled all the way into `src/lib/agents.ts` and came back as "Cannot
+    // read properties of undefined (reading 'split')" from `section.content`.
+    // The stdio door refuses the same body at `z.object({...})`; this is that
+    // parity, in this door's own vocabulary.
+    expect(await refusal(call("seed_agent", SECTIONED([{ slug: "s" }])))).toBe(
+      "Error: Missing required field: sections[0].title",
+    );
+  });
+
+  it("refuses a mistyped member of an object array element by dotted path", async () => {
+    // Same reading as the top level, one step down: the path is what grew, not
+    // the sentence. `sections[0].slug` is the whole point — "expected string"
+    // about a four-section seed is not actionable without it.
+    expect(
+      await refusal(
+        call(
+          "seed_agent",
+          SECTIONED([{ slug: 1, title: "t", type: "identity", content: "c" }]),
+        ),
+      ),
+    ).toBe("Error: Invalid request field `sections[0].slug`: expected string");
+  });
+
+  it("refuses an element that is not an object at all, before reading its members", async () => {
+    // `items.type === "object"` is a claim about the ELEMENT first. A string
+    // element has no members to name, so the refusal names the element itself
+    // rather than inventing a `sections[0].slug` that was never there.
+    expect(await refusal(call("seed_agent", SECTIONED(["s"])))).toBe(
+      "Error: Invalid request field `sections[0]`: expected object",
+    );
+  });
+
+  it("refuses a malformed `addPages` element ahead of update_agent's own lookup", async () => {
+    // The second object array on disk, and the ordering matters: `update_agent`'s
+    // `run` resolves the caller's agent and throws "Agent not found" before
+    // `handleUpdateAgent` is reached, so a gate that ran late would answer a
+    // question about identity for a body that is malformed either way.
+    const message = await refusal(call("update_agent", { addPages: [{ slug: "s" }] }));
+
+    expect(message).toBe("Error: Missing required field: addPages[0].title");
+    expect(message).not.toContain("Agent not found");
+  });
+
+  it("refuses a mistyped `dataview_query` filter member — the generic reading reaches it too", async () => {
+    // Not one of the two tools the ledger names, and that is the design: the
+    // gate has no per-tool cases, so the third `items: {type:"object"}` on disk
+    // is read by the same loop.
+    //
+    // This row is the change's one VALID-TO-REFUSED move, and worth stating
+    // precisely rather than as "it used to be a silent non-match". `validateQuery`
+    // rejects only `undefined`/`null`, and `smartCompare` in `src/lib/dataview.ts`
+    // runs both sides through `tryNumber(Number(x))` — so `{field:"confidence",
+    // op:"gt", value:0.8}` came through this door and returned correctly
+    // numerically-filtered results. Six of the eight operators (`eq`, `neq`,
+    // `gt`, `lt`, `gte`, `lte`) coerced a numeric `value` and answered; so did
+    // `contains` against a scalar, via `String(fmValue).includes(value)`. Only
+    // `contains` against an ARRAY frontmatter value was the silent non-match,
+    // because `fmValue.includes(value)` is strict equality against strings —
+    // which is exactly the fixture below.
+    //
+    // So the door now refuses numeric `value`s it previously coerced and
+    // answered. That is accepted, not regretted: the stdio door has always
+    // refused them at `z.string().optional()`, and this is the parity being
+    // closed. The caller's remedy is to quote the number.
+    expect(
+      await refusal(
+        call("dataview_query", {
+          filters: [{ field: "tags", op: "contains", value: 1 }],
+        }),
+      ),
+    ).toBe("Error: Invalid request field `filters[0].value`: expected string");
+  });
+
+  it("admits an element whose OPTIONAL member is simply absent", async () => {
+    // `filters.items.required` is `["field","op"]` — `value` is declared and
+    // optional, exactly as the `exists` operator needs. Element-level `required`
+    // has to be read from the ELEMENT's own list, not from "every declared
+    // member", or this call would become uncallable.
+    const r = await call("dataview_query", {
+      filters: [{ field: "source_url", op: "exists" }],
+    });
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text)).toBeDefined();
+  });
+
+  it("admits a well-shaped element through to its handler", async () => {
+    // The control for the rows above: the gate is reading the declarations, not
+    // refusing object arrays. A complete section reaches `handleSeedAgent` and
+    // the agent is seeded.
+    const r = await call(
+      "seed_agent",
+      SECTIONED([{ slug: "gate-sec", title: "T", type: "identity", content: "c" }]),
+    );
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text).name).toBe("Gate Test");
+  });
+
+  it("still admits an empty object array", async () => {
+    // Nothing to read, so nothing to refuse. `sections: []` is what the
+    // `dispatchMcp — seed_agent` rows send, so this is also the guard that the
+    // element loop did not turn an empty array into a missing-member refusal.
+    const r = await call("seed_agent", SECTIONED([]));
+
+    expect(r).not.toHaveProperty("isError");
+  });
+
+  it("does not judge an element's `enum` member — the handler still owns that", async () => {
+    // `sections.items.properties.type` declares `enum: ["identity","learnings",
+    // "social"]`, and `"bogus"` is a well-typed STRING as far as this gate
+    // reads. Enforcing `enum` here would put a generic sentence in front of
+    // every handler that already answers better (`validateQuery`'s "unknown
+    // filter op", `autoFixRefusal`'s check-type list). The claim is the negative
+    // one: the gate did not speak.
+    const r = await call(
+      "seed_agent",
+      SECTIONED([{ slug: "gate-enum", title: "T", type: "bogus", content: "c" }]),
+    );
+    const message = r.content[0].text;
+
+    expect(message).not.toContain("Invalid request field `sections");
+    expect(message).not.toContain("Missing required field: sections");
+  });
+
+  it("leaves the bogus `enum` member to the handler, which refuses the whole seed", async () => {
+    // The positive half of the row above (DW-749). The gate stays silent, so
+    // `seedAgent` is the only refusal left on this path — the stdio door's
+    // `z.enum` and `POST /api/agents/seed`'s per-index check never see this
+    // body. It answers with the REST door's sentence, rendered by
+    // `dispatchMcp`'s catch as an `isError` tool result, and refuses BEFORE the
+    // write loop: neither page is on disk and no profile is registered.
+    const r = await call(
+      "seed_agent",
+      SECTIONED([
+        { slug: "handler-enum-ok", title: "T", type: "identity", content: "c" },
+        { slug: "handler-enum-bad", title: "T", type: "bogus", content: "c" },
+      ]),
+    );
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(
+      "Error: Section at index 1 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+
+    expect(await readWikiPage("handler-enum-ok")).toBeNull();
+    expect(await readWikiPage("handler-enum-bad")).toBeNull();
+    expect(await getAgent(agentIdFor("alice", "gatetest"))).toBeNull();
+    expect(await getAgent("gatetest")).toBeNull();
+
+    // The sole-section body the negative row above sends, so the two rows read
+    // the same call two ways: the gate says nothing, the handler names index 0.
+    const sole = await call(
+      "seed_agent",
+      SECTIONED([{ slug: "handler-enum-sole", title: "T", type: "bogus", content: "c" }]),
+    );
+
+    expect(sole.isError).toBe(true);
+    expect(sole.content[0].text).toBe(
+      "Error: Section at index 0 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+    expect(await readWikiPage("handler-enum-sole")).toBeNull();
+  });
+
+  it("does not REFUSE an undeclared key", async () => {
+    // `vault_curate` is called with an `owner` its schema never mentions, and a
+    // gate that rejected unknown keys would refuse the call outright. This row
+    // proves it does not: the curate succeeds.
+    //
+    // It does NOT prove the key survives. `vault_curate`'s `run` builds
+    // `{slug, owner: p.handle, vault}` and never reads `a.owner`, so the
+    // assertions below hold whether the gate passed the key through, ignored
+    // it, or stripped it. Non-stripping is unobservable through this tool —
+    // every tool that would notice needs the ingest pipeline to run — so the
+    // claim is deliberately the weaker one the fixture can actually support.
+    await writeWikiPage(
+      "gate-curate-me",
+      "---\ntitle: Gate Curate\nvisibility: public\n---\n# Gate Curate\nBody",
+    );
+
+    const parsed = JSON.parse(
+      await text(
+        call("vault_curate", {
+          slug: "gate-curate-me",
+          vault: "research",
+          owner: "evil-hacker",
+        }),
+      ),
+    );
+
+    expect(parsed.curated).toBe(true);
+    expect(parsed.owner).toBe("alice");
+  });
+
+  it.each([
+    ["absent arguments", undefined],
+    ["empty arguments", {}],
+  ])("still admits %s for a tool with no `required` list", async (_label, args) => {
+    // `list_agents` declares `schema({})` — no properties, no `required`. The
+    // gate must be a no-op there rather than inventing a contract.
+    const r = await call("list_agents", args);
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text)).toBeDefined();
+  });
+
+  it("admits an optional property that is simply absent", async () => {
+    // `wiki_graph`'s `scope` is declared and optional; omitting it is not a
+    // type violation, and the gate skips what is not there.
+    const r = await call("wiki_graph", {});
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text).nodes).toBeDefined();
+  });
+
+  it("keeps the auth refusal ahead of the gate", async () => {
+    // Order matters for what an unauthenticated caller learns: telling them
+    // which field is malformed before telling them they may not call at all
+    // would answer a question they had not earned an answer to.
+    expect(await refusal(call("batch_ingest_urls", { urls: 7 }, null))).toMatch(
+      /authentication required/i,
+    );
+  });
+
+  it("keeps the unknown-tool refusal ahead of the gate", async () => {
+    // There is no schema to read for a tool that does not exist, so the gate
+    // could not speak here even if it ran first.
+    expect(await refusal(call("no_such_tool", { urls: 7 }))).toContain(
+      "Unknown tool: no_such_tool",
+    );
   });
 });
 
@@ -246,9 +1519,18 @@ describe("dispatchMcp — update_metadata", () => {
   });
 
   it("forwards the principal to patchMetadata (updates metadata on an owned page)", async () => {
-    // Create a page owned by alice first.
+    // Create a page owned by alice first. PRIVATE, so `alice` is inside the set
+    // the per-page ACL admits: since DW-121 the commons realm refuses a human's
+    // metadata patch on a PUBLIC knowledge page exactly as it refuses a body
+    // write, and this case is about the PRINCIPAL reaching `patchMetadata` at
+    // all — not about the realm, which has its own coverage.
     const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
-    const fm = { title: "Meta Test", owner: "alice", created: "2025-01-01" };
+    const fm = {
+      title: "Meta Test",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
     await writeWikiPage("meta-test", serializeFrontmatter(fm, "# Meta Test\n\nBody."));
 
     const res = await dispatchMcp(
@@ -272,6 +1554,107 @@ describe("dispatchMcp — update_metadata", () => {
     const page = await readFm("meta-test");
     expect(page!.frontmatter.disputed).toBe(true);
     expect(page!.frontmatter.confidence).toBe(0.5);
+  });
+
+  /**
+   * THE TWO DENY CASES, and why the happy path above cannot stand in for them.
+   *
+   * `handleUpdateMetadata` substitutes a write-anything `service:mcp` principal
+   * when `principal` is `undefined`, so a success case passes whether or not
+   * the tool's `run: (a, p) => handleUpdateMetadata({ …, principal: p })`
+   * actually forwards `p` — deleting `principal: p` from `mcp-http.ts` leaves
+   * every other case in this file green. That forwarding is not a detail: this
+   * is the one door where a non-service, non-admin principal (`agent:<id>`,
+   * which is what ALICE is) really arrives, and since DW-121 it is the whole
+   * metadata ACL for it. Both cases below fail if the forwarding is dropped,
+   * because the substituted service principal would be admitted.
+   */
+  it("refuses an agent principal patching a public knowledge page (DW-121)", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    // Public and untyped → `belongsInCommons` → the realm reserves it for
+    // service principals and admins. ALICE owns it and is still refused, which
+    // is the DW-121 rule: the realm is not an ownership term.
+    const fm = { title: "Shared Knowledge", owner: "alice", created: "2025-01-01" };
+    await writeWikiPage(
+      "shared-knowledge",
+      serializeFrontmatter(fm as Frontmatter, "# Shared Knowledge\n\nBody."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "shared-knowledge", metadata: { disputed: true } },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // The realm sentence, from the shared table — readable + denied implies the
+    // realm at this door like every other.
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.edit);
+
+    // …and nothing was written.
+    const { readWikiPageWithFrontmatter: readFm } = await import("../wiki");
+    expect((await readFm("shared-knowledge"))!.frontmatter.disputed).toBeUndefined();
+  });
+
+  it("cloaks another user's PRIVATE page rather than naming it", async () => {
+    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
+    const fm = {
+      title: "Alice Secret",
+      owner: "alice",
+      visibility: "private",
+      created: "2025-01-01",
+    };
+    await writeWikiPage(
+      "alice-secret",
+      serializeFrontmatter(fm as Frontmatter, "# Alice Secret\n\nPrivate."),
+    );
+
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "alice-secret", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    // No realm wording, and nothing that says what kind of page it is.
+    expect(r.content[0].text).not.toMatch(/public knowledge/i);
+    expect(r.content[0].text).not.toMatch(/agent-maintained/i);
+    expect(r.content[0].text).not.toBe(WRITE_DENIAL_REALM.edit);
+
+    // THE ACTUAL CLOAK TEST is indistinguishability, not slug-absence. This
+    // sentence does echo the slug — but it is the slug BOB just sent, so
+    // repeating it tells him nothing he did not already know, and every
+    // not-found cloak in the app has the same shape. What would be an oracle is
+    // a REAL page answering differently from a missing one, so the assertion is
+    // that the two are byte-identical apart from the name he supplied.
+    const missing = await dispatchMcp(
+      {
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "update_metadata",
+          arguments: { slug: "no-such-page", metadata: { disputed: true } },
+        },
+      },
+      BOB,
+    );
+    const m = missing!.result as { isError?: boolean; content: { text: string }[] };
+    expect(m.isError).toBe(true);
+    expect(r.content[0].text.replace("alice-secret", "SLUG")).toBe(
+      m.content[0].text.replace("no-such-page", "SLUG"),
+    );
   });
 });
 
@@ -430,66 +1813,14 @@ describe("dispatchMcp — delete_page", () => {
   });
 });
 
-describe("dispatchMcp — publish_to_commons ownership check", () => {
-  it("rejects publish_to_commons when caller does not own the agent", async () => {
-    // Register an agent owned by alice.
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    });
-
-    // Bob tries to publish alice's agent page — should be rejected.
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "publish_to_commons",
-          arguments: { slug: "some-page", agentId: "alice--yoyo" },
-        },
-      },
-      BOB,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/ownership mismatch/i);
+describe("dispatchMcp — publish_to_commons is retired", () => {
+  it("is absent from tools/list", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).not.toContain("publish_to_commons");
   });
 
-  it("allows publish_to_commons when caller owns the agent", async () => {
-    // Register an agent owned by alice.
-    await registerAgent({
-      id: "alice--yoyo",
-      name: "yoyo",
-      description: "Alice's agent",
-      owner: "alice",
-      identityPages: [],
-      learningPages: [],
-      socialPages: [],
-      registered: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    });
-
-    // Create an agent-knowledge page owned by the agent.
-    const { writeWikiPage, serializeFrontmatter } = await import("../wiki");
-    const fm = {
-      title: "Agent Knowledge",
-      owner: "alice--yoyo",
-      type: "agent-knowledge",
-      created: "2025-01-01",
-    };
-    await writeWikiPage(
-      "agent-topic",
-      serializeFrontmatter(fm, "# Agent Knowledge\n\nBody."),
-    );
-
-    // Alice (the agent's owner) publishes — should succeed.
+  it("is an unknown tool when called", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
@@ -502,27 +1833,8 @@ describe("dispatchMcp — publish_to_commons ownership check", () => {
       ALICE,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.published).toBe(true);
-    expect(parsed.owner).toBe("alice");
-  });
-
-  it("rejects publish_to_commons for a nonexistent agent", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "publish_to_commons",
-          arguments: { slug: "some-page", agentId: "ghost--yoyo" },
-        },
-      },
-      ALICE,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/agent not found/i);
+    expect(r.content[0].text).toMatch(/unknown tool/i);
   });
 });
 
@@ -533,14 +1845,14 @@ describe("dispatchMcp — lint_wiki", () => {
     expect(tools.map((t) => t.name)).toContain("lint_wiki");
   });
 
-  it("lint_wiki works without authentication (read-only)", async () => {
+  it("lint_wiki works for an authenticated reader", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
         params: { name: "lint_wiki", arguments: {} },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -570,27 +1882,419 @@ describe("dispatchMcp — fix_lint_issue", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/authentication required/i);
   });
-});
 
-describe("dispatchMcp — reconcile_page", () => {
-  it("tools/list returns reconcile_page", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("reconcile_page");
+  // Every gate row below drives the tool the same way: one `tools/call` as an
+  // authenticated principal, read back as the error text it answered with. The
+  // shared `mockClear` keeps "was the dispatcher reached?" answerable per row —
+  // that question is the point of most of them.
+  const call = (args: Record<string, unknown>) =>
+    dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name: "fix_lint_issue", arguments: args },
+      },
+      ALICE,
+    );
+
+  const errorText = (res: Awaited<ReturnType<typeof dispatchMcp>>) => {
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    return r.content[0].text;
+  };
+
+  beforeEach(() => {
+    spiedFixLintIssue.mockClear();
   });
 
-  it("rejects reconcile_page without auth (write-gated)", async () => {
+  /**
+   * The `type` gate this transport has to carry itself (DW-348).
+   *
+   * `tools/call` now runs `validateToolArguments` over the tool's own
+   * `inputSchema` before `run` (DW-563), so `type`'s DECLARED SHAPE — present,
+   * and a string — is answered at the door. What that generic gate deliberately
+   * does NOT read is `enum`: the stdio server gets member checking from the SDK
+   * (`z.enum(AUTO_FIXABLE_CHECK_TYPES)`, pinned in `mcp.test.ts`), and here it
+   * stays in the tool's own `run` so a recognized-but-not-fixable type keeps the
+   * explanation written for a human instead of an "expected one of" list. These
+   * rows are that gate's only observer; the door's half is pinned by
+   * `dispatchMcp — the argument gate` below.
+   */
+  describe("the type gate", () => {
+    it("refuses a recognized-but-not-fixable type, with its own explanation", async () => {
+      // Refused at the door, but NOT with a bare "unsupported": the type is a
+      // real check type whose refusal was written for a human, and dropping
+      // that sentence is how a gate makes an answer worse than the one it
+      // replaced.
+      const text = errorText(await call({ type: "low-confidence", slug: "some-page" }));
+
+      expect(text).toContain("Low-confidence pages cannot be auto-fixed");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("keeps the disputed-page clear path, with the slug interpolated", async () => {
+      // The sentence `lint-types.ts` insists must arrive copy-pasteable. The
+      // door has the sibling `slug`, which is exactly what a schema-level
+      // refusal (the stdio side) could not have reached.
+      const text = errorText(await call({ type: "disputed-page", slug: "contested-page" }));
+
+      expect(text).toContain(
+        "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+      );
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("hands back no empty path segment when no slug arrived (DW-458)", async () => {
+      // `slug` is OPTIONAL on this tool, so the door passes `slug ?? ""` — the
+      // `""` `autoFixRefusal`'s contract asks a caller with nothing usable to
+      // pass. It used to interpolate straight through, so the agent read
+      // `Reconcile the conflicting claims in ""` above a `PATCH /api/wiki/`
+      // whose path segment was empty: the one thing the interpolation exists to
+      // prevent, since a path that 404s when pasted is worse than no path.
+      const text = errorText(await call({ type: "disputed-page" }));
+
+      // Asserted against the exported refusal, never a retyped sentence: the
+      // wording is owned in `lint-fix.ts` and this row's claim is only that the
+      // wire carries it.
+      expect(text).toContain(autoFixRefusal("disputed-page", ""));
+      expect(text).not.toContain("/api/wiki/");
+      expect(text).not.toContain('""');
+      expect(text).toContain("clear the Disputed toggle in the page editor");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["an unknown type", { type: "made-up-type", slug: "p" }],
+      // Inherited `Object.prototype` members — `ownEntry`'s `typeof`/own-key
+      // guard is what stops `constructor` resolving to a real function.
+      ["a prototype-chain type", { type: "constructor", slug: "p" }],
+    ])("refuses %s without dispatching", async (_label, args) => {
+      const text = errorText(await call(args));
+
+      expect(text).toContain("Auto-fix not supported for this issue type");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      // `hasOwnProperty.call` runs its key through `ToPropertyKey`, so
+      // `["orphan-page"]` stringifies to a REAL handler key. That coercion is
+      // what `ownEntry`'s `typeof` guard exists to stop; the door's generic gate
+      // now stops it a layer earlier still, before any lookup — and answers with
+      // the field name, which is the thing an agent can act on.
+      [
+        "a non-string type",
+        { type: ["orphan-page"], slug: "p" },
+        "Invalid request field `type`: expected string",
+      ],
+      // `type` is this tool's one `required` name, so an absent one is the
+      // door's sentence rather than `autoFixRefusal`'s. Still a refusal, still
+      // undispatched — only the wording moved, and it moved toward naming the
+      // field that is wrong.
+      ["no type at all", { slug: "p" }, "Missing required field: type"],
+    ])(
+      "refuses %s at the door, before `run` is reached",
+      async (_label, args, expected) => {
+        const text = errorText(await call(args));
+
+        expect(text).toContain(expected);
+        expect(spiedFixLintIssue).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still dispatches a fixable type — the control", async () => {
+      // The gate refuses what it should and nothing else. The page is absent, so
+      // "Page not found" can only have come from `fixOrphanPage`, past the gate.
+      const text = errorText(await call({ type: "orphan-page", slug: "absent-page" }));
+
+      expect(text).toContain("Page not found: absent-page");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "absent-page",
+        undefined,
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    /**
+     * The principal is the TRIGGER, never the AUTHOR (DW-447).
+     *
+     * This door used to pass `author: p!.handle` into `handleFixLintIssue`, so
+     * an owner who asked for a lint fix was written into the page's revision
+     * sidecar, its `contributors` and their trust score as the author of a
+     * machine-generated edit — the exact thing `AUTOMATION_ACTORS` exists to
+     * prevent, and the honest `"lint-fix"` the stdio transport kept all along.
+     * Position matters as much as presence here: fifth is `author`, sixth is
+     * `triggeredBy`, and the defect was the handle sitting in the wrong one.
+     */
+    it("forwards the principal as the trigger and leaves the author alone", async () => {
+      // BOB, not the suite's ALICE, so neither assertion can pass on a
+      // coincidence with a handle some other row already put in the spy.
+      await dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fix_lint_issue",
+            arguments: { type: "orphan-page", slug: "absent-page" },
+          },
+        },
+        BOB,
+      );
+
+      expect(spiedFixLintIssue.mock.lastCall?.[4]).toBeUndefined();
+      expect(spiedFixLintIssue.mock.lastCall?.[5]).toBe(BOB.handle);
+    });
+
+    it("advertises the same set it enforces", async () => {
+      // An `accept` that offers more than the gate admits is the DW-347 failure
+      // in another door; here the two are read from one const.
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as {
+        tools: { name: string; description: string; inputSchema: unknown }[];
+      }).tools;
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
+      const schema = tool.inputSchema as {
+        properties: { type: { enum?: string[] } };
+      };
+
+      expect(schema.properties.type.enum).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+      // And the prose must not still promise what the schema now refuses.
+      expect(tool.description).not.toContain("Not all issue types are auto-fixable");
+      expect(tool.description).toContain("suggestion");
+    });
+  });
+
+  /**
+   * The three STRING fields, gated the same way `type` is (DW-455).
+   *
+   * `dispatchMcp` used to validate nothing — `params.arguments` reached
+   * `tool.run` as whatever JSON arrived — and this tool spread that object
+   * straight into `handleFixLintIssue` behind a cast. A non-string `slug`
+   * therefore travelled all the way to `fixOrphanPage` and came back a 404
+   * naming `[object Object]`: an error about a page the caller never asked for,
+   * useless for correcting the call. The gate must name the FIELD instead, and
+   * the dispatcher must never be reached — the spy is what proves the second
+   * half, since a refusal alone cannot tell "stopped at the door" from
+   * "dispatched and failed".
+   *
+   * The gate now lives at the door for every tool (`validateToolArguments`,
+   * DW-563) rather than in this tool's `run`, and answers these rows in the same
+   * words. They stay HERE, driven through `fix_lint_issue`, because the claim
+   * they pin is behavioural — this tool's three optional strings match
+   * `LINT_FIX_REQUEST`'s field for field — not a claim about where the check
+   * happens to be implemented.
+   */
+  describe("the string-field gate", () => {
+    it.each([
+      ["an object slug", { type: "orphan-page", slug: { x: 1 } }, "slug"],
+      ["a numeric slug", { type: "orphan-page", slug: 7 }, "slug"],
+      ["an array slug", { type: "orphan-page", slug: ["p"] }, "slug"],
+      [
+        "a numeric target",
+        { type: "missing-crossref", slug: "p", target: 7 },
+        "target",
+      ],
+      [
+        "an object message",
+        { type: "contradiction", slug: "p", target: "q", message: { a: 1 } },
+        "message",
+      ],
+    ])("refuses %s, naming the field", async (_label, args, field) => {
+      const text = errorText(await call(args));
+
+      expect(text).toContain(`\`${field}\``);
+      expect(text).not.toContain("[object Object]");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("checks the fields BEFORE the type gate speaks for them", async () => {
+      // Order matters for the message the agent reads: with a bad `slug` the
+      // `type` gate would interpolate garbage into the copy-pasteable clear
+      // path it exists to hand over ("PATCH /api/wiki/[object Object] …").
+      // Naming the malformed field first is the only answer that can be acted
+      // on.
+      const text = errorText(await call({ type: "disputed-page", slug: { x: 1 } }));
+
+      expect(text).toContain("`slug`");
+      expect(text).not.toContain("[object Object]");
+    });
+
+    it("lets an ABSENT field through — optional means optional", async () => {
+      // The control for the gate's shape: it refuses PRESENT-but-wrong, not
+      // MISSING. `orphan-page` takes no target or message, so omitting them
+      // must reach the dispatcher as `undefined` rather than trip the gate.
+      const text = errorText(
+        await call({ type: "orphan-page", slug: "absent-page" }),
+      );
+
+      expect(text).toContain("Page not found: absent-page");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "absent-page",
+        undefined,
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("refuses an explicit null — absent is not the same as null", async () => {
+      // The parity that makes this gate worth having. `LINT_FIX_REQUEST`'s
+      // `z.string().optional()` accepts a MISSING key and `undefined`, but
+      // answers "expected string, received null" for an explicit `null` —
+      // verified against the installed zod. Reading `null` as "unset" here
+      // would make the same body a 400 at `POST /api/lint/fix` and a silent
+      // success over MCP, which is the door divergence this bundle closes.
+      const text = errorText(await call({ type: "orphan-page", slug: null }));
+
+      expect(text).toContain("`slug`");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * `missing-concept-page` without a slug (DW-457).
+   *
+   * It is the one auto-fixable type whose handler reads `message` ALONE —
+   * `FIX_HANDLERS["missing-concept-page"]` never destructures `slug`. While
+   * `slug` sat in this tool's `required` list the type was unreachable over
+   * this transport unless the agent invented a dummy slug for a fix that would
+   * ignore it. The REST door already accepts the slug-less body; these rows are
+   * the parity.
+   */
+  describe("a slug-less missing-concept-page", () => {
+    it("reaches the dispatcher with an empty slug", async () => {
+      // The message is deliberately UNPARSEABLE, so `fixMissingConceptPage`
+      // refuses at its own regex rather than writing a stub into this suite's
+      // wiki. The claim under test is that the request GOT there, which the
+      // spy's recorded arguments establish on their own — including the `""`
+      // an absent slug converts to, the same conversion `POST /api/lint/fix`
+      // does.
+      const text = errorText(
+        await call({
+          type: "missing-concept-page",
+          message: "no concept sentence here",
+        }),
+      );
+
+      expect(text).toContain("Could not parse concept name");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "missing-concept-page",
+        "",
+        undefined,
+        "no concept sentence here",
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("still lets a slug-requiring type answer for its own missing slug", async () => {
+      // The other half of the trade. An optional `slug` means `orphan-page`
+      // with none reaches the handler as `""`, and "Missing required field:
+      // slug" names both the field and the fact that this type needs it —
+      // strictly more than a schema error over an absent property could say.
+      const text = errorText(await call({ type: "orphan-page" }));
+
+      expect(text).toContain("Missing required field: slug");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "",
+        undefined,
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("advertises slug as optional", async () => {
+      // What the agent reads before composing the call. A `required` list still
+      // naming `slug` would keep the type unreachable in practice even though
+      // the door now accepts it.
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as { tools: { name: string; inputSchema: unknown }[] })
+        .tools;
+      const schema = tools.find((t) => t.name === "fix_lint_issue")!
+        .inputSchema as { required?: string[]; properties: Record<string, unknown> };
+
+      expect(schema.required).toEqual(["type"]);
+      // Still ADVERTISED — optional is not absent; every other type needs it.
+      expect(schema.properties).toHaveProperty("slug");
+    });
+  });
+});
+
+describe("dispatchMcp — reconcile_page (retired)", () => {
+  it("tools/list omits reconcile_page", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as { tools: { name: string }[] }).tools;
+    expect(tools.map((t) => t.name)).not.toContain("reconcile_page");
+  });
+
+  it("is an unknown tool when called", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
         method: "tools/call",
-        params: { name: "reconcile_page", arguments: { pageSlug: "test", threadIndex: 0 } },
+        params: {
+          name: "reconcile_page",
+          arguments: { pageSlug: "test", threadIndex: 0 },
+        },
       },
-      null,
+      ALICE,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
+    expect(r.content[0].text).toMatch(/unknown tool/i);
+  });
+
+  it("lint_wiki rejects the retired discussion check type", async () => {
+    // `unresolved-discussions` retired with reconcile-from-talk and must not be
+    // accepted by the shared handler either (the schema here is free-form
+    // strings, so only the handler's own validation stands between a retired
+    // type and a silently empty result).
+    //
+    // Passed ALONE on purpose: paired with a second invalid type, the assertion
+    // passes whichever of the two the validator caught, so it would keep
+    // passing even after `unresolved-discussions` was quietly re-admitted.
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["unresolved-discussions"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/invalid check type/i);
+    expect(r.content[0].text).toMatch(/unresolved-discussions/);
+  });
+
+  it("lint_wiki accepts disputed-page as a valid check type", async () => {
+    // The other half of the retirement: `disputed` outlived talk, so
+    // `disputed-page` is a live check (DW-76) and this handler must let it
+    // through. Without this, the rejection test above is the only thing
+    // describing the handler's view of the roster, and it would read as though
+    // both types were retired.
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "lint_wiki",
+          arguments: { checks: ["disputed-page"] },
+        },
+      },
+      ALICE,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).not.toMatch(/invalid check type/i);
   });
 });
 
@@ -627,181 +2331,6 @@ describe("dispatchMcp — merge_pages", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Discussion tools
-// ---------------------------------------------------------------------------
-
-describe("dispatchMcp — list_discussions", () => {
-  it("tools/list returns list_discussions", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("list_discussions");
-  });
-
-  it("list_discussions works without auth (read-only)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_discussions", arguments: { pageSlug: "nonexistent" } },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.pageSlug).toBe("nonexistent");
-    expect(parsed.threads).toEqual([]);
-  });
-});
-
-describe("dispatchMcp — read_discussion", () => {
-  it("tools/list returns read_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("read_discussion");
-  });
-
-  it("read_discussion works without auth (read-only, returns error for missing thread)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "read_discussion", arguments: { pageSlug: "test", threadIndex: 0 } },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    // Handler throws for missing thread — surfaced as isError tool result, NOT a 401.
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/thread not found/i);
-  });
-});
-
-describe("dispatchMcp — create_discussion", () => {
-  it("tools/list returns create_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("create_discussion");
-  });
-
-  it("rejects create_discussion without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "test", title: "Bug?", body: "Something looks wrong" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-
-  it("sets author from principal handle when authenticated", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "test-page", title: "Question", body: "Is this right?" },
-        },
-      },
-      ALICE,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.comments[0].author).toBe("alice");
-  });
-});
-
-describe("dispatchMcp — add_comment", () => {
-  it("tools/list returns add_comment", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("add_comment");
-  });
-
-  it("rejects add_comment without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "add_comment",
-          arguments: { pageSlug: "test", threadIndex: 0, content: "I agree" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-
-  it("sets author from principal handle when authenticated", async () => {
-    // First create a thread to comment on
-    await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "create_discussion",
-          arguments: { pageSlug: "comment-test", title: "Topic", body: "Start" },
-        },
-      },
-      ALICE,
-    );
-    // Now add a comment as BOB
-    const res = await dispatchMcp(
-      {
-        id: 2,
-        method: "tools/call",
-        params: {
-          name: "add_comment",
-          arguments: { pageSlug: "comment-test", threadIndex: 0, content: "Good point" },
-        },
-      },
-      BOB,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBeFalsy();
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.author).toBe("bob");
-  });
-});
-
-describe("dispatchMcp — resolve_discussion", () => {
-  it("tools/list returns resolve_discussion", async () => {
-    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
-    const tools = (res!.result as { tools: { name: string }[] }).tools;
-    expect(tools.map((t) => t.name)).toContain("resolve_discussion");
-  });
-
-  it("rejects resolve_discussion without auth (write-gated)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "resolve_discussion",
-          arguments: { pageSlug: "test", threadIndex: 0, resolution: "resolved" },
-        },
-      },
-      null,
-    );
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/authentication required/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Revision tools
 // ---------------------------------------------------------------------------
 
@@ -812,7 +2341,7 @@ describe("dispatchMcp — list_revisions", () => {
     expect(tools.map((t) => t.name)).toContain("list_revisions");
   });
 
-  it("returns revisions for a valid slug without auth (read-only)", async () => {
+  it("returns revisions for a valid slug for an authenticated reader", async () => {
     // Create a page then update it so a revision exists
     await writeWikiPage("rev-list-test", "# Rev\nOriginal content");
     await saveRevision("rev-list-test", "# Rev\nOriginal content");
@@ -823,7 +2352,7 @@ describe("dispatchMcp — list_revisions", () => {
         method: "tools/call",
         params: { name: "list_revisions", arguments: { slug: "rev-list-test" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -840,7 +2369,7 @@ describe("dispatchMcp — read_revision", () => {
     expect(tools.map((t) => t.name)).toContain("read_revision");
   });
 
-  it("returns revision content for a valid slug + timestamp without auth", async () => {
+  it("returns revision content for a valid slug + timestamp", async () => {
     // Set up a page with a revision
     await writeWikiPage("rev-read-test", "# Rev\nFirst version");
     await saveRevision("rev-read-test", "# Rev\nFirst version");
@@ -853,7 +2382,7 @@ describe("dispatchMcp — read_revision", () => {
         method: "tools/call",
         params: { name: "list_revisions", arguments: { slug: "rev-read-test" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const listParsed = JSON.parse(
       (listRes!.result as { content: { text: string }[] }).content[0].text,
@@ -867,7 +2396,7 @@ describe("dispatchMcp — read_revision", () => {
         method: "tools/call",
         params: { name: "read_revision", arguments: { slug: "rev-read-test", timestamp: ts } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBeFalsy();
@@ -882,6 +2411,23 @@ describe("dispatchMcp — revert_revision", () => {
     const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
     const tools = (res!.result as { tools: { name: string }[] }).tools;
     expect(tools.map((t) => t.name)).toContain("revert_revision");
+  });
+
+  it("keeps principal out of the caller-controlled HTTP input schema", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as {
+      tools: {
+        name: string;
+        inputSchema: {
+          properties?: Record<string, unknown>;
+          required?: string[];
+        };
+      }[];
+    }).tools;
+    const revert = tools.find((tool) => tool.name === "revert_revision")!;
+
+    expect(revert.inputSchema.properties).not.toHaveProperty("principal");
+    expect(revert.inputSchema.required ?? []).not.toContain("principal");
   });
 
   it("rejects revert_revision without auth (write-gated)", async () => {
@@ -901,34 +2447,22 @@ describe("dispatchMcp — revert_revision", () => {
     expect(r.content[0].text).toMatch(/authentication required/i);
   });
 
-  it("passes principal.handle as author to handleRevertRevision", async () => {
-    // Create a page with a revision to revert to
-    await writeWikiPage("rev-revert-test", "# Revert\nOriginal");
-    await saveRevision("rev-revert-test", "# Revert\nOriginal");
-    await writeWikiPage("rev-revert-test", "# Revert\nChanged");
+  it("forwards the principal to an owner-authorized private-page revert", async () => {
+    const original =
+      "---\ntitle: Revert\nowner: alice\nvisibility: private\n---\n# Revert\n\nOriginal";
+    const changed =
+      "---\ntitle: Revert\nowner: alice\nvisibility: private\n---\n# Revert\n\nChanged";
+    await writeWikiPage("rev-revert-test", changed);
+    await saveRevision("rev-revert-test", original, "snapshotter", "snapshot");
+    const timestamp = (await listRevisions("rev-revert-test"))[0].timestamp;
 
-    // Get the timestamp
-    const listRes = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_revisions", arguments: { slug: "rev-revert-test" } },
-      },
-      null,
-    );
-    const listParsed = JSON.parse(
-      (listRes!.result as { content: { text: string }[] }).content[0].text,
-    );
-    const ts = listParsed.revisions[0].timestamp;
-
-    // Revert as ALICE
     const res = await dispatchMcp(
       {
         id: 2,
         method: "tools/call",
         params: {
           name: "revert_revision",
-          arguments: { slug: "rev-revert-test", timestamp: ts },
+          arguments: { slug: "rev-revert-test", timestamp },
         },
       },
       ALICE,
@@ -937,6 +2471,87 @@ describe("dispatchMcp — revert_revision", () => {
     expect(r.isError).toBeFalsy();
     const parsed = JSON.parse(r.content[0].text);
     expect(parsed.slug).toBe("rev-revert-test");
+    expect((await readWikiPageWithFrontmatter("rev-revert-test"))!.content)
+      .toContain("Original");
+
+    const [revertCreatedRevision] = await listRevisions("rev-revert-test");
+    expect(revertCreatedRevision.author).toBe("alice");
+    expect(
+      await readRevision("rev-revert-test", revertCreatedRevision.timestamp),
+    ).toContain("Changed");
+  });
+
+  it("forwards a regular principal and denies a public-page revert without mutation", async () => {
+    const current =
+      "---\ntitle: Public HTTP revert\nvisibility: public\n---\n# Public HTTP revert\n\nCurrent";
+    const revision =
+      "---\ntitle: Public HTTP revert\nvisibility: public\n---\n# Public HTTP revert\n\nRevision";
+    await writeWikiPage("public-http-revert", current);
+    await saveRevision("public-http-revert", revision, "service:test", "snapshot");
+    const timestamp = (await listRevisions("public-http-revert"))[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("public-http-revert"))!.content;
+    const revisionBefore = await readRevision("public-http-revert", timestamp);
+    const revisionHistoryBefore = await listRevisions("public-http-revert");
+
+    const res = await dispatchMcp(
+      {
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "revert_revision",
+          arguments: { slug: "public-http-revert", timestamp },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.revert);
+    expect((await readWikiPageWithFrontmatter("public-http-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("public-http-revert", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("public-http-revert")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("forwards a non-owner principal and cloaks a private-page revert without mutation", async () => {
+    const current =
+      "---\ntitle: Private HTTP revert\nowner: alice\nvisibility: private\n---\n# Private HTTP revert\n\nCurrent";
+    const revision =
+      "---\ntitle: Private HTTP revert\nowner: alice\nvisibility: private\n---\n# Private HTTP revert\n\nRevision";
+    await writeWikiPage("private-http-revert", current);
+    await saveRevision("private-http-revert", revision, "alice", "snapshot");
+    const timestamp = (await listRevisions("private-http-revert"))[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("private-http-revert"))!.content;
+    const revisionBefore = await readRevision("private-http-revert", timestamp);
+    const revisionHistoryBefore = await listRevisions("private-http-revert");
+
+    const res = await dispatchMcp(
+      {
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "revert_revision",
+          arguments: { slug: "private-http-revert", timestamp },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Error: page not found: private-http-revert");
+    expect(r.content[0].text).not.toMatch(/realm|public knowledge/i);
+    expect((await readWikiPageWithFrontmatter("private-http-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("private-http-revert", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("private-http-revert")).toEqual(
+      revisionHistoryBefore,
+    );
   });
 });
 
@@ -969,7 +2584,7 @@ describe("dispatchMcp — vault tools", () => {
 
     const res = await dispatchMcp(
       { id: 1, method: "tools/call", params: { name: "list_vaults", arguments: { owner: "bob" } } },
-      null, // no auth needed for reads
+      ALICE, // reads require a principal too (private deployment)
     );
     const r2 = res!.result as { content: { text: string }[] };
     const parsed = JSON.parse(r2.content[0].text);
@@ -977,14 +2592,14 @@ describe("dispatchMcp — vault tools", () => {
     expect(parsed.vaults.some((v: { name: string }) => v.name === "bob-notes")).toBe(true);
   });
 
-  it("list_vaults without owner or auth returns an error", async () => {
+  it("list_vaults is refused entirely without a principal", async () => {
     const res = await dispatchMcp(
       { id: 1, method: "tools/call", params: { name: "list_vaults", arguments: {} } },
       null,
     );
     const r2 = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r2.isError).toBe(true);
-    expect(r2.content[0].text).toMatch(/owner is required/i);
+    expect(r2.content[0].text).toMatch(/authentication required/i);
   });
 
   it("vault_pages returns enriched metadata for vault contents", async () => {
@@ -1013,7 +2628,7 @@ describe("dispatchMcp — vault tools", () => {
     expect(parsed.pages[0].title).toBe("Vault Test");
   });
 
-  it("vault_pages without owner or auth returns an error", async () => {
+  it("vault_pages is refused entirely without a principal", async () => {
     const res = await dispatchMcp(
       {
         id: 1,
@@ -1024,7 +2639,7 @@ describe("dispatchMcp — vault tools", () => {
     );
     const r2 = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r2.isError).toBe(true);
-    expect(r2.content[0].text).toMatch(/owner is required/i);
+    expect(r2.content[0].text).toMatch(/authentication required/i);
   });
 
   it("vault_curate, vault_create, vault_uncurate appear in tools/list", async () => {
@@ -1171,7 +2786,7 @@ describe("dispatchMcp — agent_context", () => {
         method: "tools/call",
         params: { name: "agent_context", arguments: { agent_id: "a--test-bot" } },
       },
-      null, // no auth required — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1195,7 +2810,7 @@ describe("dispatchMcp — agent_context", () => {
         method: "tools/call",
         params: { name: "agent_context", arguments: { agent_id: "nonexistent" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
@@ -1226,7 +2841,7 @@ describe("dispatchMcp — dataview_query", () => {
           },
         },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1249,7 +2864,7 @@ describe("dispatchMcp — dataview_query", () => {
           },
         },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1281,7 +2896,7 @@ describe("dispatchMcp — wiki_graph", () => {
         method: "tools/call",
         params: { name: "wiki_graph", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1300,7 +2915,7 @@ describe("dispatchMcp — wiki_graph", () => {
         method: "tools/call",
         params: { name: "wiki_graph", arguments: { scope: "all" } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1331,7 +2946,7 @@ describe("dispatchMcp — batch_ingest_urls", () => {
           arguments: { urls: ["https://example.com"] },
         },
       },
-      null, // no auth
+      null,
     );
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
     expect(r.isError).toBe(true);
@@ -1367,7 +2982,7 @@ describe("dispatchMcp — activity_trail", () => {
         method: "tools/call",
         params: { name: "activity_trail", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1385,7 +3000,7 @@ describe("dispatchMcp — activity_trail", () => {
         method: "tools/call",
         params: { name: "activity_trail", arguments: { limit: 5 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1407,7 +3022,7 @@ describe("dispatchMcp — ingest_history", () => {
         method: "tools/call",
         params: { name: "ingest_history", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1425,7 +3040,7 @@ describe("dispatchMcp — ingest_history", () => {
         method: "tools/call",
         params: { name: "ingest_history", arguments: { limit: 10 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
 
     const r = res!.result as { content: { text: string }[] };
@@ -1437,61 +3052,33 @@ describe("dispatchMcp — ingest_history", () => {
 });
 
 // ---------------------------------------------------------------------------
-// list_contributors dispatch
+// Contributor tools (retired) — every contributor page and REST route 404s, so
+// the two MCP tools went with them.
 // ---------------------------------------------------------------------------
-describe("dispatchMcp — list_contributors", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "list_contributors");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
+describe.each(["list_contributors", "get_contributor"])(
+  "dispatchMcp — %s is retired",
+  (retired) => {
+    it("is absent from tools/list", async () => {
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as { tools: { name: string }[] }).tools;
+      expect(tools.map((t) => t.name)).not.toContain(retired);
+    });
 
-  it("returns contributors array without auth (read-only)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_contributors", arguments: {} },
-      },
-      null, // no auth — read-only
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { content: { text: string }[] };
-    expect(r).not.toHaveProperty("isError");
-    const parsed = JSON.parse(r.content[0].text);
-    expect(parsed.contributors).toBeDefined();
-    expect(Array.isArray(parsed.contributors)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// get_contributor dispatch
-// ---------------------------------------------------------------------------
-describe("dispatchMcp — get_contributor", () => {
-  it("is registered as a read-only tool", () => {
-    const tool = MCP_TOOLS.find((t) => t.name === "get_contributor");
-    expect(tool).toBeDefined();
-    expect(tool!.write).toBe(false);
-  });
-
-  it("returns an error for unknown contributor (read-only, no auth needed)", async () => {
-    const res = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "get_contributor", arguments: { handle: "nonexistent-user" } },
-      },
-      null, // no auth — read-only
-    );
-
-    expect(res).not.toBeNull();
-    const r = res!.result as { isError?: boolean; content: { text: string }[] };
-    // Unknown handles throw from handleGetContributor, surfaced as isError
-    expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain("nonexistent-user");
-  });
-});
+    it("is an unknown tool when called", async () => {
+      const res = await dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: { name: retired, arguments: { handle: "alice" } },
+        },
+        ALICE,
+      );
+      const r = res!.result as { isError?: boolean; content: { text: string }[] };
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toMatch(/unknown tool/i);
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // list_agents dispatch
@@ -1523,7 +3110,7 @@ describe("dispatchMcp — list_agents", () => {
         method: "tools/call",
         params: { name: "list_agents", arguments: {} },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
 
     expect(res).not.toBeNull();
@@ -1549,7 +3136,7 @@ describe("dispatchMcp — update_agent", () => {
         method: "tools/call",
         params: { name: "update_agent", arguments: { name: "new-name" } },
       },
-      null, // no auth
+      null,
     );
 
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
@@ -1608,7 +3195,7 @@ describe("dispatchMcp — seed_agent", () => {
           },
         },
       },
-      null, // no auth
+      null,
     );
 
     const r = res!.result as { isError?: boolean; content: { text: string }[] };
@@ -1839,7 +3426,7 @@ describe("dispatchMcp — query_history", () => {
         method: "tools/call",
         params: { name: "query_history", arguments: { owner: "alice" } },
       },
-      null, // no auth — read-only
+      ALICE, // reads require a principal too (private deployment)
     );
     const r = res!.result as { content: { text: string }[] };
     expect(r).not.toHaveProperty("isError");
@@ -1855,7 +3442,7 @@ describe("dispatchMcp — query_history", () => {
         method: "tools/call",
         params: { name: "query_history", arguments: { owner: "alice", limit: 5 } },
       },
-      null,
+      ALICE, // every tools/call needs a principal (private deployment)
     );
     const r = res!.result as { content: { text: string }[] };
     expect(r).not.toHaveProperty("isError");

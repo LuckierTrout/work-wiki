@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { SignInButton } from "@clerk/nextjs";
+import { PrivateWorkspaceNotice } from "@/components/PrivateWorkspaceNotice";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentsForOwner } from "@/lib/agents";
 import { AgentManager } from "@/components/AgentManager";
@@ -8,52 +7,15 @@ import { AgentWorkspaceDesk } from "@/components/AgentWorkspaceDesk";
 /**
  * `/agents` — the signed-in user's agent management surface: list their agents
  * with inline edit / token / delete, plus a create form. A top-level page (moved
- * off `/vault`). Signed-out visitors see a sign-in prompt plus a waitlist link
- * — no data fetched.
+ * off `/vault`). Signed-out visitors see only a sign-in prompt — no data
+ * fetched.
  */
 export default async function AgentsPage() {
   const principal = await getPrincipal();
 
   if (!principal) {
     return (
-      <div className="fade">
-        <section
-          className="shell"
-          style={{ paddingTop: 120, paddingBottom: 120, textAlign: "center" }}
-        >
-          <p className="fmark" style={{ justifyContent: "center" }}>
-            your agents
-          </p>
-          <h1
-            className="display"
-            style={{ fontSize: "clamp(34px,4.6vw,58px)", margin: "16px 0 12px" }}
-          >
-            Agents
-          </h1>
-          <p
-            style={{
-              color: "var(--ink-2)",
-              fontSize: 18,
-              maxWidth: "44ch",
-              margin: "0 auto 28px",
-              lineHeight: 1.55,
-            }}
-          >
-            Sign in to create and manage agents that ingest and maintain pages
-            on your behalf.
-          </p>
-          <SignInButton mode="modal">
-            <button className="btn primary">Sign in to view your agents</button>
-          </SignInButton>
-          <p style={{ marginTop: 14, fontSize: 13, color: "var(--faint)" }}>
-            No account yet?{" "}
-            <Link href="/waitlist" className="underline">
-              Join the waitlist
-            </Link>
-            .
-          </p>
-        </section>
-      </div>
+      <PrivateWorkspaceNotice heading="Agents" action="Sign in to view your agents" />
     );
   }
 

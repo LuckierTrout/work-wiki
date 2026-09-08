@@ -17,6 +17,51 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Queue } from "@cloudflare/workers-types";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
+import type { AutoFixableCheckType } from "./lint-types";
+import { workbenchSourcePath } from "./source-delete";
+
+/**
+ * The document formats the sidecar extracts, as provenance (Story 7.1).
+ *
+ * Spelled here rather than imported from `./workbench-intake` so the queue's
+ * wire vocabulary stays readable in one file, and checked against
+ * `IngestOptions["sourceType"]` by the compiler: every member below is also a
+ * member of that union, so a format added to one and not the other cannot ship.
+ */
+export type ExtractSourceType =
+  | "pdf"
+  | "docx"
+  | "pptx"
+  | "xlsx"
+  | "xls"
+  | "ods"
+  | "epub"
+  | "mobi";
+
+/**
+ * Every `sourceType` an enqueued ingest may carry, as a runtime set.
+ *
+ * `Record<…, true>` rather than an array: the compiler then refuses a member
+ * that is missing here but present in the union above, which is the drift this
+ * validator exists to prevent.
+ */
+const TASK_SOURCE_TYPES: Record<
+  NonNullable<Extract<Task, { kind: "ingest" }>["sourceType"]>,
+  true
+> = {
+  "x-mention": true,
+  url: true,
+  text: true,
+  email: true,
+  pdf: true,
+  docx: true,
+  pptx: true,
+  xlsx: true,
+  xls: true,
+  ods: true,
+  epub: true,
+  mobi: true,
+};
 
 /**
  * A unit of asynchronous agent work. Discriminated by `kind` so the executor
@@ -24,14 +69,6 @@ import type { EmailIngestMetadata } from "./email-ingest";
  * Cloudflare Queues caps a message at 128 KB.
  */
 export type Task =
-  | {
-      /** Reconcile a commons page from a human-flagged talk thread (B2b loop). */
-      kind: "reconcile";
-      slug: string;
-      threadIndex: number;
-      /** Handle of the human who asked yoyo to address it (attribution). */
-      requestedBy?: string;
-    }
   | {
       /** Async ingestion. Every interactive/API ingest dispatches through this
        *  Task type (enqueued on Workers; run inline off-Workers via
@@ -81,22 +118,89 @@ export type Task =
       /** Provenance URL for a text ingest (the original source link). */
       sourceUrl?: string;
       /** Explicit source classification (e.g. agent `asOwner` ingests set
-       *  x-mention/url/text); when absent the pipeline derives it. Intentionally a
-       *  SUBSET of `IngestOptions["sourceType"]` — image/pdf/youtube are set
-       *  internally by the ingest functions, never carried over the queue. */
-      sourceType?: "x-mention" | "url" | "text" | "email";
+       *  x-mention/url/text); when absent the pipeline derives it. Still a
+       *  SUBSET of `IngestOptions["sourceType"]` — image and youtube are set
+       *  internally by the ingest functions and never travel over the queue.
+       *
+       *  THE EXTRACT FORMATS ARE HERE (Story 7.1) because the sidecar's
+       *  completion enqueues the compile as a queue task, and a document that
+       *  arrived as a PDF was landing in the ledger and in `sources[]` as
+       *  `text` — indistinguishable from a paste. The format is the one thing
+       *  about that arrival the completing door still knows. */
+      sourceType?:
+        | "x-mention"
+        | "url"
+        | "text"
+        | "email"
+        | ExtractSourceType;
+      /**
+       * Folder-import relative path for an inline text ingest (Story 2.2).
+       * Staged uploads already carry this on `staged.relativePath`; a small
+       * folder file must not be forced through staging just to keep the path.
+       */
+      relativePath?: string;
+      /** Plaud-origin Intake — skip `extract-actions` (Todos are Epic 4). */
+      origin?: "plaud";
+      /** Generation-only retry: reuse persisted Analysis JSON. */
+      reuseAnalysis?: boolean;
+      /** Stored Source path for retry without a second store. */
+      sourcePath?: string;
+      /** SHA-256 of stored Source bytes (ingest skip identity). */
+      contentSha256?: string;
+      /**
+       * Vector-on backfill. Not a second queue kind — the same ingest Task
+       * rebuilds embeddings and reports progress on the job record.
+       */
+      rebuildEmbeddings?: boolean;
       /** Inbound-email metadata used for owner-only activity and completion
        *  notifications. Attachment bytes are referenced through staged keys. */
       email?: EmailIngestMetadata;
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
       learningFor?: string;
+      /**
+       * NEVER — the guidance memo handle must not cross the queue (DW-396).
+       *
+       * `IngestOptions.guidanceCache` is a LIVE pair of `Map`s, so a queue
+       * message carrying one dies in `structuredClone` at `send()` time. What
+       * kept it off the wire was a convention narrower than it looks: no route
+       * spreads its `ingestOptions` OBJECT into a payload — each hand-writes
+       * the literal separately.
+       *
+       * Spreading a shared object into an ingest literal is otherwise routine
+       * here — `api/agents/[id]/ingest/route.ts` spreads `attribution` into
+       * four of them, and `source-rescan.ts` and `extract-dispatch.ts` each
+       * spread a `base`. Those are safe only because none of those objects
+       * carries the handle, which is what makes this guard load-bearing rather
+       * than theoretical: the shape it constrains is already idiomatic, and
+       * TypeScript does not excess-property-check a SPREAD, so
+       * `enqueueTask({ kind: "ingest", url, ...ingestOptions })` compiled
+       * cleanly and failed at runtime.
+       *
+       * Declaring the field as `never` makes that spread a compile error while
+       * leaving every hand-written literal (which simply omits it) untouched.
+       * And the omission is correct on its own terms, not just mechanically: a
+       * queued task is a DIFFERENT, later request, so it must resolve the
+       * Workspace Purpose and the Names & Terms dictionary fresh rather than
+       * inherit a snapshot from the request that enqueued it.
+       *
+       * Pinned in both directions by `tasks.test.ts` (a `@ts-expect-error`
+       * spread) and `ingest-routes.test.ts` (a runtime payload assertion).
+       */
+      guidanceCache?: never;
     }
   | {
       /** Extract owner-only action proposals from a newly ingested page. */
       kind: "extract-actions";
       slug: string;
       owner: string;
+    }
+  | {
+      /** Meeting-only Todo Candidates after a successful Plaud or marked-meeting compile. */
+      kind: "extract-todo-candidates";
+      slug: string;
+      owner: string;
+      sourcePath?: string;
     }
   | {
       /** Derive source-linked structured records from an accepted page revision. */
@@ -154,23 +258,69 @@ export type Task =
       owner: string;
     }
   | {
-      /** Autonomous maintenance, enqueued by the scan cron (Q2). `reconcile` a
-       *  disputed page from its open thread; `staleness` re-ingest an expired
-       *  page from its source; `fix` apply a deterministic lint auto-fix
-       *  (`lintType`). `threadIndex` is required for `reconcile`; `lintType` for
-       *  `fix`; `targetSlug` for `broken-link` (identifies which dead link to
+      /** Autonomous maintenance, enqueued by the scan cron (Q2). `staleness`
+       *  re-ingest an expired page from its source; `fix` apply a deterministic
+       *  lint auto-fix (`lintType`). `lintType` is required for `fix`;
+       *  `targetSlug` for `broken-link` (identifies which dead link to
        *  remove) and `missing-crossref` (identifies which page to link to). */
       kind: "maintain";
-      op: "reconcile" | "staleness" | "fix";
+      op: "staleness" | "fix";
       slug: string;
-      threadIndex?: number;
       lintType?: MaintainFixType;
       /** The target slug for `broken-link` (dead link to remove) or
        *  `missing-crossref` (page that should be linked to). */
       targetSlug?: string;
     };
 
-/** Deterministic, no-LLM lint fixes the maintenance scan may auto-apply. */
+/**
+ * Every top-level {@link Task} `kind`, as a runtime list.
+ *
+ * The union above is types-only, so nothing outside the type system can name
+ * the set of kinds — and `workers/task-consumer/README.md` enumerates them in
+ * prose. `prose-inventory-parity.test.ts` compares that prose (and
+ * `parseTask`'s dispatch switch) against this list, which needs a runtime value
+ * to compare against.
+ *
+ * NOT the nested `staged.kind` (pdf/image/text/document) — a different axis.
+ *
+ * The two assertions below pin this list to the union in both directions and
+ * are enforced by CI's `pnpm exec tsc --noEmit`:
+ *   - `satisfies readonly Task["kind"][]` rejects a kind that the union does
+ *     not have (no extras);
+ *   - `_NoTaskKindMissingFromList` resolves to `never` only while every union
+ *     arm appears here, and a non-`never` residue fails `AssertNever` (no
+ *     omissions).
+ */
+export const TASK_KINDS = [
+  "ingest",
+  "extract-actions",
+  "extract-todo-candidates",
+  "extract-knowledge",
+  "compile-knowledge",
+  "run-agent",
+  "run-research",
+  "monitor-source",
+  "deliver-monitor-digest",
+  "deliver-integration",
+  "create-backup",
+  "maintain",
+] as const satisfies readonly Task["kind"][];
+
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+/** Compile-time `Exclude<…> === never` check; see {@link TASK_KINDS}. */
+type AssertNever<T extends never> = T;
+type _NoTaskKindMissingFromList = AssertNever<Exclude<Task["kind"], TaskKind>>;
+
+/**
+ * Deterministic, no-LLM lint fixes the maintenance scan may auto-apply.
+ *
+ * This is not an independent list: it is the maintenance-eligible SUBSET of
+ * {@link AutoFixableCheckType} (`./lint-types`), the check types `fixLintIssue`
+ * dispatches — narrower because the two it omits, `contradiction` and
+ * `missing-concept-page`, call the LLM. `_MaintainFixTypesAreAutoFixable` below
+ * holds the subset relation at compile time and explains why.
+ */
 export type MaintainFixType =
   | "unmigrated-page"
   | "stale-index"
@@ -181,7 +331,34 @@ export type MaintainFixType =
   | "missing-crossref"
   | "stale-page";
 
-const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
+/**
+ * The `MaintainFixType` union as an ordered list — the machine side the prose
+ * restatements in `src/lib/maintenance.ts` and `workers/task-consumer/README.md`
+ * are read back against (`prose-inventory-parity.test.ts`), and the source of
+ * the membership set `parseTask` uses below.
+ *
+ * Three constraints hold this pair, all enforced by CI's `pnpm exec tsc
+ * --noEmit`. The two assertions here pin this list to the union in both
+ * directions — exactly as {@link TASK_KINDS} is:
+ *   - `satisfies readonly MaintainFixType[]` rejects a fix type the union does
+ *     not have (no extras);
+ *   - `_NoMaintainFixTypeMissingFromList` resolves to `never` only while every
+ *     union arm appears here, and a non-`never` residue fails `AssertNever`
+ *     (no omissions).
+ *
+ * The third is `_MaintainFixTypesAreAutoFixable` below, which neither of those
+ * can supply: they only hold the union and this list to EACH OTHER, so both
+ * could agree on a type `lint-fix.ts` no longer dispatches. It pins the pair to
+ * `AUTO_FIXABLE_CHECK_TYPES` as well (DW-459).
+ *
+ * The omission half is the one that used to be missing (DW-343). This was a
+ * `new Set<MaintainFixType>([…])`, which rejects an extra member but is silent
+ * about a forgotten one: a ninth fix type wired into `maintenance.ts` and not
+ * added here made `parseTask` return `null` for it, so the task was poison —
+ * acked and discarded on the spot, never reaching the DLQ — with `tsc`
+ * perfectly happy.
+ */
+export const MAINTAIN_FIX_TYPES = [
   "unmigrated-page",
   "stale-index",
   "supersedes-dangling",
@@ -190,7 +367,42 @@ const MAINTAIN_FIX_TYPES = new Set<MaintainFixType>([
   "empty-page",
   "missing-crossref",
   "stale-page",
-]);
+] as const satisfies readonly MaintainFixType[];
+
+type _NoMaintainFixTypeMissingFromList = AssertNever<
+  Exclude<MaintainFixType, (typeof MAINTAIN_FIX_TYPES)[number]>
+>;
+
+/**
+ * The third constraint, and the one that reaches OUTSIDE this file: every
+ * `MaintainFixType` arm must also be an {@link AutoFixableCheckType}, the list
+ * `fixLintIssue` (`./lint-fix`) actually dispatches.
+ *
+ * The two pins above only hold the union and the tuple to each other, so both
+ * could agree on a type `lint-fix.ts` no longer handles. The harm is a poison
+ * task that passes every gate on the way in: `parseTask` below sees the type in
+ * `MAINTAIN_FIX_TYPE_SET` and admits the `maintain:fix` task, the consumer
+ * drains it, and `fixLintIssue(task.lintType, …)` at
+ * `src/app/api/tasks/run/route.ts:255` throws `FixValidationError` on work that
+ * is already off the queue. This turns that into a build failure at the moment
+ * a member leaves `AUTO_FIXABLE_CHECK_TYPES`.
+ *
+ * Deliberately a pin and not a definition: writing `MaintainFixType` as
+ * `Extract<AutoFixableCheckType, …>` would make the union silently NARROW when
+ * a member disappears from the fixable list — the drift would compile here and
+ * surface, if at all, at the tuple's `satisfies` with the wrong message. The
+ * import is `import type` so this producer module gains no runtime dependency;
+ * `./lint-types` exists precisely so the list has one home both sides can name.
+ */
+type _MaintainFixTypesAreAutoFixable = AssertNever<
+  Exclude<MaintainFixType, AutoFixableCheckType>
+>;
+
+/**
+ * Membership as a `Set`, so the hot parse path below keeps its O(1) lookup —
+ * derived from the tuple, never restated.
+ */
+const MAINTAIN_FIX_TYPE_SET: ReadonlySet<string> = new Set(MAINTAIN_FIX_TYPES);
 
 /**
  * Resolve the `TASK_QUEUE` producer binding (matches `queues.producers[].binding`
@@ -270,28 +482,21 @@ export async function enqueueTasks(tasks: readonly Task[]): Promise<EnqueueTasks
 /**
  * Validate + narrow an untrusted JSON body into a {@link Task}, or `null` if it
  * isn't a well-formed task. Used by `/api/tasks/run` to reject malformed
- * messages as poison (4xx → DLQ) rather than retrying them forever.
+ * messages as poison (400 → acked and discarded on the spot, never reaching
+ * the DLQ) rather than retrying them forever.
  */
 export function parseTask(body: unknown): Task | null {
   if (!body || typeof body !== "object") return null;
   const t = body as Record<string, unknown>;
   switch (t.kind) {
-    case "reconcile":
-      if (typeof t.slug !== "string" || t.slug.trim() === "") return null;
-      if (typeof t.threadIndex !== "number" || !Number.isInteger(t.threadIndex)) {
-        return null;
-      }
-      return {
-        kind: "reconcile",
-        slug: t.slug,
-        threadIndex: t.threadIndex,
-        ...(typeof t.requestedBy === "string"
-          ? { requestedBy: t.requestedBy }
-          : {}),
-      };
     case "ingest": {
       const hasUrl = typeof t.url === "string" && t.url.trim() !== "";
       const hasContent = typeof t.content === "string" && t.content.trim() !== "";
+      const sourcePath = typeof t.sourcePath === "string"
+        ? workbenchSourcePath(t.sourcePath)
+        : null;
+      if (typeof t.sourcePath === "string" && !sourcePath) return null;
+      const hasStoredSource = sourcePath !== null;
       // Validate a staged-upload descriptor: a non-empty key + an allowed kind.
       let staged: Extract<Task, { kind: "ingest" }>["staged"];
       if (t.staged && typeof t.staged === "object") {
@@ -342,7 +547,13 @@ export function parseTask(body: unknown): Task | null {
         }
         if (attachments.length === 0) attachments = undefined;
       }
-      if (!hasUrl && !hasContent && !staged && !attachments) return null; // need a source
+      const rebuildEmbeddings = t.rebuildEmbeddings === true;
+      if (!hasUrl && !hasContent && !hasStoredSource && !staged && !attachments && !rebuildEmbeddings) {
+        return null; // need a source
+      }
+      if (rebuildEmbeddings && (hasUrl || hasContent || hasStoredSource || staged || attachments)) {
+        return null;
+      }
       // Reject incoherent combinations so the consumer's branch-order precedence
       // is an ENFORCED invariant, not a silent "first match wins". `staged` is
       // exclusive (it's its own source); `source` only qualifies a `url`.
@@ -371,18 +582,27 @@ export function parseTask(body: unknown): Task | null {
           subject: e.subject,
           messageId: e.messageId,
           attachmentNames: e.attachmentNames as string[],
+          // Optional on the wire and optional here: a task enqueued by an older
+          // build carries no arrival time, and inventing one would date the
+          // message by whenever the queue got to it.
+          ...(typeof e.receivedAt === "string" && e.receivedAt.trim()
+            ? { receivedAt: e.receivedAt }
+            : {}),
         };
       }
       const sourceType =
-        t.sourceType === "x-mention" ||
-        t.sourceType === "url" ||
-        t.sourceType === "text" ||
-        t.sourceType === "email"
-          ? t.sourceType
+        typeof t.sourceType === "string" &&
+        Object.prototype.hasOwnProperty.call(TASK_SOURCE_TYPES, t.sourceType)
+          ? (t.sourceType as NonNullable<
+              Extract<Task, { kind: "ingest" }>["sourceType"]
+            >)
           : undefined;
-      if ((sourceType === "email") !== Boolean(email)) return null;
-      if (attachments && sourceType !== "email") return null;
-      if (attachments && staged && staged.kind !== "text") return null;
+      if (!rebuildEmbeddings) {
+        if ((sourceType === "email") !== Boolean(email)) return null;
+        if (attachments && sourceType !== "email") return null;
+        if (attachments && staged && staged.kind !== "text") return null;
+      }
+      const origin = t.origin === "plaud" ? "plaud" : undefined;
       return {
         kind: "ingest",
         ...(hasUrl ? { url: t.url as string } : {}),
@@ -407,28 +627,34 @@ export function parseTask(body: unknown): Task | null {
         ...(typeof t.sourceUrl === "string" && t.sourceUrl.trim() !== ""
           ? { sourceUrl: t.sourceUrl }
           : {}),
+        ...(typeof t.relativePath === "string" && t.relativePath.trim()
+          ? { relativePath: t.relativePath.slice(0, 1_000) }
+          : {}),
         ...(sourceType ? { sourceType } : {}),
         ...(email ? { email } : {}),
         ...(typeof t.learningFor === "string" && t.learningFor.trim() !== ""
           ? { learningFor: t.learningFor }
           : {}),
+        ...(origin ? { origin } : {}),
+        ...(t.reuseAnalysis === true ? { reuseAnalysis: true } : {}),
+        ...(sourcePath ? { sourcePath: sourcePath.slice(0, 1_000) } : {}),
+        ...(typeof t.contentSha256 === "string" && t.contentSha256.trim()
+          ? { contentSha256: t.contentSha256 }
+          : {}),
+        ...(rebuildEmbeddings ? { rebuildEmbeddings: true } : {}),
       };
     }
     case "maintain": {
       if (typeof t.slug !== "string" || t.slug.trim() === "") return null;
-      // `reconcile` needs a thread to reconcile from.
-      if (t.op === "reconcile") {
-        if (typeof t.threadIndex !== "number" || !Number.isInteger(t.threadIndex)) {
-          return null;
-        }
-        return { kind: "maintain", op: "reconcile", slug: t.slug, threadIndex: t.threadIndex };
-      }
       if (t.op === "staleness") {
         return { kind: "maintain", op: "staleness", slug: t.slug };
       }
-      // `fix` needs an allowed (deterministic) lint type.
+      // `fix` needs an allowed (deterministic) lint type. The `typeof` half is
+      // load-bearing, not decoration: `t.lintType` is unparsed input, so a cast
+      // here would assert the very proposition the line exists to test.
       if (t.op === "fix") {
-        if (!MAINTAIN_FIX_TYPES.has(t.lintType as MaintainFixType)) return null;
+        if (typeof t.lintType !== "string") return null;
+        if (!MAINTAIN_FIX_TYPE_SET.has(t.lintType)) return null;
         const lintType = t.lintType as MaintainFixType;
         // `broken-link` additionally requires a targetSlug (which dead link to remove).
         // `missing-crossref` additionally requires a targetSlug (which page to link to).
@@ -464,6 +690,23 @@ export function parseTask(body: unknown): Task | null {
         kind: "extract-actions",
         slug: t.slug,
         owner: t.owner,
+      };
+    case "extract-todo-candidates":
+      if (
+        typeof t.slug !== "string" ||
+        t.slug.trim() === "" ||
+        typeof t.owner !== "string" ||
+        t.owner.trim() === ""
+      ) {
+        return null;
+      }
+      return {
+        kind: "extract-todo-candidates",
+        slug: t.slug,
+        owner: t.owner,
+        ...(typeof t.sourcePath === "string" && t.sourcePath.trim()
+          ? { sourcePath: t.sourcePath.slice(0, 1_000) }
+          : {}),
       };
     case "extract-knowledge":
       if (

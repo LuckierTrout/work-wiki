@@ -58,11 +58,20 @@ export async function getSystemHealth(owner: string): Promise<SystemHealthSnapsh
   const outboxFailures = outbox.filter((event) => event.status === "failed").length;
   const ingestFailures = ingestStatuses.filter((status) => status === "failed").length;
   const privacyPass = latestEvaluation ? latestEvaluation.privacyPassRate === 1 : null;
+  // A TRUNCATED backup is not a failed one — `backupStatus` stays exactly what
+  // verification made it, because truncation is its own fact (DW-215). But it
+  // must not read as nothing to do: before the limits truncated, an over-limit
+  // tenant got NO backup at all, so this snapshot said `missing`/`attention`.
+  // A partial backup that verifies would otherwise report `healthy` about a
+  // copy that omitted most of the silo — a quieter answer than the failure it
+  // replaced.
+  const backupTruncated = Boolean(latestBackup?.truncated);
   const needsAttention = monitorFailures > 0
     || outboxFailures > 0
     || ingestFailures > 0
     || failedOperations > 0
     || backupStatus !== "verified"
+    || backupTruncated
     || privacyPass === false;
 
   return {

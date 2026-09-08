@@ -1,0 +1,244 @@
+/**
+ * The Deep Research concurrency lease (AD-18: at most three runs per workspace).
+ *
+ * Real storage over a temp `DATA_DIR`, the `research-projects.test.ts` recipe —
+ * the lease IS a file, and a mocked store would pin the arithmetic while
+ * proving nothing about what the next isolate reads. The rows below pin the
+ * three properties the runtime depends on: the ceiling holds, a redelivery of
+ * the same project does not consume a second slot, and a slot that nobody
+ * released stops counting once its TTL passes.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import {
+  MAX_CONCURRENT_RESEARCH,
+  RESEARCH_SLOT_TTL_MS,
+  ResearchLeaseError,
+  acquireResearchSlot,
+  activeResearchCount,
+  applyResearchLeaseMutation,
+  holdsResearchSlot,
+  releaseResearchSlot,
+  renewResearchSlot,
+  rotateResearchSlot,
+} from "../research-concurrency";
+import { _resetLocks } from "../lock";
+import { _resetStorage } from "../storage";
+
+let tmpDir: string;
+let originalDataDir: string | undefined;
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "research-leases-"));
+  originalDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = tmpDir;
+  _resetLocks();
+  _resetStorage();
+});
+
+afterEach(async () => {
+  vi.useRealTimers();
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  _resetStorage();
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+describe("research concurrency lease", () => {
+  it("admits three runs and queues the fourth", async () => {
+    expect(MAX_CONCURRENT_RESEARCH).toBe(3);
+
+    const first = await acquireResearchSlot("alice", "p1");
+    const second = await acquireResearchSlot("alice", "p2");
+    const third = await acquireResearchSlot("alice", "p3");
+    const fourth = await acquireResearchSlot("alice", "p4");
+
+    expect([first.granted, second.granted, third.granted]).toEqual([true, true, true]);
+    expect(third.active).toBe(3);
+    // The refusal reports the ceiling so the caller can SAY what it is waiting
+    // behind — the panel's "waiting for a free research slot (3 of 3 running)".
+    expect(fourth).toEqual({ granted: false, acquired: false, active: 3, limit: 3 });
+    expect(await activeResearchCount("alice")).toBe(3);
+  });
+
+  it("frees the ceiling when a run releases", async () => {
+    await acquireResearchSlot("alice", "p1");
+    const second = await acquireResearchSlot("alice", "p2");
+    await acquireResearchSlot("alice", "p3");
+    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(false);
+
+    await releaseResearchSlot("alice", "p2", second.attemptId);
+
+    expect(await activeResearchCount("alice")).toBe(2);
+    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(true);
+  });
+
+  it("counts one slot per project however often the task is redelivered", async () => {
+    // Cloudflare Queues can deliver `run-research` more than once. A redelivery
+    // that took a second slot would let one project eat the whole ceiling.
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p1");
+
+    // One slot, so the workspace still has two to give — three redeliveries of
+    // `p1` would have exhausted the ceiling on their own.
+    expect(await activeResearchCount("alice")).toBe(1);
+    expect((await acquireResearchSlot("alice", "p2")).granted).toBe(true);
+    expect((await acquireResearchSlot("alice", "p3")).granted).toBe(true);
+    expect(await activeResearchCount("alice")).toBe(3);
+  });
+
+  it("is per workspace, not global", async () => {
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p2");
+    await acquireResearchSlot("alice", "p3");
+
+    // Bob's ceiling is his own — one workspace's burst must not throttle
+    // another's, which is what a single global counter would do.
+    expect((await acquireResearchSlot("bob", "p1")).granted).toBe(true);
+    expect(await activeResearchCount("bob")).toBe(1);
+  });
+
+  it("retains an expired claim until the project reaper releases it", async () => {
+    // Admission cannot distinguish an evicted isolate from a provider callback
+    // still finishing after renewal loss. The project reconciler owns the
+    // later visible-failure + release transition.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p2");
+    await acquireResearchSlot("alice", "p3");
+    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(false);
+
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+
+    expect(await activeResearchCount("alice")).toBe(3);
+    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(false);
+  });
+
+  it("keeps a long but live run out of the reaper", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    const grant = await acquireResearchSlot("alice", "p1");
+
+    // Two thirds of the way to expiry, twice — a run that renews as it makes
+    // progress outlives a TTL shorter than the run itself.
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS * 0.66));
+    await renewResearchSlot("alice", "p1", grant.attemptId!);
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS * 0.66));
+
+    expect(await activeResearchCount("alice")).toBe(1);
+  });
+
+  it("fails visibly when a live worker tries to renew a reaped slot", async () => {
+    await expect(renewResearchSlot("alice", "ghost", "missing-attempt"))
+      .rejects.toThrow(/slot.*lost/i);
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("does not let an old attempt renew or release a replacement attempt", async () => {
+    const first = await acquireResearchSlot("alice", "p1");
+    await releaseResearchSlot("alice", "p1", first.attemptId);
+    const replacement = await acquireResearchSlot("alice", "p1");
+
+    await expect(renewResearchSlot("alice", "p1", first.attemptId!))
+      .rejects.toThrow(/slot.*lost/i);
+    expect(await releaseResearchSlot("alice", "p1", first.attemptId)).toBe(false);
+    expect(await activeResearchCount("alice")).toBe(1);
+    await expect(renewResearchSlot("alice", "p1", replacement.attemptId!))
+      .resolves.toBeUndefined();
+  });
+
+  it("rotates an expired attempt atomically and refuses to rotate a renewed one", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    const first = await acquireResearchSlot("alice", "p1");
+    expect(await rotateResearchSlot("alice", "p1", first.attemptId!)).toBeNull();
+
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1));
+    const replacement = await rotateResearchSlot("alice", "p1", first.attemptId!);
+    const adoptedAfterProjectWriteCrash = await rotateResearchSlot(
+      "alice",
+      "p1",
+      first.attemptId!,
+    );
+
+    expect(replacement?.attemptId).toBeTruthy();
+    expect(adoptedAfterProjectWriteCrash?.attemptId).toBe(replacement?.attemptId);
+    expect(replacement?.attemptId).not.toBe(first.attemptId);
+    await expect(renewResearchSlot("alice", "p1", first.attemptId!))
+      .rejects.toThrow(/slot.*lost/i);
+    await expect(renewResearchSlot("alice", "p1", replacement!.attemptId!))
+      .resolves.toBeUndefined();
+  });
+
+  it("keeps one coherent slot when renewal races expiry rotation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    const first = await acquireResearchSlot("alice", "p1");
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1));
+
+    const [renewed, rotated] = await Promise.allSettled([
+      renewResearchSlot("alice", "p1", first.attemptId!),
+      rotateResearchSlot("alice", "p1", first.attemptId!),
+    ]);
+
+    expect(await activeResearchCount("alice")).toBe(1);
+    if (renewed.status === "fulfilled") {
+      expect(rotated).toMatchObject({ status: "fulfilled", value: null });
+      expect(await holdsResearchSlot("alice", "p1", first.attemptId)).toBe(true);
+    } else {
+      expect(rotated.status).toBe("fulfilled");
+      const replacement = rotated.status === "fulfilled" ? rotated.value : null;
+      expect(replacement?.attemptId).toBeTruthy();
+      expect(await holdsResearchSlot("alice", "p1", replacement?.attemptId)).toBe(true);
+    }
+  });
+
+  it("refuses rather than admits when the lease file is unreadable", async () => {
+    const target = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, "{ not json", "utf-8");
+
+    await expect(acquireResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
+    await expect(holdsResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
+  });
+
+  it("fails closed when one entry in an otherwise valid lease list is malformed", async () => {
+    const target = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify([
+      { projectId: "p1", acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 },
+      { projectId: "broken", acquiredAt: "yesterday", expiresAt: Date.now() + 60_000 },
+    ]), "utf-8");
+
+    await expect(acquireResearchSlot("alice", "p2")).rejects.toBeInstanceOf(ResearchLeaseError);
+    await expect(activeResearchCount("alice")).rejects.toBeInstanceOf(ResearchLeaseError);
+  });
+
+  it("admits only one of two last-slot racers without the in-process lock", async () => {
+    await acquireResearchSlot("alice", "p1");
+    await acquireResearchSlot("alice", "p2");
+
+    const tryTake = (id: string) =>
+      applyResearchLeaseMutation<{ granted: boolean; active: number }>("alice", (slots, now) => {
+        if (slots.some((slot) => slot.projectId === id)) {
+          return { slots, result: { granted: true as const, active: slots.length } };
+        }
+        if (slots.length >= MAX_CONCURRENT_RESEARCH) {
+          return { slots, result: { granted: false as const, active: slots.length } };
+        }
+        const next = [
+          ...slots,
+          { projectId: id, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS },
+        ];
+        return { slots: next, result: { granted: true as const, active: next.length } };
+      });
+
+    const [first, second] = await Promise.all([tryTake("p3"), tryTake("p4")]);
+    expect([first.granted, second.granted].filter(Boolean)).toHaveLength(1);
+    expect(await activeResearchCount("alice")).toBe(3);
+  });
+});

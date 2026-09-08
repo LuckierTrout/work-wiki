@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getPrincipal } from "@/lib/auth";
+import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { getErrorMessage } from "@/lib/errors";
 import { expandQueryWithNamesTerms } from "@/lib/names-terms";
 import { selectPagesForQuery } from "@/lib/query";
@@ -12,7 +12,11 @@ import {
 } from "@/lib/wiki";
 
 export async function GET(request: Request) {
-  const principal = await getPrincipal();
+  // The owner-automation token is accepted here (Story 8.5) because the Chat
+  // Agent's AnyTXT tool is this route: the Agent runs in the sidecar, which has
+  // no session. The read gate below is unchanged — `listReadableWikiPages` still
+  // decides what the principal may see, whichever way it authenticated.
+  const principal = await requireOwnerOrServicePrincipal(request);
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }

@@ -295,10 +295,10 @@ export function BatchIngestForm() {
               Queue more
             </button>
             <Link
-              href="/wiki"
+              href="/wiki/log"
               className="text-sm text-foreground/60 hover:text-foreground transition-colors"
             >
-              View wiki →
+              View the trail →
             </Link>
           </div>
         </div>
@@ -330,10 +330,10 @@ export function BatchIngestForm() {
                 Ingest more
               </button>
               <Link
-                href="/wiki"
+                href="/wiki/log"
                 className="text-sm text-foreground/60 hover:text-foreground transition-colors"
               >
-                View wiki →
+                View the trail →
               </Link>
             </div>
           )}

@@ -80,7 +80,7 @@ Write the following details to `{spec_file}` under `## Auto Run Result`:
 - Summary of implemented change
 - Files changed with one-line descriptions
 - Review findings breakdown: patches applied, items deferred, items rejected
-- Follow-up review recommendation: count only this pass's findings triaged `patch` — never defer or reject. `true` if any patched finding was `high` severity, or if `3 × medium count + 1 × low count` is 5 or more; otherwise `false`. Record the patched counts by severity and the score.
+- Follow-up review recommendation: count only this pass's findings triaged `patch` — never defer or reject. `true` only if any patched finding was `high` severity; otherwise `false`. Medium and low patched findings are fixed in this pass and recorded, but they never recommend another review iteration — they go to the backlog, not loop fuel. Record the patched counts by severity and the score.
 - Verification performed, including command outcomes or manual inspection notes
 - Any residual risks
 
@@ -91,6 +91,6 @@ If version control is unavailable, set `{spec_file}` frontmatter `status: done`,
 If version control is available, write `status: done` into `{spec_file}` frontmatter, then:
 
 1. Commit any reviewed-diff files that remain uncommitted, including `{spec_file}` when it is tracked in that working copy. Keep commits already created during this run. Verify every reviewed-diff file appears in the change set after `{baseline_revision}` and none remains uncommitted. Do not push.
-2. Verify the version-controlled working copy is clean. Otherwise HALT with status `blocked` and blocking condition `finalization left repository dirty`.
+2. Verify the version-controlled working copy is clean of everything except orchestrator-owned bookkeeping. The exception is `{implementation_artifacts}/deferred-work.md`, and only that ledger: the orchestrator harvests deferred findings into it and squashes it into the story commit after this session exits, so do not HALT, revert, or rewrite it. The exception is not a general waiver for files this run was told not to touch. A file restricted by the spec's Never clause, the `<intent-contract>`, or any protected-file rule must never be modified by this session in the first place, so an uncommitted change to one is a session violation to surface, not bookkeeping to ignore. If any file other than `deferred-work.md` remains uncommitted — a restricted file included — HALT with status `blocked` and blocking condition `finalization left repository dirty`.
 
 HALT with status `done`.

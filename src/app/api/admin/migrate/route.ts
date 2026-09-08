@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal, getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { migrateToTenants } from "@/lib/migrate-to-tenants";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
@@ -18,7 +18,7 @@ import { logger } from "@/lib/logger";
 export async function POST(req: Request) {
   const service = getServicePrincipal(req);
   const principal = service ?? (await getPrincipal());
-  if (!service && !isOwnerHandle(principal?.handle)) {
+  if (!service && !isOwnerPrincipal(principal)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

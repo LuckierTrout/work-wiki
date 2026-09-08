@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+vi.mock("@/lib/owner", async (original) => ({
+  ...(await original<typeof import("@/lib/owner")>()),
+  isOwnerPrincipal: vi.fn(),
+}));
 vi.mock("@/lib/agents", () => ({
   getAgent: vi.fn(),
   listAgentsForOwner: vi.fn(async () => []),
@@ -18,16 +21,18 @@ vi.mock("@/lib/email-ingest", async (original) => ({
 }));
 
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   loadEmailIngestConfig,
   saveEmailIngestConfig,
 } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
+import { logger } from "@/lib/logger";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
-const mockedIsOwner = vi.mocked(isOwnerHandle);
+const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const mockedLoad = vi.mocked(loadEmailIngestConfig);
 const mockedSave = vi.mocked(saveEmailIngestConfig);
 const mockedGetAgent = vi.mocked(getAgent);
@@ -42,8 +47,14 @@ function request(body: Record<string, unknown>) {
   });
 }
 
+let savedReadOnly: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  savedReadOnly = process.env.YOPEDIA_READONLY;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every writable case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedPrincipal.mockResolvedValue({ id: "user_1", handle: "LuckierTrout" });
   mockedIsOwner.mockReturnValue(true);
   mockedLoad.mockResolvedValue({
@@ -60,6 +71,69 @@ beforeEach(() => {
     destinationAgentId: input.destinationAgentId ?? "",
     updatedAt: "2026-08-01T12:00:00.000Z",
   }));
+});
+
+afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
+});
+
+/**
+ * The settings save on a read-only deployment (DW-300).
+ *
+ * Before this gate `saveEmailIngestConfig` refused nothing of its own, so the
+ * panel reported a save that had happened — including flipping ingestion ON for
+ * a deployment that refuses every ingest behind it. DW-385 has since gated the
+ * writer itself with this same sentence, for callers that never pass a route;
+ * this gate stays because it answers after `requireOwner()` (the not-found
+ * cloak still wins) and before the body parse.
+ */
+describe("PUT /api/email/settings on a read-only deployment", () => {
+  const VALID = {
+    enabled: true,
+    inboundAddress: "ingest@example.com",
+    allowedSenders: ["owner@example.com"],
+  };
+
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s without saving", async () => {
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request(VALID));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.emailSettings });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps the not-found cloak ahead of the refusal for a non-owner", async () => {
+    // THE ordering assertion. The gate sits after `requireOwner()`, so a
+    // non-owner still gets 404 — a 403 here would tell them this owner-only
+    // door exists, which is exactly what the cloak is for.
+    mockedIsOwner.mockReturnValue(false);
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request(VALID));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Not found" });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses BEFORE validating the body", async () => {
+    // An invalid body would otherwise 400 first, blaming the owner's input for
+    // a save the deployment was never going to accept.
+    const { PUT } = await import("@/app/api/email/settings/route");
+    const response = await PUT(request({ enabled: "yes" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.emailSettings });
+  });
+
+  it("still SERVES the configuration — the read is not refused", async () => {
+    const { GET } = await import("@/app/api/email/settings/route");
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(mockedLoad).toHaveBeenCalled();
+  });
 });
 
 describe("/api/email/settings", () => {
@@ -141,5 +215,59 @@ describe("/api/email/settings", () => {
       destinationVaultId: "luckiertrout--work",
       destinationAgentId: "luckiertrout--yoyo",
     }));
+  });
+});
+
+/**
+ * THE MID-REQUEST FLAG FLIP (DW-526).
+ *
+ * `YOPEDIA_READONLY` is UNSET here — the outer `beforeEach` clears it — so the
+ * gate passes and `saveEmailIngestConfig` is reached. It refuses in the kernel
+ * (DW-385) because the flag moved while the handler was in flight. That used to
+ * fall into the catch, be logged as a fault and answered 500.
+ */
+describe("PUT /api/email/settings when the flag flips mid-request", () => {
+  const VALID = {
+    enabled: true,
+    inboundAddress: "ingest@example.com",
+    allowedSenders: ["owner@example.com"],
+  };
+
+  it("403s with the kernel's sentence, and logs no error", async () => {
+    // A refusal is not a server fault, so it must not reach `logger.error` —
+    // an operator reading the logs of a deployment they themselves put into
+    // read-only mode would otherwise be chasing a failure that never happened.
+    const errorLog = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      mockedSave.mockRejectedValueOnce(
+        new ReadOnlyError(READ_ONLY_REFUSAL.emailSettings),
+      );
+      const { PUT } = await import("@/app/api/email/settings/route");
+      const response = await PUT(request(VALID));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: READ_ONLY_REFUSAL.emailSettings,
+      });
+      expect(errorLog).not.toHaveBeenCalled();
+      // The gate did not answer this — the writer did.
+      expect(mockedSave).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("still 500s and still LOGS an ordinary save failure", async () => {
+    // The discriminator: the 403 branch returns before the log, and nothing
+    // else about the catch changed.
+    const errorLog = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      mockedSave.mockRejectedValueOnce(new Error("disk on fire"));
+      const { PUT } = await import("@/app/api/email/settings/route");
+      const response = await PUT(request(VALID));
+      expect(response.status).toBe(500);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 });

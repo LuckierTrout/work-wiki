@@ -1,0 +1,772 @@
+/**
+ * The one request helper the workbench's client components share (DW-175).
+ *
+ * Its invariants are the kind a source scan can only spell: the JSON content
+ * type, the deadline, and the `...init` FIRST spread order.
+ *
+ * The copy in `WikiWorkbench.tsx` armed no signal at all, so a hung create left
+ * that card's `busy` flag up for the rest of the session with no message to
+ * explain it — that one was a live defect. It also spread the caller OVER the
+ * headers, which cost nothing while both call sites passed only `method` and
+ * `body`: the content type went out either way. The order matters for the call
+ * nobody has written yet, which is exactly the kind of invariant that is worth
+ * executing rather than trusting.
+ *
+ * So the helper is EXERCISED here against a stubbed `fetch`: what reaches the
+ * network is read off the call, not matched against the file's text.
+ */
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  REQUEST_TIMEOUT_MS,
+  RequestFailedError,
+  UNCONFIRMED_STATUSES,
+  readJsonBody,
+  refusedWriteFailure,
+  send,
+  sendForm,
+  thrownWriteFailure,
+  unconfirmedWriteMessage,
+  writeFailure,
+} from "../workbench-request";
+import {
+  ACTIVITY_ANSWER_BUDGET_MS,
+  FETCH_TIMEOUT_MS,
+  INTAKE_ANSWER_BUDGET_MS,
+} from "../constants";
+import { CONFIG_UNREADABLE_COPY } from "../config";
+
+const SRC = path.resolve(__dirname, "../..");
+
+/** The subset of `Response` `send` reads — `status` included. */
+function answer(body: unknown, { ok = true, status = 200 } = {}) {
+  return { ok, status, json: async () => body } as unknown as Response;
+}
+
+function stubFetch(response: () => Promise<Response> | Response) {
+  const mock = vi.fn(async () => response());
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("send", () => {
+  it("declares the JSON content type and arms the deadline", async () => {
+    const mock = stubFetch(() => answer({ wiki: { id: "w1" } }));
+
+    await expect(
+      send<{ wiki: { id: string } }>("/api/wikis", {
+        method: "POST",
+        body: JSON.stringify({ name: "Acme" }),
+      }),
+    ).resolves.toEqual({ wiki: { id: "w1" } });
+
+    const [url, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/wikis");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    // A deadline is present at all: `finally` cannot rescue a promise that
+    // never settles, so this is the only thing that ever will.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it("keeps both invariants when the caller passes headers of its own", async () => {
+    // The `...init` FIRST order, EXECUTED — and the only shape in which that
+    // order is observable at all. Spread the other way round, this caller's
+    // `headers` object replaces the helper's whole map and the content type
+    // disappears with no diagnostic anywhere; a call passing only `method` and
+    // `body` cannot tell the two orders apart.
+    const mock = stubFetch(() => answer({}));
+
+    await send("/api/wikis/w1", {
+      method: "PATCH",
+      headers: { "X-Test": "1" },
+      body: JSON.stringify({ name: "Acme" }),
+    });
+
+    const [, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("X-Test")).toBe("1");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("refuses to let a caller drop the deadline by passing its own signal", async () => {
+    // The caller's `signal` is overwritten, not merged: the deadline is this
+    // helper's promise to every consumer, and a call that could opt out of it
+    // is a call that can strand a busy flag forever.
+    const mock = stubFetch(() => answer({}));
+    const caller = new AbortController();
+
+    await send("/api/wikis", { method: "POST", signal: caller.signal });
+
+    const [, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).not.toBe(caller.signal);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("arms the same deadline for a multipart body, and sets no content type", async () => {
+    // `sendForm` is a SECOND fetch call site, so `send`'s cases say nothing
+    // about it: the deadline is the helper's promise to every consumer ("a
+    // `finally` cannot rescue a promise that never settles"), and an upload that
+    // hung with no signal would strand `intakeBusy` for the rest of the session
+    // — the exact failure this file was written for, on the one door that posts
+    // bytes rather than JSON.
+    const mock = stubFetch(() => answer({ queued: true }));
+
+    await expect(
+      sendForm<{ queued: boolean }>("/api/workbench/intake", new FormData()),
+    ).resolves.toEqual({ queued: true });
+
+    const [url, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/workbench/intake");
+    expect(init.method).toBe("POST");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+    // Content type UNSET, deliberately: `fetch` derives it from the `FormData`
+    // body with the boundary parameter, and a label written by hand produces a
+    // body no server can parse.
+    expect(new Headers(init.headers).get("Content-Type")).toBeNull();
+  });
+
+  it("reports a refused upload in the same words as every other write", async () => {
+    // The status has to RIDE the error here too, or `writeFailure` cannot tell a
+    // gateway that gave up (unconfirmed — the bytes may be stored) from a route
+    // that refused. Two helpers, one failure vocabulary.
+    stubFetch(() => answer({ error: "PDF is not a Markdown, text, or HTML source." }, {
+      ok: false,
+      status: 400,
+    }));
+
+    await expect(
+      sendForm("/api/workbench/intake", new FormData()),
+    ).rejects.toMatchObject({
+      message: "PDF is not a Markdown, text, or HTML source.",
+      status: 400,
+    });
+  });
+
+  it("throws the server's own message on a non-2xx", async () => {
+    stubFetch(() => answer({ error: "A wiki with that name already exists." }, {
+      ok: false,
+      status: 409,
+    }));
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toThrow(
+      "A wiki with that name already exists.",
+    );
+  });
+
+  it("carries the STATUS as a fact, not only as a rendered sentence", async () => {
+    // `writeFailure` has to tell a gateway that gave up from a route that
+    // refused, and it cannot do that by reading `Request failed (504)`: the
+    // moment somebody rewords that string the two come apart with nothing
+    // failing. So the status rides the error.
+    stubFetch(() => answer({ error: "Nope." }, { ok: false, status: 409 }));
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toMatchObject({
+      message: "Nope.",
+      status: 409,
+    });
+    // …and it is still an Error, so every `cause instanceof Error` branch and
+    // every `catch` that reads `.message` goes on working.
+    const cause = await send("/api/wikis", { method: "POST" }).catch((error) => error);
+    expect(cause).toBeInstanceOf(Error);
+    expect(cause).toBeInstanceOf(RequestFailedError);
+  });
+
+  it("names the status when the failure body carries no message at all", async () => {
+    // The ordinary shape of a route that dies before it can answer — including
+    // an HTML error page, whose `json()` rejects and is caught into `{}`.
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 502,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toThrow(
+      "Request failed (502)",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // The 2xx whose body read never finished (DW-624)
+  // -------------------------------------------------------------------------
+
+  /**
+   * One `.catch(() => ({}))` used to serve both branches, and on a 2xx that
+   * empty object went straight back to the caller — so a landed create,
+   * rename or delete arrived at the destructure as a missing field and was
+   * reported as a failure. It is the OPPOSITE of what happened.
+   */
+  it("rethrows a 2xx body read that DIES, rather than resolving an empty object", async () => {
+    const cause = Object.assign(new Error("signal timed out"), {
+      name: "TimeoutError",
+    });
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw cause;
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toBe(cause);
+    // …and that is exactly what the caller's verdict helper is looking for.
+    expect(writeFailure(cause, "create the wiki")).toEqual({
+      message: unconfirmedWriteMessage("create the wiki"),
+      unconfirmed: true,
+    });
+  });
+
+  it("keeps resolving `{}` for a 2xx body that merely fails to PARSE", async () => {
+    // An answer that ARRIVED and was shapeless. Unchanged: the caller reads its
+    // own missing fields and says what it always said.
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).resolves.toEqual({});
+  });
+
+  it("leaves the NON-2xx branch alone when its body read dies", async () => {
+    // The status line already IS the verdict here, so a refusal body that never
+    // arrived changes nothing: `{}` and `RequestFailedError(status)`, exactly as
+    // before. Reporting this as an unknown outcome would be a downgrade — the
+    // server plainly answered.
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 500,
+          json: async () => {
+            throw new TypeError("Load failed");
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toMatchObject({
+      message: "Request failed (500)",
+      status: 500,
+    });
+  });
+
+  it("draws the same two lines for a multipart upload", async () => {
+    // `sendForm` is `send` minus the content type, and the guard is one of the
+    // invariants that keeps a failed upload reported in the same words as every
+    // other Workbench write.
+    const cause = new TypeError("Load failed");
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw cause;
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).rejects.toBe(cause);
+
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).resolves.toEqual({});
+
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 413,
+          json: async () => {
+            throw new TypeError("Load failed");
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).rejects.toMatchObject({
+      message: "Request failed (413)",
+      status: 413,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The gate called DIRECTLY, by the eighteen sites that own their fetch
+  // (DW-717)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The four cases above prove the gate through `send` and `sendForm`. These
+   * prove the SAME gate through the exported reader, because that is how the
+   * other sites reach it: they keep their own deadline, headers and signal and
+   * adopt `readJsonBody` alone, so nothing above observes what they get.
+   */
+  it("rethrows every unconfirmed cause when a 2xx body read dies", async () => {
+    const causes = [
+      Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      Object.assign(new Error("aborted"), { name: "AbortError" }),
+      new TypeError("Failed to fetch"),
+    ];
+    for (const cause of causes) {
+      const response = {
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw cause;
+        },
+      } as unknown as Response;
+      await expect(readJsonBody(response)).rejects.toBe(cause);
+      // …and each one is what the caller's verdict helper is looking for.
+      expect(writeFailure(cause, "delete the page").unconfirmed).toBe(true);
+    }
+  });
+
+  it("resolves `{}` for a 2xx body that merely fails to PARSE", async () => {
+    // The answer arrived and was shapeless. The caller's existing shape guard
+    // reports it, exactly as it did before the gate had an owner.
+    const response = {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    } as unknown as Response;
+    await expect(readJsonBody(response)).resolves.toEqual({});
+  });
+
+  it("resolves `{}` when a NON-2xx body read dies, leaving the status the verdict", async () => {
+    // Every adopting site throws its own `Request failed (n)` / `{ error }` off
+    // this `{}`, so widening the gate past `response.ok` would turn a stated
+    // refusal into an unknown outcome at all eighteen of them at once.
+    const response = {
+      ok: false,
+      status: 500,
+      json: async () => {
+        throw new TypeError("Load failed");
+      },
+    } as unknown as Response;
+    await expect(readJsonBody(response)).resolves.toEqual({});
+  });
+
+  it("returns the parsed body untouched when the read succeeds", async () => {
+    await expect(readJsonBody(answer({ ok: true, id: "w1" }))).resolves.toEqual({
+      ok: true,
+      id: "w1",
+    });
+  });
+
+  it("has a deadline long enough to be a rescue rather than a second failure mode", () => {
+    // Named rather than asserted exactly: what matters is that it exists and is
+    // measured in seconds, not that it is any particular number.
+    expect(REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("outlives the server's own fetch deadline by a usable margin", () => {
+    // DW-439. The reasoning lives on the constant in `workbench-request.ts`;
+    // the invariant is that this deadline stays above the server fetch it
+    // wraps, so a slow URL returns the route's 400 instead of a client abort
+    // reported as unconfirmed. Both values are read, so either one moving into
+    // violation fails here.
+    expect(REQUEST_TIMEOUT_MS).toBeGreaterThan(FETCH_TIMEOUT_MS);
+    // Strictly-greater alone passes at 15_001, which buys nothing: the gap has
+    // to leave the route's 400 room to travel back. 5 s is that floor.
+    expect(REQUEST_TIMEOUT_MS - FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("wraps a fetch that is actually armed with FETCH_TIMEOUT_MS", async () => {
+    // The margin above is meaningless if the server fetch stops honouring the
+    // constant it is compared against: raise the literal at the `fetch` call
+    // and DW-439 reopens with every other assertion still green. Nothing else
+    // in the suite observes that link, so it is scanned here.
+    const fetcher = await readFile(path.join(SRC, "lib/fetch.ts"), "utf8");
+    // Scoped to the ONE fetch this deadline wraps. `fetch.ts` arms the constant
+    // in three places, so a file-wide search still passes with THIS call site
+    // changed to a literal -- which is the whole failure being guarded.
+    const start = fetcher.indexOf("async function fetchFollowingRedirects(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = fetcher.slice(start, fetcher.indexOf("\n}\n", start));
+    expect(body).toContain("AbortSignal.timeout(FETCH_TIMEOUT_MS)");
+  });
+
+  it("keeps the three-rung budget ladder ordered with room at each rung", () => {
+    // DW-700. DW-439 ordered TWO values, and that was not enough: nothing
+    // between them bounded the route's own work, so an off-Workers inline
+    // `ingest()` ran past this deadline with the Source already stored. The
+    // middle rung is the route's answer budget, and the ladder only means
+    // anything if each rung leaves the next one room to answer -- adjacent
+    // rungs set equal must fail here, which strict `>` is what gives.
+    expect(FETCH_TIMEOUT_MS).toBeLessThan(INTAKE_ANSWER_BUDGET_MS);
+    expect(INTAKE_ANSWER_BUDGET_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    // Strictly-less alone passes at 15_001, which buys nothing: each gap has to
+    // leave the rung above it time to compose and send an answer.
+    expect(INTAKE_ANSWER_BUDGET_MS - FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(1_000);
+    expect(REQUEST_TIMEOUT_MS - INTAKE_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("keeps the Activity answer budget under the client deadline with room", () => {
+    // DW-746. The Activity door's ladder has only ONE rung beneath
+    // `REQUEST_TIMEOUT_MS`: it reaches no `fetchUrlContent`, so
+    // `FETCH_TIMEOUT_MS` does not bind it and nothing sits underneath. The rung
+    // it does have means the same thing as intake's -- when the remainder
+    // elapses the route must still have time to compose and send
+    // `{ queued: true, jobId, retried: true }` before `send` aborts.
+    expect(ACTIVITY_ANSWER_BUDGET_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    expect(REQUEST_TIMEOUT_MS - ACTIVITY_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("hands the Activity route's inline retries the REMAINING budget", async () => {
+    // Mirrors the intake scan below, for the same reason: the wiring is the
+    // whole of DW-746 and a deleted option leaves TWO unbounded inline runs
+    // (the stored-Source re-ingest and the `embed` `rebuildVectorStore()`)
+    // behind every other assertion here, still green.
+    const route = await readFile(
+      path.join(SRC, "app/api/workbench/activity/route.ts"),
+      "utf8",
+    );
+    expect(route).toContain("ACTIVITY_ANSWER_BUDGET_MS");
+    // BOTH retry paths, not just whichever one a refactor kept.
+    expect(route.match(/inlineBudgetMs/g) ?? []).toHaveLength(2);
+    // A REMAINDER measured from route entry, not a fixed margin.
+    expect(route.match(/answerBy\s*-\s*Date\.now\(\)/g) ?? []).toHaveLength(2);
+  });
+
+  it("hands the intake route's inline compile the REMAINING budget", async () => {
+    // The ladder above is inert if the route stops passing the budget down: a
+    // deleted option leaves an unbounded inline `ingest()` behind every other
+    // assertion here, still green. Nothing else in the suite observes the
+    // wiring, so it is scanned.
+    const route = await readFile(
+      path.join(SRC, "app/api/workbench/intake/route.ts"),
+      "utf8",
+    );
+    expect(route).toContain("INTAKE_ANSWER_BUDGET_MS");
+    expect(route).toContain("inlineBudgetMs");
+    // A REMAINDER measured from request entry, not a fixed margin -- the whole
+    // point DW-700 makes about bounding total work.
+    expect(route).toMatch(/answerBy\s*-\s*Date\.now\(\)/);
+  });
+});
+
+describe("writeFailure", () => {
+  /**
+   * BOTH abort flavours reach a caller's catch as an error whose `name` is the
+   * whole signal: the message names the MECHANISM ("signal timed out", "This
+   * operation was aborted") rather than the thing the owner was trying to do.
+   *
+   * Built with `Object.assign(new Error(...), { name })` and NOT with a real
+   * `DOMException`: jsdom's DOMException does not inherit from Error, so
+   * `cause instanceof Error` would be false and the fallback would arrive from
+   * the function's last line whatever the abort branch did.
+   */
+  const ABORTS: ReadonlyArray<readonly [string, string]> = [
+    ["TimeoutError", "signal timed out"],
+    ["AbortError", "This operation was aborted"],
+  ];
+
+  for (const [name, mechanism] of ABORTS) {
+    it(`reports a ${name} as an outcome nobody knows (DW-283)`, () => {
+      const verdict = writeFailure(
+        Object.assign(new Error(mechanism), { name }),
+        "create the wiki",
+      );
+
+      // The whole defect: this used to answer `Couldn’t create the wiki.` — a
+      // claim about the SERVER that the client is in no position to make. The
+      // request left; the deadline fired on this side; nothing came back.
+      expect(verdict.unconfirmed).toBe(true);
+      expect(verdict.message).not.toBe("Couldn’t create the wiki.");
+      // It says the outcome is unknown, and it names the action rather than the
+      // mechanism the abort was spelled with.
+      expect(verdict.message).toContain("unknown");
+      expect(verdict.message).toContain("create the wiki");
+      expect(verdict.message).not.toContain(mechanism);
+    });
+  }
+
+  it("composes both sentences from ONE phrase per call site", () => {
+    // The reason `action` is a phrase rather than a finished sentence: the
+    // failure copy and the unknown-outcome copy are two renderings of one fact,
+    // and a caller passing both would be where they start to disagree.
+    for (const action of [
+      "create the wiki",
+      "apply the template",
+      "switch wiki",
+      "rename the wiki",
+      "delete the wiki",
+    ]) {
+      const abort = Object.assign(new Error("signal timed out"), {
+        name: "TimeoutError",
+      });
+      expect(writeFailure(abort, action).message).toContain(action);
+      // Today's sentence, character for character — curly apostrophe included.
+      expect(writeFailure(new Error(""), action).message).toBe(`Couldn’t ${action}.`);
+    }
+  });
+
+  it("reports a dropped connection as an outcome nobody knows (DW-374)", () => {
+    // What `fetch` rejects with when the connection itself fails, one spelling
+    // per engine. The message is TRANSPORT vocabulary — no Copy table contains
+    // any of it — and the fact underneath is that the bytes may well have
+    // arrived before the socket went away.
+    for (const cause of [
+      new TypeError("Failed to fetch"),
+      new TypeError("NetworkError when attempting to fetch resource"),
+      new TypeError("Load failed"),
+    ]) {
+      const verdict = writeFailure(cause, "rename the wiki");
+      expect(verdict.unconfirmed).toBe(true);
+      expect(verdict.message).toBe(unconfirmedWriteMessage("rename the wiki"));
+      expect(verdict.message).not.toContain(cause.message);
+      expect(verdict.message).toContain("unknown");
+      expect(verdict.message).toContain("rename the wiki");
+    }
+  });
+
+  it("reports a gateway status through `send` as an outcome nobody knows", async () => {
+    // The whole of DW-374's second half, EXECUTED end to end: the status leaves
+    // `send` inside the error and arrives at the verdict as a fact.
+    for (const status of UNCONFIRMED_STATUSES) {
+      stubFetch(() => answer(undefined, { ok: false, status }));
+      const cause = await send("/api/wikis", { method: "POST" }).catch((error) => error);
+      const verdict = writeFailure(cause, "create the wiki");
+
+      expect(verdict.unconfirmed).toBe(true);
+      // The shared sentence REPLACES `Request failed (504)` — a string in no
+      // Copy table that names the transport rather than the thing that failed.
+      expect(verdict.message).toBe(unconfirmedWriteMessage("create the wiki"));
+      expect(verdict.message).not.toContain(String(status));
+      expect(verdict.message).not.toContain("Request failed");
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("ignores whatever a gateway put in the body — it is not the route's verdict", async () => {
+    stubFetch(() => answer({ error: "<html>502 Bad Gateway</html>" }, {
+      ok: false,
+      status: 502,
+    }));
+    const cause = await send("/api/wikis", { method: "POST" }).catch((error) => error);
+
+    const verdict = writeFailure(cause, "create the wiki");
+    expect(verdict.unconfirmed).toBe(true);
+    expect(verdict.message).not.toContain("502 Bad Gateway");
+  });
+
+  it("leaves a 4xx and a plain 500 KNOWN — those are the route's own answer", async () => {
+    // The other edge of the rule, and the reason it is not "any 5xx": a route
+    // that ran and decided has ANSWERED. Calling that unknown would send the
+    // owner to reconcile a screen that is already correct.
+    for (const status of [400, 403, 404, 409, 412, 428, 500]) {
+      stubFetch(() => answer({ error: "Wiki name is required." }, { ok: false, status }));
+      const cause = await send("/api/wikis", { method: "POST" }).catch((error) => error);
+
+      const verdict = writeFailure(cause, "create the wiki");
+      expect(verdict.unconfirmed).toBe(false);
+      expect(verdict.message).toBe("Wiki name is required.");
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a 503 KNOWN — this app's own routes emit it as a verdict", () => {
+    // The one status that looks like a gateway's silence and is not. `PUT
+    // /api/settings` answers 503 with `CONFIG_UNREADABLE_COPY` when the store
+    // cannot be read, and it refuses BEFORE merging anything — so nothing was
+    // written, and the sentence saying so is the most actionable thing the owner
+    // could be handed.
+    //
+    // Widening to 503 would discard that sentence, tell the owner the outcome is
+    // unknown, and send `SettingsCanvas` to clear the version it was holding —
+    // all for a write that provably did not land. A status this codebase itself
+    // uses as a verdict cannot also be read as the absence of one.
+    expect(UNCONFIRMED_STATUSES).not.toContain(503);
+
+    const cause = new RequestFailedError(CONFIG_UNREADABLE_COPY, 503);
+    const verdict = writeFailure(cause, "save these settings");
+    expect(verdict.unconfirmed).toBe(false);
+    expect(verdict.message).toBe(CONFIG_UNREADABLE_COPY);
+    // …and through the resolve-style entry point the Settings canvas uses.
+    expect(
+      refusedWriteFailure(503, CONFIG_UNREADABLE_COPY, "save these settings", "fallback"),
+    ).toEqual({ message: CONFIG_UNREADABLE_COPY, unconfirmed: false });
+  });
+
+  it("keeps a caller's own bad-2xx-shape throw KNOWN", () => {
+    // `if (!wiki?.id) throw new Error("Couldn’t create the wiki.")` — the server
+    // ANSWERED, with a 200 whose body was not the documented shape. Nothing is
+    // unknown about it, and a reconciliation would be a round trip for nothing.
+    const verdict = writeFailure(new Error("Couldn’t create the wiki."), "create the wiki");
+    expect(verdict.unconfirmed).toBe(false);
+    expect(verdict.message).toBe("Couldn’t create the wiki.");
+  });
+
+  it("prefers a server-supplied message, and calls that outcome KNOWN", () => {
+    const verdict = writeFailure(new Error("Wiki name is required."), "rename the wiki");
+    expect(verdict.message).toBe("Wiki name is required.");
+    // A route that answered with a reason answered: there is nothing to
+    // reconcile, and refreshing on it would be a round trip for nothing.
+    expect(verdict.unconfirmed).toBe(false);
+  });
+
+  it("falls back on an Error with no message, and on anything that is not one", () => {
+    for (const cause of [new Error(""), "boom", undefined]) {
+      const verdict = writeFailure(cause, "delete the wiki");
+      expect(verdict.message).toBe("Couldn’t delete the wiki.");
+      expect(verdict.unconfirmed).toBe(false);
+    }
+  });
+});
+
+/**
+ * The two entry points the RESOLVE-style write clients use — `savePreviewBody`,
+ * `revertArtifactRevision` and `saveWorkbenchSettings`, which catch their own
+ * `fetch` and return a result rather than throwing.
+ *
+ * They differ from `writeFailure` on exactly one thing, and it is the point:
+ * `send` throws the SERVER's sentence, so relaying a thrown message there is
+ * right. These three only ever THROW on transport, so a thrown message is
+ * `Failed to fetch` — the vocabulary their docblocks already refuse.
+ */
+describe("the resolve-style clients' entry points (DW-376)", () => {
+  const FALLBACK = "This page couldn’t be saved.";
+
+  it("never relays a thrown cause's message, whatever the verdict", () => {
+    const thrown = [
+      Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+      new TypeError("Failed to fetch"),
+      new Error("NetworkError when attempting to fetch resource"),
+      new SyntaxError("Unexpected token '<'"),
+      "boom",
+    ];
+    for (const cause of thrown) {
+      const verdict = thrownWriteFailure(cause, "save this page", FALLBACK);
+      if (cause instanceof Error) {
+        expect(verdict.message).not.toContain(cause.message);
+      }
+      expect([unconfirmedWriteMessage("save this page"), FALLBACK]).toContain(
+        verdict.message,
+      );
+    }
+  });
+
+  it("calls an abort and a dropped connection unknown, and everything else the fallback", () => {
+    for (const cause of [
+      Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      Object.assign(new Error("This operation was aborted"), { name: "AbortError" }),
+      new TypeError("Failed to fetch"),
+    ]) {
+      expect(thrownWriteFailure(cause, "save this page", FALLBACK)).toEqual({
+        message: unconfirmedWriteMessage("save this page"),
+        unconfirmed: true,
+      });
+    }
+    // A `SyntaxError` from a body that would not parse is not a transport
+    // failure: something answered. The fallback, and a KNOWN outcome.
+    for (const cause of [new SyntaxError("Unexpected token '<'"), "boom", undefined]) {
+      expect(thrownWriteFailure(cause, "save this page", FALLBACK)).toEqual({
+        message: FALLBACK,
+        unconfirmed: false,
+      });
+    }
+  });
+
+  it("relays a refusal that ARRIVED, and shuts the body out on a gateway status", () => {
+    // A 409 the route answered with a reason: the sentence is the server's, and
+    // the outcome is known.
+    expect(refusedWriteFailure(409, "Somebody else changed this.", "save this page", FALLBACK))
+      .toEqual({ message: "Somebody else changed this.", unconfirmed: false });
+    // …and with no usable sentence, the surface's own fallback.
+    expect(refusedWriteFailure(500, "", "save this page", FALLBACK)).toEqual({
+      message: FALLBACK,
+      unconfirmed: false,
+    });
+    // Each gateway status, with a body that WOULD have been relayed at any other
+    // status. It is a proxy's page, not the route's verdict.
+    for (const status of UNCONFIRMED_STATUSES) {
+      expect(refusedWriteFailure(status, "Bad Gateway", "save this page", FALLBACK)).toEqual({
+        message: unconfirmedWriteMessage("save this page"),
+        unconfirmed: true,
+      });
+    }
+  });
+});
+
+describe("the one unconfirmed sentence", () => {
+  it("names the action, says the outcome is unknown, and speaks no transport", () => {
+    // ONE sentence for every surface and every cause — the reason `action` is a
+    // phrase rather than a finished sentence.
+    for (const action of [
+      "create the wiki",
+      "rename the wiki",
+      "delete the wiki",
+      "switch wiki",
+      "save this page",
+      "save the Schema",
+      "revert the Schema",
+      "save these settings",
+    ]) {
+      const message = unconfirmedWriteMessage(action);
+      expect(message).toContain(action);
+      expect(message).toContain("unknown");
+      expect(message).not.toBe(`Couldn’t ${action}.`);
+      // No transport vocabulary: no Copy table contains any of these words, and
+      // none of them tells the owner anything they can act on.
+      for (const word of [
+        "fetch",
+        "network",
+        "timed out",
+        "timeout",
+        "abort",
+        "gateway",
+        "502",
+        "503",
+        "504",
+        "Request failed",
+      ]) {
+        expect(message.toLowerCase()).not.toContain(word.toLowerCase());
+      }
+    }
+  });
+
+  it("is the SAME sentence whichever cause produced it", () => {
+    // The whole claim of DW-374: one honest story, not one per mechanism.
+    const abort = Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
+    const dropped = new TypeError("Failed to fetch");
+    const gateway = new RequestFailedError("Request failed (504)", 504);
+
+    const messages = [abort, dropped, gateway].map(
+      (cause) => writeFailure(cause, "create the wiki").message,
+    );
+    expect(new Set(messages).size).toBe(1);
+    expect(messages[0]).toBe(unconfirmedWriteMessage("create the wiki"));
+    // …and the resolve-style clients speak it too.
+    expect(thrownWriteFailure(dropped, "create the wiki", "x").message).toBe(messages[0]);
+    expect(refusedWriteFailure(504, "y", "create the wiki", "x").message).toBe(messages[0]);
+  });
+});

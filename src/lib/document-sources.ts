@@ -1,6 +1,7 @@
 import type { ExtractedDocument } from "./document-extract";
 import { serializeFrontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
+import { RAW_ASSETS_DIR } from "./raw";
 import { getStorage } from "./storage";
 import {
   rawRelPath,
@@ -90,7 +91,16 @@ async function appendSourceFigures(
   owner: string,
   records: StoredDocumentSource[],
 ): Promise<void> {
-  const page = await readWikiPageWithFrontmatter(slug);
+  // FRESH+STRICT (DW-495). `page.content` is the merge base for the write at
+  // the bottom of this function. Without `strict` a non-ENOENT storage blip
+  // flattens to `null` and is reported through the throw below as
+  // `page "<slug>" was not found` — the wrong story about a page that is
+  // stored and only momentarily unreadable. Strict rethrows the storage
+  // failure instead, and it propagates out through `preserveDocumentSources`.
+  const page = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!page) throw new Error(`Cannot attach document figures: page "${slug}" was not found.`);
 
   const entries: string[] = [];
@@ -123,6 +133,7 @@ async function appendSourceFigures(
     logDetails: () => `preserved embedded figures from ${records.length} document source(s)`,
     crossRefSource: null,
     author: owner,
+    expectedContent: page.content,
   });
 }
 
@@ -151,7 +162,13 @@ export async function preserveDocumentSources(
     const originalKey = rawRelPath(
       `originals/${tenant}/${slug}/${shortDigest}-${filename}`,
     );
-    await storage.writeAsset(originalKey, source.bytes);
+    // CREATE-ONLY (FR-2, DW-572). `shortDigest` is derived from `source.bytes`,
+    // so an occupied key already holds THESE bytes — the boolean is discarded
+    // deliberately, not a dropped error: `false` means "another arrival wrote
+    // the identical object first", which is a no-op success. The record below
+    // still names `originalKey` either way. A provider FAILURE throws from
+    // here and fails the arrival; it never degrades to `writeAsset`.
+    await storage.writeAssetIfAbsent(originalKey, source.bytes);
 
     const assets: StoredDocumentSource["assets"] = [];
     for (const [assetIndex, asset] of source.extracted.assets.entries()) {
@@ -160,7 +177,30 @@ export async function preserveDocumentSources(
         `image-${assetIndex + 1}`,
       );
       const storedName = `source-${shortDigest}-${assetIndex + 1}-${assetName}`;
-      await storage.writeAsset(rawRelPath(`assets/${slug}/${storedName}`), asset.bytes);
+      // Create-only, but NOT for the same reason as the original above. This
+      // key carries the digest of the SOURCE DOCUMENT plus the extraction
+      // index — never a digest of `asset.bytes` — so it is source-addressed,
+      // not byte-addressed. An occupied key means the same source was
+      // re-extracted BY THE SAME EXTRACTOR, and the premise that the stored
+      // figure equals the one in hand holds only while extraction output stays
+      // stable for a given input.
+      //
+      // THE ACCEPTED COST of freezing it: if extraction output ever changes for
+      // an unchanged source — a `document-extract.ts` dependency bump, or a
+      // change to `MAX_PDF_IMAGES` / `MAX_PDF_IMAGE_PIXELS` — the stored figure
+      // bytes now STAY, while `putIndex` below and `appendSourceFigures` still
+      // rewrite the record and the "Source figures" markdown with the new
+      // `filename` / `mediaType` / `alt` / `context`. That leaves a stale figure
+      // under refreshed metadata, where `writeAsset` used to refresh the bytes.
+      // This is a real, reachable outcome, accepted in exchange for FR-2's
+      // guarantee that published figure bytes are never mutated; the fix if it
+      // ever bites is to fold an extractor version into the key, not to reopen
+      // the overwrite door. Boolean discarded — `publicPath` is unchanged
+      // either way.
+      await storage.writeAssetIfAbsent(
+        rawRelPath(`${RAW_ASSETS_DIR}/${slug}/${storedName}`),
+        asset.bytes,
+      );
       assets.push({
         filename: asset.filename,
         mediaType: asset.mediaType,

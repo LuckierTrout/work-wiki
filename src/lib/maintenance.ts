@@ -4,17 +4,16 @@
  * runs this scan and enqueues `maintain` tasks (or dry-runs when autonomous
  * maintenance is off). Two ops, chosen for safety + reuse of proven engines:
  *
- *   - **reconcile**: a `disputed` page with an OPEN thread whose latest comment
- *     is from a HUMAN (so yoyo hasn't already answered and is waiting) → run the
- *     same `reconcileFromTalk` as the on-demand button.
  *   - **staleness**: a page past its `expiry` with a `source_url` → re-ingest
  *     from the source (the reconcile-on-merge step refreshes it). Also used for
  *     low-confidence pages (below `LOW_CONFIDENCE_THRESHOLD`) that have a
  *     `source_url` — re-ingesting re-synthesizes and may raise confidence.
- *   - **fix** (deterministic, no LLM): backfill a legacy page missing all
- *     work-wiki schema fields (`unmigrated-page`); clear a dangling `supersedes`
- *     reference (`supersedes-dangling`); drop an index entry whose page file is
- *     gone (`stale-index`). These reuse the lint auto-fixes (`lint-fix.ts`).
+ *   - **fix** (deterministic, no LLM): a lint fix (`lintType`) —
+ *     `orphan-page`, `stale-index`, `unmigrated-page`, `supersedes-dangling`,
+ *     `broken-link`, `empty-page`, `stale-page`, `missing-crossref`: the whole
+ *     `MaintainFixType` union (`tasks.ts`). These reuse the lint auto-fixes
+ *     (`lint-fix.ts`). One is destructive: `empty-page` DELETES the page
+ *     outright — every other fix only rewrites a page or an index entry.
  *
  * Guardrails (because no human is watching each one):
  *   - **commons-only**: skip PRIVATE pages entirely. Autonomous maintenance
@@ -23,17 +22,16 @@
  *     private page reingested by a generic agent forks (the realm guard) instead
  *     of refreshing, leaving the original to be re-flagged every scan;
  *   - skip pages updated TODAY (don't act on a just-edited page);
- *   - skip disputed threads yoyo already answered (last comment is an agent) —
- *     avoids re-reconciling a stuck dispute on every scan;
  *   - cap the number of tasks per scan (cost + blast-radius bound).
  */
 
 import { listWikiPages, readWikiPageWithFrontmatter } from "./wiki";
 import { getOnDiskSlugs, checkMissingCrossRefs, LOW_CONFIDENCE_THRESHOLD } from "./lint-checks";
-import { listThreads } from "./talk";
-import { isAgentHandle } from "./agents";
 import { extractWikiLinks } from "./links";
 import { purgeStaleIngestJobs } from "./ingest-jobs";
+import { getOwnerHandle } from "./owner";
+import { getStorage, isFilesystemStorage } from "./storage";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import type { Task } from "./tasks";
 import { logger } from "./logger";
 
@@ -98,23 +96,7 @@ export async function scanForMaintenance(
     // Page passed all guardrails — eligible for cross-page checks later.
     eligibleSlugs.add(entry.slug);
 
-    // (1) Disputed → reconcile, but only when a HUMAN is awaiting a response
-    //     (the latest comment on an open thread isn't yoyo's).
-    if (fm.disputed === true) {
-      const threads = await listThreads(entry.slug);
-      const idx = threads.findIndex(
-        (t) =>
-          t.status === "open" &&
-          t.comments.length > 0 &&
-          !isAgentHandle(t.comments[t.comments.length - 1].author),
-      );
-      if (idx >= 0) {
-        tasks.push({ kind: "maintain", op: "reconcile", slug: entry.slug, threadIndex: idx });
-        continue; // one task per page
-      }
-    }
-
-    // (2) Deterministic janitorial fixes (no LLM, safe): backfill a legacy page
+    // (1) Deterministic janitorial fixes (no LLM, safe): backfill a legacy page
     //     missing ALL work-wiki schema fields; clear a dangling `supersedes` ref.
     if (
       !("confidence" in fm) &&
@@ -168,7 +150,7 @@ export async function scanForMaintenance(
       continue;
     }
 
-    // (3) Stale (expiry passed) → re-ingest if source URL exists, else bump
+    // (2) Stale (expiry passed) → re-ingest if source URL exists, else bump
     //     expiry via the deterministic `stale-page` fixer.
     const expiry = fm.expiry;
     const sourceUrl = fm.source_url;
@@ -185,7 +167,7 @@ export async function scanForMaintenance(
       continue;
     }
 
-    // (4) Low-confidence pages with a source_url → re-ingest to re-synthesize
+    // (3) Low-confidence pages with a source_url → re-ingest to re-synthesize
     //     and potentially raise confidence.
     const confidence = fm.confidence;
     if (
@@ -227,15 +209,20 @@ export async function scanForMaintenance(
 // Precomputed-index self-heal (Phase 2)
 // ---------------------------------------------------------------------------
 //
-// The seven derived KV indexes (pages, commons, owner-slugs, backlinks,
-// discuss-stats, contributors, recent) are maintained incrementally on the
-// write/talk paths. Drift can still creep in (a failed fail-soft update, an
-// out-of-band edit, the coarse contributor fields left to rebuild). This
-// rebuilds all seven from ground truth in one daily pass so any drift
+// The six derived KV indexes (pages, commons, owner-slugs, backlinks,
+// discuss-stats, recent) are maintained incrementally on the write path. Drift
+// can still creep in (a failed fail-soft update, an out-of-band edit). This
+// rebuilds all six from ground truth in one daily pass so any drift
 // self-corrects. Fully fail-soft — each rebuild is independent and a failure
 // never aborts the others or the maintenance scan.
+//
+// The contributor index is deliberately NOT in this set: nothing reads it any
+// more (the contributor surfaces are retired), and its rebuild is a full
+// wiki-wide scan — every page's revisions plus every `discuss/` file — so the
+// daily pass stopped paying for it. `rebuildContributorIndex()` remains
+// callable on demand as a repair tool.
 
-/** Rebuild all seven precomputed indexes. Returns a per-index ok/error summary. */
+/** Rebuild all six precomputed indexes. Returns a per-index ok/error summary. */
 export async function rebuildDerivedIndexes(): Promise<
   Record<string, { ok: boolean; error?: string }>
 > {
@@ -251,7 +238,6 @@ export async function rebuildDerivedIndexes(): Promise<
     ["owner-slugs", async () => (await import("./owner-index")).rebuildOwnerIndex()],
     ["backlinks", async () => (await import("./backlink-index")).rebuildBacklinkIndex()],
     ["discuss-stats", async () => (await import("./discuss-stats-index")).rebuildDiscussStatsIndex()],
-    ["contributors", async () => (await import("./contributor-index")).rebuildContributorIndex()],
     ["recent", async () => (await import("./recent-index")).rebuildRecentIndex()],
   ];
   for (const [name, run] of steps) {
@@ -311,6 +297,263 @@ export async function purgeStaleJobs(): Promise<number> {
     return await purgeStaleIngestJobs();
   } catch (err) {
     logger.error("maintenance", "ingest-job GC failed:", err);
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Orphan wiki-directory GC — reclaim `wikis/<uuid>/` nothing references
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `sweepOrphanWikiDirectories` for the maintenance
+ * scan. Returns how many directories were reclaimed (0 on error, and 0 when no
+ * owner handle is configured — a single-owner deployment with no owner has no
+ * tenant to sweep).
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}: that function's contract
+ * is READ-ONLY — it returns candidate tasks and the route decides whether to
+ * enqueue them — and this removes bytes. It sits beside {@link purgeStaleJobs}
+ * as its own export the route calls, which is the same shape every other
+ * byte-removing scan step already has.
+ *
+ * `await import("./wikis")` keeps the module graph loose, matching
+ * {@link rebuildDerivedIndexes}: `wikis.ts` pulls in the whole scenario-template
+ * and workspace-profile subtree, and nothing else in this module needs it.
+ *
+ * SCOPE (DW-288, settled): sweeping only the configured owner's tenant is not a
+ * leak, because no NEW non-owner tenant can be opened for this sweep to miss —
+ * but the guarantee belongs to a stack of doors, not to any one of them.
+ * `handlePrivateRequest` in `src/middleware.ts` is the OUTER gate: it 403s any
+ * `/api/*` request whose Clerk `userId` is not `YOPEDIA_OWNER_USER_ID`, and
+ * `/api/wikis` is neither in `IN_ROUTE_AUTH_PATHS` nor matched by
+ * `authenticatesInRoute`, so a non-owner is turned away before the route runs.
+ * The route's own `isOwnerPrincipal` check (DW-159) is the SECOND door behind
+ * it, defense-in-depth. `createWiki` itself is deliberately un-asserted — it takes
+ * any `owner` string, and what makes that safe is that the route is its only
+ * caller today; a direct kernel caller (a CLI command, a future MCP tool) would
+ * open a tenant this sweep never sees, so adding one means revisiting this
+ * scope. The one honest residual today is tenants created BEFORE that gate
+ * landed: their orphan directories are reclaimed only when `deleteWiki` sweeps
+ * them inline — which a non-owner can still reach, since the Wiki routes other
+ * than creation are ungated — never on this schedule. That residual is recorded
+ * rather than swept deliberately — reaching those tenants would need a
+ * Wiki-tenant enumeration index the repo does not have
+ * (`listSourceMonitorOwners` is that index for source monitors, not for Wikis),
+ * and building one to walk a set the creation gate now keeps from growing is
+ * work with no live input.
+ *
+ * THE SECOND RESIDUAL, ON THE SAME PRE-GATE TENANTS, AND STRICTLY WORSE
+ * (DW-488): a stale `.discarded` marker there has NO clearer at all.
+ * `clearStaleDiscardTombstones` runs only on the scheduled path — DW-291 settled
+ * that, because clearing costs one `fileExists` per registry-claimed directory
+ * and `deleteWiki`'s inline sweep is a user-facing request holding
+ * `wikis:<tenant>` — and the schedule resolves the single `getOwnerHandle()`
+ * tenant below. So where an orphan DIRECTORY on such a tenant is at least
+ * reclaimed the next time someone deletes a Wiki, its stale marker is reachable
+ * from neither path: the inline sweep will not clear it and this one never sees
+ * the tenant. Left in place it arms a delete of a live Wiki's artifacts for the
+ * day that tenant's `wikis.json` is lost — the state the empty-registry rule in
+ * `sweepOrphans` exists to survive. ACCEPTED, not fixed, on the same arithmetic
+ * as the residual above: the marker only lands after the three-failure
+ * half-create DW-291 describes, on a tenant the creation gate can no longer add
+ * to, and closing it needs the same enumeration index that does not exist.
+ *
+ * Widen this only if a second tenant is ever legitimately served — see the
+ * MIGRATION note on `readActiveWikiSchema` in `wikis.ts`, which is the same
+ * trigger for both residuals.
+ */
+export async function sweepOrphanWikiDirs(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const { sweepOrphanWikiDirectories } = await import("./wikis");
+    return await sweepOrphanWikiDirectories(owner);
+  } catch (err) {
+    logger.error("maintenance", "orphan wiki-directory sweep failed:", err);
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wiki scenario-drift reconcile — make the registry label match the artifacts
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `reconcileWikiScenarioDrift` for the maintenance
+ * scan (DW-676). Returns how many registry records were relabelled to match
+ * their own `purpose.md`/`schema.md` — 0 on error, and 0 when no owner handle
+ * is configured, since a deployment with no owner has no tenant to reconcile.
+ *
+ * WHAT IT CLOSES: a re-template whose `wikis.json` write landed and whose
+ * artifact writes were then rolled back leaves the registry naming one Scenario
+ * Template and the artifacts describing another. `registryNamesScenario`
+ * detects that divergence inline and reconciles nothing, so the Wiki switcher
+ * re-labels itself on the next poll and stays wrong. This scan is that repair's
+ * only trigger of any kind: a deployment that never scans never reconciles.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes
+ * `wikis.json`. It sits beside the other byte-touching steps as its own export
+ * the route calls.
+ *
+ * `await import("./wikis")` keeps the module graph loose, matching the sweep
+ * above: `wikis.ts` pulls in the whole scenario-template and workspace-profile
+ * subtree, and nothing else in this module needs it.
+ *
+ * SCOPE is the single configured owner's tenant, exactly as the sweep's is, and
+ * the same residual applies verbatim — see the SCOPE docblock on
+ * {@link sweepOrphanWikiDirs} for the door stack that makes it safe and for the
+ * pre-gate tenants it does not reach. The cost of missing one is strictly
+ * smaller here: a stale label, not an unreclaimed directory.
+ */
+export async function reconcileWikiScenarios(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const { reconcileWikiScenarioDrift } = await import("./wikis");
+    return await reconcileWikiScenarioDrift(owner);
+  } catch (err) {
+    logger.error("maintenance", "wiki scenario-drift reconcile failed:", err);
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Workspace Purpose backfill — relocate the retired tenant-global profile
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `backfillLegacyWorkspaceProfiles` (DW-137). Returns
+ * how many Wikis were given a copy of the retired tenant-global profile — 0 on
+ * error, and 0 when no owner handle is configured, since a deployment with no
+ * owner has no tenant to migrate.
+ *
+ * ONE-TIME AND SELF-TERMINATING, which is the whole point: the read-through it
+ * replaces had no end date, while this copies the bytes onto the Wikis that
+ * lack one, deletes the original, and thereafter costs a single missing-file
+ * read per scan. The scan is its only scheduled trigger.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes bytes. It
+ * sits beside the other byte-touching steps as its own export the route calls.
+ *
+ * `await import(...)` keeps the module graph loose, matching the sweep above:
+ * the backfill pulls in `wikis.ts` and the whole scenario-template and
+ * workspace-profile subtree, and nothing else in this module needs it.
+ */
+export async function backfillWorkspaceProfiles(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const {
+      backfillLegacyWorkspaceProfiles,
+      canonicalizeWorkspacePurposes,
+    } = await import(
+      "./workspace-profile-backfill"
+    );
+    const relocated = await backfillLegacyWorkspaceProfiles(owner);
+    const canonicalized = await canonicalizeWorkspacePurposes(owner);
+    return relocated + canonicalized;
+  } catch (err) {
+    logger.error("maintenance", "workspace-profile backfill failed:", err);
+    return 0;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Forked-page asset re-key — the directory a fork left under the wrong slug
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `rekeyForkedPageAssets` (DW-738). Returns how many
+ * already-forked pages' image assets were moved onto their own slug — 0 on
+ * error, and 0 on every scan of a deployment with nothing left to repair.
+ *
+ * ONE-TIME AND SELF-TERMINATING, like {@link backfillWorkspaceProfiles}: the
+ * ingest path re-keys at the source now, so nothing new arrives mis-keyed, and
+ * the rewrite this performs no longer matches its own pattern. The scan is its
+ * only trigger of any kind, so a deployment that never scans keeps serving a
+ * forked page's image gated on the OTHER page's visibility.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * every other migration here: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes bytes.
+ *
+ * `await import(...)` keeps the module graph loose, matching the wrappers
+ * above: the migration pulls in `lifecycle.ts` and the whole page-write
+ * pipeline, and nothing else in this module needs it.
+ *
+ * NO OWNER GUARD, unlike the wrappers above, and that is not an omission: those
+ * migrate a named tenant's artifacts and have nothing to do without a handle,
+ * while this walks the page index itself. Gating it on `getOwnerHandle()` would
+ * leave a deployment with no configured owner serving mis-keyed assets forever.
+ */
+export async function rekeyForkedAssets(): Promise<number> {
+  try {
+    const { rekeyForkedPageAssets } = await import("./asset-slug-rekey");
+    return await rekeyForkedPageAssets();
+  } catch (err) {
+    logger.error("maintenance", "forked-asset re-key failed:", err);
+    return 0;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Stranded scratch reclamation — the leak `listFiles` hides
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around the filesystem provider's scratch reaper (DW-292).
+ * Returns how many `.tmp-<uuid>.tmp` files a dead process left behind were
+ * reclaimed — 0 on error, and 0 on a deployment that is not storing on disk.
+ *
+ * WHAT IT RECLAIMS AND WHY NOTHING ELSE DOES: every scratch file the filesystem
+ * provider writes is removed by its own writer, so the only ones that survive
+ * are the ones whose process died mid-write — and those are then hidden from
+ * `listFiles` by the same filter that keeps in-flight scratch invisible. No
+ * other path in the app ever looks at them again. See
+ * {@link import("./storage/filesystem").FilesystemStorageProvider.reapStrandedScratchFiles}
+ * for the grace window that separates a stranded file from a live write's.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this DELETES files. It
+ * sits beside the other byte-touching steps as its own export the route calls.
+ *
+ * THE READ-ONLY GATE IS HERE RATHER THAN IN THE STORAGE LAYER, and that is not
+ * a preference. `read-only.ts` imports `./config`, which imports
+ * `./storage/index.ts`, which imports the provider — so a gate inside
+ * `src/lib/storage/` would close an import cycle. This module is the first
+ * layer above the provider that can hold it, and holding it BEFORE the try is
+ * what makes it real: inside, the catch below would swallow the
+ * `ReadOnlyError` and report a reclamation that never ran, and a DIRECT
+ * library caller — a CLI command, an ops script — would read `0` as "nothing to
+ * reclaim". `POST /api/tasks/scan` already refuses whole before reaching here,
+ * so this is that caller's gate, exactly as the sweep's is.
+ *
+ * `await import(...)` mirrors {@link sweepOrphanWikiDirs}' shape and avoids a
+ * named-export dependency on a class this module only narrows against. It does
+ * NOT keep the module graph loose — the static `./storage` import above already
+ * pulls `./storage/filesystem` in eagerly — and claiming otherwise would be the
+ * kind of comment that survives the fact it described.
+ */
+export async function reapStrandedScratchFiles(): Promise<number> {
+  assertWritable(READ_ONLY_REFUSAL.scratchFileReap);
+  try {
+    // R2 has no scratch files: its create-only put is native and its replacing
+    // put is a single object write, so there is no second name to strand.
+    if (!isFilesystemStorage()) return 0;
+    const { FilesystemStorageProvider } = await import("./storage/filesystem");
+    const provider = getStorage();
+    if (!(provider instanceof FilesystemStorageProvider)) return 0;
+    return await provider.reapStrandedScratchFiles();
+  } catch (err) {
+    logger.error("maintenance", "stranded scratch-file reap failed:", err);
     return 0;
   }
 }

@@ -1,12 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { saveAnswerToWiki } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
-import { commonsPath, pagePath, ownerToTenant } from "@/lib/links";
+import { slugPath, pagePath, ownerToTenant } from "@/lib/links";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { isReadOnly } from "@/lib/config";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
 export async function POST(request: NextRequest) {
   try {
+    // Deployment read-only (DW-187). Answered first — this route has no auth
+    // branch of its own for the markdown path (middleware gates it), so there is
+    // no 401 to order behind. It keeps a route-level check because it meets BOTH
+    // halves of the rule:
+    //   - IRREVERSIBLE WORK ALREADY COMMITTED: `saveAnswerToWiki` runs
+    //     `bakeYoyoIllustrations` before the page write, which GENERATES
+    //     illustrations and stores them in R2. A kernel-only refusal would leave
+    //     an orphaned asset behind for every refused save.
+    //   - EXPENSIVE, FAILABLE WORK FIRST: those illustrations are model calls,
+    //     paid for before the write is refused.
+    if (isReadOnly()) {
+      return NextResponse.json(
+        { error: READ_ONLY_REFUSAL.savedAnswer },
+        { status: 403 },
+      );
+    }
+
     const body = await request.json();
 
     const { title, content, sources, format } = body;
@@ -77,16 +96,23 @@ export async function POST(request: NextRequest) {
       owner,  // author — same as owner for web saves
     );
 
-    // Return the CANONICAL url so the client links correctly. An owned artifact
-    // (html/slides) lives at `/u/<tenant>/<slug>` and 404s at the commons
-    // `/wiki/<slug>`. A markdown save is a public commons page.
-    const url =
-      isArtifact && owner
-        ? pagePath(ownerToTenant(owner), result.slug)
-        : commonsPath(result.slug);
+    // Return the CANONICAL url so the client links correctly — always the
+    // owner-scoped `/u/<tenant>/<slug>` (the commons URL is retired). An
+    // ownerless save falls back to the default tenant, which 308s to canonical.
+    const url = owner
+      ? pagePath(ownerToTenant(owner), result.slug)
+      : slugPath(result.slug);
 
     return NextResponse.json({ slug: result.slug, url, success: true });
   } catch (error) {
+    // Mid-request flag flip: the kernel page writer's refusal, which this
+    // catch would otherwise answer 500.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json(
+        { error: getErrorMessage(error) },
+        { status: 403 },
+      );
+    }
     logger.error("query", "Save answer error", error);
     return NextResponse.json(
       {

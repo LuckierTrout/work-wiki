@@ -36,14 +36,14 @@ modules:
     channel: stable
     sha: 5f5a8eb5db08a5e4d9e9ed7956ff31892534e911
   - name: bmad-loop
-    version: v0.9.1
+    version: v0.11.1
     installDate: 2026-08-12T12:00:27.290Z
-    lastUpdated: 2026-08-12T12:00:27.324Z
+    lastUpdated: 2026-08-28T17:42:37.000Z
     source: external
     npmPackage: null
     repoUrl: https://github.com/bmad-code-org/bmad-loop
-    channel: stable
-    sha: 67aa8028a22eb96962c7579a917b2fbea7f9475a
+    channel: main
+    sha: 1a3d358b5398498af968c7ead5fa0e8c70b6fe0e
 ides:
   - claude-code
   - codex
