@@ -156,14 +156,18 @@ export class CommitAuthority extends DurableObject {
       if (!reader) fail("invalid-request", 400);
       let text = "", count = 0;
       const decoder = new TextDecoder("utf-8", { fatal: true });
+      const decode = (value, options) => {
+        try { return decoder.decode(value, options); }
+        catch { fail("invalid-utf8", 400); }
+      };
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         count += value.byteLength;
         if (count > 300_000) { await reader.cancel(); fail("request-too-large", 413); }
-        text += decoder.decode(value, { stream: true });
+        text += decode(value, { stream: true });
       }
-      text += decoder.decode();
+      text += decode();
       let input;
       try { input = JSON.parse(text); } catch { fail("invalid-json", 400); }
       if (url.pathname === "/commit") return Response.json(await this.commit(input));

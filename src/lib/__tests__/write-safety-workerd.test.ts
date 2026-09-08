@@ -240,6 +240,22 @@ describe("isolated write authority in real local workerd", () => {
     expect(await call("/commit", request)).toEqual(committed);
   });
 
+  it("returns a client error for invalid and truncated UTF-8 without uploading or publishing", async () => {
+    const json = new TextEncoder().encode(JSON.stringify(command()));
+    // 0xff fails during streaming decode; the incomplete sequence fails at EOF.
+    for (const invalid of [[0xff], [0xe2, 0x82]]) {
+      const response = await runtime.dispatchFetch("https://lab.invalid/commit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: new Uint8Array([...json, ...invalid]),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid-utf8" });
+    }
+    const bucket = await runtime.getR2Bucket("CONTENT", "write-safety-lab");
+    expect((await bucket.list()).objects).toEqual([]);
+    expect((await call("/state")).body).toMatchObject({ revision: 0, refs: [], receipts: [], outbox: [] });
+  });
+
   it("refuses invalid paths, duplicate paths, invalid revisions and oversized bodies without publishing", async () => {
     for (const request of [
       { ...command(), changes: [{ path: "../escape", content: "x" }] },

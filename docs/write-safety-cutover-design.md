@@ -156,7 +156,10 @@ The offline checker accepts only synthetic evidence. Its schema requires:
 - `recovery`: a forward-reconciliation procedure.
 
 This checks the shape and internal consistency of supplied rehearsal evidence,
-not its truth or authenticity. Even successful output always has
+not its truth or authenticity. Operation/effect inventories contain IDs only;
+`inputDigest` is validated for SHA-256 syntax, not compared with captured input
+bytes or an independently trusted digest. Real input verification belongs to
+the separately approved capture/reconciliation protocol. Even successful output always has
 `productionReady: false`. The process exits zero only for a valid rehearsal;
 production automation must never use that exit code as a deploy gate.
 

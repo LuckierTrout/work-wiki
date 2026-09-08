@@ -68,16 +68,16 @@ Workspace scope covers global indexes/locks. Resource isolation neither proves s
 ## Verification
 
 - `pnpm exec vitest run --project node src/lib/__tests__/write-safety-workerd.test.ts src/lib/__tests__/write-safety-preflight.test.ts` — all cases execute/pass.
-- `pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm test` — pass on the corrected local source and tests on 2026-09-08; results below distinguish the existing skip.
+- `pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm test` — passed for the pre-PR review on 2026-09-08. The PR follow-up below distinguishes its focused local evidence from the required final-head CI gate.
 - Whitespace verification includes the new, initially untracked files; the local commit contains this spec and five named new files only. Three historical review-input files remain outside the commit. No production/config/dependency/ledger edits.
 
 ## Implementation evidence
 
 - Local branch: `fix/write-safety-cutover-proof`; baseline preserved above.
 - Implemented directly after the prescribed context-free subagent launch failed with `agent thread limit reached`.
-- Final focused composition/evidence suites: 22/22 passed (13 workerd cases, 9 checker cases), 2.55 seconds. Every matrix row has executed coverage; no runtime skips or mock fallback. New regressions reproduced all four original failures before their fixes.
-- Final TypeScript and full lint passed. Full lint retains the three previously recorded TSNonNullExpression diagnostics.
-- Final full suite: 401 files passed, 10,012 tests passed and one existing skip in `research-runtime.test.ts`; 119.94 seconds. This run followed the final projection-test correction. No production or dependency changes.
+- Pre-PR focused composition/evidence suites at `f4decb5f055e2606abe05ea46cdfa92ac36fced7`: 22/22 passed (13 workerd cases, 9 checker cases), 2.55 seconds. Every matrix row has executed coverage; no runtime skips or mock fallback. New regressions reproduced all four original failures before their fixes.
+- Pre-PR TypeScript and full lint passed. Full lint retains the three previously recorded TSNonNullExpression diagnostics.
+- Pre-PR full suite: 401 files passed, 10,012 tests passed and one existing skip in `research-runtime.test.ts`; 119.94 seconds. This run followed the projection-test correction. No production or dependency changes.
 - Matrix mapping: Publish → multi-path/tombstone test; Stale → barrier/advance test; Race → concurrent revisions; Retry → canonical/concurrent retries; Crash → before-publish, transaction rollback and persisted receipt restart; Legacy → old capability and shared-resource negative control; Capture → changing/incomplete evidence tests.
 
 ## Review disposition
@@ -85,7 +85,15 @@ Workspace scope covers global indexes/locks. Resource isolation neither proves s
 - 2026-09-08: Resumed the in-review packet through `bmad-build`. All three context-free review layers ran successfully against the corrected six-file product diff. The full change inventory also accounted for the three historical review-input artifacts; their embedded old diffs were not treated as current implementation.
 - Blind Hunter: no actionable findings. Edge Case Hunter: no findings. Verification Gap: one accepted `medium` / `patch` finding — projection delivery could be omitted while the existing assertions still passed.
 - Patched the projection test to assert the full snapshot, unchanged path, tombstone, generation and revision; retries and obsolete deliveries must preserve the expected projection. Focused tests and all verification gates then passed. No intent gap, spec loopback, deferred-work entry or further review cycle was required.
-- Disposition: local proof complete. Production integration, capture feasibility, architecture adoption, merge and deployment remain outside this packet's authorization.
+- Disposition: local proof complete. The owner subsequently authorized PR #12 follow-up, push and merge once final-head CI passes. Production integration, real-data capture, architecture adoption and deployment remain outside this packet's authorization.
+
+### PR #12 follow-up — 2026-09-08
+
+- Accepted the malformed UTF-8 finding: decoding failures now return HTTP 400 `invalid-utf8` during both streamed decoding and EOF flush. The workerd regression reproduced the prior HTTP 500 and verifies malformed input leaves blobs, references, receipts and outbox unchanged.
+- Clarified the digest boundary: operation/effect IDs are reconciled and `inputDigest` syntax is validated, but this synthetic checker does not compare the digest to captured bytes or an independently trusted inventory. Production input verification is separate approved work.
+- Retained invisible orphan uploads as intended by the frozen no-cleanup boundary; the isolated runtime owns temporary persistence and removes it after disposal. No production resource-retention policy is introduced.
+- Rejected the one-file review nit: the PR contains the six files named in this spec, as verified through GitHub's file list.
+- Follow-up local validation: 23/23 focused tests passed (14 workerd, 9 checker), plus TypeScript and focused ESLint. The earlier full-suite totals above are historical; the new commit must pass both Application and Sandbox Worker CI before merge. Final CI and merge evidence are recorded on PR #12.
 
 ## Suggested Review Order
 
