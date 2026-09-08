@@ -4,6 +4,16 @@ Status: isolated prototype; **not production-integrated or deployment-ready**.
 Baseline: `b751141486778d6b7ee5a72c7a9eb6e894869b2a`.
 Approval is for this local proof only. Existing [AD-15 rollout gates](ad15-production-rollout.md) remain binding.
 
+The 2026-09-08 [capture feasibility decision](write-safety-capture-feasibility.md)
+remains **blocked for live capture and production activation** at source baseline
+`0e8f1166557c6159b7a9069d8865c7eebd440441`. It inventories canonical, projection
+and operational state, legacy admissions and external effects, and records the
+missing provider/operator evidence. The accompanying
+[conditional production integration specification](write-safety-production-integration-spec.md)
+defines proposed authority, input-verification, read, job/effect and recovery
+contracts with file-scoped future packets. Neither document adopts the architecture
+or establishes a source barrier; the local proof status below is unchanged.
+
 ## Decision supported by the proof
 
 Use a workspace-wide commit authority as the candidate design, rather than a
@@ -134,6 +144,14 @@ or prove one consistent instant. Matching two scans, quiet logs, absent leases
 and an empty queue do not supply the missing guarantee. R2 bucket retention
 locks prevent overwrites/deletions but do not prohibit new object creation or
 freeze KV and external effects; they are not proposed as a complete barrier.
+
+The feasibility review confirms that queue pause does not suspend message expiry,
+Worker versions exclude associated storage state, and a prospective admission
+journal cannot retroactively account for already-running uninstrumented work.
+Its B1–B7 register is the blocking evidence checklist; S1–S16 and A1–A10 expand
+the family map above. The integration handoff requires actual input-digest
+comparison against retained bytes and explicit dispositions for ambiguous sends
+and external outcomes, beyond the synthetic checker described below.
 
 A future production packet must obtain either an authoritative, provider-backed
 source freeze/snapshot covering the affected stores, or a demonstrated lossless
