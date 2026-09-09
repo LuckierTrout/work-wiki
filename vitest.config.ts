@@ -71,8 +71,8 @@ if (missed.length > 0) {
 /**
  * Two projects, one `vitest run`.
  *
- * `.github/workflows/ci.yml` runs `pnpm test` and nothing else, so a second
- * config file plus a second script would be a suite nobody runs. Splitting the
+ * The Vitest step in `.github/workflows/ci.yml` runs `pnpm test`, so a second
+ * Vitest config plus a second script would be a suite nobody runs. Splitting the
  * single config into `test.projects` keeps one invocation and gives the mounted
  * `.test.tsx` suites the jsdom environment they need without moving the 4000+
  * existing `.test.ts` assertions off `environment: "node"`.
