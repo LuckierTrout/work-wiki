@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { canReadFrontmatter } from "@/lib/authz";
@@ -18,7 +19,7 @@ export async function GET(_request: Request, { params }: Params) {
   }
 
   const { id, slug: encodedSlug } = await params;
-  const vault = (await listVaults(principal.handle)).find(
+  const vault = (await listVaults(ownerTenantHandle(principal))).find(
     (candidate) => candidate.id === id,
   );
   if (!vault) {

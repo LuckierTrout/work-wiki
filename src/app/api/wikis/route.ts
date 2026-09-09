@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { isReadOnlyError } from "@/lib/read-only";
 import { createWiki, getWikiRegistry, parseCreateWikiInput } from "@/lib/wikis";
 
@@ -18,7 +18,7 @@ export async function GET() {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    const registry = await getWikiRegistry(principal.handle);
+    const registry = await getWikiRegistry(ownerTenantHandle(principal));
     return NextResponse.json({
       wikis: registry.wikis,
       currentId: registry.currentId,
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   try {
-    const wiki = await createWiki(principal.handle, parseCreateWikiInput(body));
+    const wiki = await createWiki(ownerTenantHandle(principal), parseCreateWikiInput(body));
     return NextResponse.json({ wiki }, { status: 201 });
   } catch (error) {
     // Backstop for a flag that flipped mid-request: the gate above already

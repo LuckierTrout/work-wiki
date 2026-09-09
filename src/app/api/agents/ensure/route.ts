@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { forkAgent, baseAgentId } from "@/lib/agents";
 import { getPrincipal } from "@/lib/auth";
@@ -24,7 +25,7 @@ export async function POST() {
     }
 
     const agent = await forkAgent({
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       templateId: baseAgentId(),
     });
 

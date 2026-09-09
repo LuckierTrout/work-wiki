@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -21,7 +22,7 @@ import {
  * A STATIC SEGMENT beside `[id]`, so Next matches it ahead of
  * `/api/research/<id>` and the repair is never read as a project id.
  *
- * OWNER-ONLY AND UNPARAMETERIZED. The tenant comes from `principal.handle`
+ * OWNER-ONLY AND UNPARAMETERIZED. The tenant comes from `ownerTenantHandle(principal)`
  * alone — no request field names a registry, so no caller can aim this at
  * someone else's file, and the body is never even read.
  *
@@ -46,7 +47,7 @@ export async function POST(_request: Request) {
     );
   }
   try {
-    const repair = await repairResearchRegistry(principal.handle);
+    const repair = await repairResearchRegistry(ownerTenantHandle(principal));
     if (!repair.quarantined) {
       // A REFUSAL, not a fault: the registry reads, so a repair would have
       // thrown away a working file. 409 rather than 200 so a caller that

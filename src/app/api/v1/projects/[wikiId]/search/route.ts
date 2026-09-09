@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import { isChatRetrievalMode } from "@/lib/chat";
@@ -40,7 +41,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   const { wikiId } = await params;
-  const access = await requireAccessibleWikiId(principal.handle, wikiId);
+  const access = await requireAccessibleWikiId(ownerTenantHandle(principal), wikiId);
   if (!access.ok) {
     return NextResponse.json({ error: access.error }, { status: access.status });
   }

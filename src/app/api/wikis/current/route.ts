@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -37,7 +38,7 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "A wiki id is required." }, { status: 400 });
   }
   try {
-    const wiki = await setCurrentWiki(principal.handle, id);
+    const wiki = await setCurrentWiki(ownerTenantHandle(principal), id);
     return wiki
       ? NextResponse.json({ wiki })
       : NextResponse.json({ error: "Wiki not found." }, { status: 404 });

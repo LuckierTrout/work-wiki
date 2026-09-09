@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -30,20 +31,20 @@ export async function POST(
     }
     const count = async (): Promise<number | undefined> => {
       try {
-        return normalizeReviewCount(await pendingReviewCount(principal.handle, wikiId)) ?? 0;
+        return normalizeReviewCount(await pendingReviewCount(ownerTenantHandle(principal), wikiId)) ?? 0;
       } catch {
         return undefined;
       }
     };
     if (body.action === "skip") {
-      const item = await skipReviewItem(principal.handle, id, wikiId);
+      const item = await skipReviewItem(ownerTenantHandle(principal), id, wikiId);
       if (!item) return NextResponse.json({ error: "Not found." }, { status: 404 });
       const pendingCount = await count();
       return NextResponse.json({ item, ...(pendingCount === undefined ? {} : { pendingCount }) });
     }
     if (body.action === "create-page") {
       const created = await createPageFromReview(
-        principal.handle,
+        ownerTenantHandle(principal),
         id,
         principal.handle,
         wikiId,

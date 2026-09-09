@@ -55,6 +55,7 @@ const MAX_INLINE_CONTENT_CHARS = 96000;
 
 export interface EnqueueExtractInput {
   owner: string;
+  actor?: string;
   /** `raw/sources/<slug>/` segment, already slugified by the calling door. */
   slug: string;
   /** SHA-256 hex of the raw bytes. Doubles as the stored id and the cache key. */
@@ -149,6 +150,7 @@ export async function enqueueExtract(
     await createExtractJob({
       extractId,
       owner: input.owner,
+      ...(input.actor !== undefined ? { actor: input.actor } : {}),
       sourceRel: path,
       slug: input.slug,
       storageKey: stored.rel,
@@ -386,8 +388,8 @@ export async function completeExtract(
 
   const options: IngestOptions = {
     owner: job.owner,
-    author: job.owner,
-    triggeredBy: job.owner,
+    author: job.actor ?? job.owner,
+    triggeredBy: job.actor ?? job.owner,
     sourceType,
     contentSha256: job.bytesSha256,
     sourcePath: textPath,
@@ -399,8 +401,8 @@ export async function completeExtract(
     kind: "ingest" as const,
     title: job.title,
     owner: job.owner,
-    author: job.owner,
-    triggeredBy: job.owner,
+    author: job.actor ?? job.owner,
+    triggeredBy: job.actor ?? job.owner,
     sourceType,
     contentSha256: job.bytesSha256,
     sourcePath: textPath,

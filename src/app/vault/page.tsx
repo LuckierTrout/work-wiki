@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import Link from "next/link";
 import { PrivateWorkspaceNotice } from "@/components/PrivateWorkspaceNotice";
 import { getPrincipal } from "@/lib/auth";
@@ -19,7 +20,7 @@ export default async function VaultPage() {
     );
   }
 
-  const vaults = await listVaults(principal.handle);
+  const vaults = await listVaults(ownerTenantHandle(principal));
 
   return (
     <div className="fade">

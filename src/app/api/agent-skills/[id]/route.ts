@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -22,7 +23,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: "enabled must be true or false" }, { status: 400 });
     }
     const { id } = await params;
-    const skill = await updateAgentSkill(principal.handle, id, {
+    const skill = await updateAgentSkill(ownerTenantHandle(principal), id, {
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(typeof body.description === "string" ? { description: body.description } : {}),
       ...(typeof body.instructions === "string" ? { instructions: body.instructions } : {}),
@@ -42,7 +43,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await params;
-    return (await deleteAgentSkill(principal.handle, id))
+    return (await deleteAgentSkill(ownerTenantHandle(principal), id))
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Skill not found." }, { status: 404 });
   } catch (error) {

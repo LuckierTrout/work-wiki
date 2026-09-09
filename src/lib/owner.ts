@@ -11,8 +11,8 @@
  *    the deployment gate in `src/middleware.ts` admits on. It cannot drift: a
  *    username change, or a user with no username and no linked X account (whose
  *    handle falls back to the raw Clerk id in `getPrincipal`), leaves it alone.
- *  - `NEXT_PUBLIC_OWNER_HANDLE` — the owner's handle. Public, so the SAME value
- *    is available client-side (nav gating) and server-side; it's inlined at
+ *  - `NEXT_PUBLIC_OWNER_HANDLE` — the owner's canonical storage handle. Public, so
+ *    the value is available to both server and client bundles; it's inlined at
  *    build time (see the deploy workflow), so changing it requires a redeploy.
  *
  * They used to be gated on independently — middleware on the id, every route and
@@ -24,30 +24,9 @@
  * service principals (whose ids are synthesized, not Clerk's) and for any
  * deployment with no `YOPEDIA_OWNER_USER_ID` configured.
  *
- * WHY THIS MODULE STAYS IMPORT-LIGHT: it is bundled into client components
- * (`NavHeader`, `ArticleActions`, `RevisionHistory`), so it must not import
- * `@/lib/auth` or anything else server-only. The one import is `./principal-id`,
- * which is itself import-free.
- *
- * The client gate is UX only — the real boundary is the server gate on the
- * owner-only API routes and pages. Client islands keep using
- * {@link isOwnerHandle} on purpose: `YOPEDIA_OWNER_USER_ID` is a server var and
- * is never inlined into the bundle, so in the browser {@link getOwnerUserId}
- * answers `null`.
- *
- * That makes the client answer able to differ from the server's in BOTH
- * directions, and both are acceptable because the client gate offers nothing the
- * server will honour:
- *
- *  - NARROWER — the owner whose handle drifted is admitted by every server gate
- *    but sees fewer affordances. An unoffered button is recoverable (the route
- *    still answers); a 403 on a write the middleware admitted was not.
- *  - WIDER — with an owner id configured and a STALE `NEXT_PUBLIC_OWNER_HANDLE`,
- *    someone else holding that handle is refused by every server gate yet is
- *    still SHOWN the owner affordances. They gain no access: each button they
- *    press meets the server's answer. The cost is a confusing dead control, not
- *    a hole — and closing it would need a build-inlined public mirror of the
- *    owner's Clerk id, which DW-486 deliberately does not add.
+ * This module stays import-light: identity types are structural and no auth or
+ * storage module is imported. Client controls receive the server's owner flag;
+ * the stable owner user id is never exposed to the browser.
  */
 
 import { isSynthesizedPrincipalId } from "./principal-id";
@@ -121,4 +100,14 @@ export function isOwnerPrincipal(
     return principal.id === ownerId;
   }
   return isOwnerHandle(principal.handle);
+}
+
+/** Storage namespace for a session, without changing its authenticated identity. */
+export function ownerTenantHandle(
+  principal: { id?: string | null; handle?: string | null } | null | undefined,
+): string {
+  const canonical = getOwnerHandle();
+  return canonical && isOwnerPrincipal(principal)
+    ? canonical
+    : principal?.handle ?? "";
 }

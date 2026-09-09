@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { effectiveStatus, listIngestJobs } from "@/lib/ingest-jobs";
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
     }
 
     const jobs = await listIngestJobs({
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       ...(source === "email" ? { source: "email" as const } : {}),
       limit,
     });

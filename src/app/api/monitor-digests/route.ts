@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -16,8 +17,8 @@ export async function GET() {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const [settings, digests] = await Promise.all([
-      loadMonitorDigestSettings(principal.handle),
-      listMonitorDigests(principal.handle),
+      loadMonitorDigestSettings(ownerTenantHandle(principal)),
+      listMonitorDigests(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({
       settings,
@@ -45,7 +46,7 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
-    const settings = await saveMonitorDigestSettings(principal.handle, {
+    const settings = await saveMonitorDigestSettings(ownerTenantHandle(principal), {
       enabled: body.enabled,
       cadence: body.cadence as MonitorDigestCadence,
       emailEnabled: body.emailEnabled,
@@ -65,7 +66,7 @@ export async function POST() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    const digest = await createMonitorDigest(principal.handle, { force: true });
+    const digest = await createMonitorDigest(ownerTenantHandle(principal), { force: true });
     if (!digest) {
       return NextResponse.json({
         digest: null,
@@ -79,10 +80,10 @@ export async function POST() {
       queued = await enqueueTask({
         kind: "deliver-monitor-digest",
         digestId: digest.id,
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
       });
       if (queued) {
-        responseDigest = await markMonitorDigestQueued(principal.handle, digest.id) ?? digest;
+        responseDigest = await markMonitorDigestQueued(ownerTenantHandle(principal), digest.id) ?? digest;
       }
     }
     return NextResponse.json({

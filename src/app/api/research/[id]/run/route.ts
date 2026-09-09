@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -51,7 +52,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       }
     }
     if (body.action === "cancel") {
-      return NextResponse.json({ project: await cancelResearchProject(principal.handle, id) });
+      return NextResponse.json({ project: await cancelResearchProject(ownerTenantHandle(principal), id) });
     }
     if (body.action !== undefined && body.action !== "start") {
       return NextResponse.json({ error: "action must be cancel or omitted." }, { status: 400 });
@@ -62,11 +63,11 @@ export async function POST(request: Request, { params }: RouteContext) {
         { status: 400 },
       );
     }
-    const project = await queueResearchProject(principal.handle, id);
+    const project = await queueResearchProject(ownerTenantHandle(principal), id);
     const enqueued = await enqueueTask({
       kind: "run-research",
       projectId: id,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
     });
     // 202 EITHER WAY. The run is asynchronous by contract: the Workbench opens
     // the panel and polls, and a response that arrived only after the whole
@@ -79,7 +80,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     // rejection. The run takes the same three-slot lease either way, so the dev
     // path cannot exceed a cap the queued path respects.
     if (!enqueued) {
-      void runResearchProject(principal.handle, id).catch(() => {
+      void runResearchProject(ownerTenantHandle(principal), id).catch(() => {
         // `runResearchProject` has already written `status: "failed"` and the
         // message onto the project. There is no second place to report it.
       });
@@ -157,7 +158,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const { getResearchProject } = await import("@/lib/research-projects");
-    const project = await getResearchProject(principal.handle, id);
+    const project = await getResearchProject(ownerTenantHandle(principal), id);
     return project && !project.deleteRequested
       ? NextResponse.json({ project, availableProviders: availableResearchProviders() })
       : NextResponse.json({ error: "Research project not found." }, { status: 404 });

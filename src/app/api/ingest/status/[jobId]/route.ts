@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getIngestJob, effectiveStatus } from "@/lib/ingest-jobs";
@@ -33,7 +34,7 @@ export async function GET(
       }
       throw e;
     }
-    if (!job || job.owner !== principal.handle) {
+    if (!job || job.owner !== ownerTenantHandle(principal)) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 

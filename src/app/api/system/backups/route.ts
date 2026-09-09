@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { createOwnerBackup, listBackupManifests, summarizeBackup, verifyOwnerBackup } from "@/lib/backups";
@@ -8,7 +9,7 @@ export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    return NextResponse.json({ backups: (await listBackupManifests(principal.handle)).map(summarizeBackup) });
+    return NextResponse.json({ backups: (await listBackupManifests(ownerTenantHandle(principal))).map(summarizeBackup) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -18,13 +19,13 @@ export async function POST() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    if (await enqueueTask({ kind: "create-backup", owner: principal.handle })) {
+    if (await enqueueTask({ kind: "create-backup", owner: ownerTenantHandle(principal) })) {
       return NextResponse.json({ queued: true }, { status: 202 });
     }
     // Local development has no Queue binding, so run inline for testability.
-    const backup = await createOwnerBackup(principal.handle);
+    const backup = await createOwnerBackup(ownerTenantHandle(principal));
     return NextResponse.json(
-      { backup: summarizeBackup(await verifyOwnerBackup(principal.handle, backup.id)) },
+      { backup: summarizeBackup(await verifyOwnerBackup(ownerTenantHandle(principal), backup.id)) },
       { status: 201 },
     );
   } catch (error) {

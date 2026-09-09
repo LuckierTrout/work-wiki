@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 import type { IndexEntry } from "./types";
 import { callLLM, hasLLMKey } from "./llm";
 import { withFileLock } from "./lock";
@@ -814,7 +815,7 @@ export function expandMineScope(
   principal: Principal | null,
 ): string | undefined {
   if (scope === "mine") {
-    return principal ? `owner:${principal.handle}` : undefined;
+    return principal ? `owner:${ownerTenantHandle(principal)}` : undefined;
   }
   return scope || undefined;
 }

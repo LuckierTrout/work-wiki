@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -10,7 +11,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await params;
-    const event = await retryOutboxEvent(principal.handle, id);
+    const event = await retryOutboxEvent(ownerTenantHandle(principal), id);
     return event
       ? NextResponse.json({ event })
       : NextResponse.json({ error: "Outbox event not found." }, { status: 404 });

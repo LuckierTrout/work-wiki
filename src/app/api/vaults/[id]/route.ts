@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getVault, renameVault, deleteVault, vaultOwnedBy } from "@/lib/vault";
@@ -12,7 +13,7 @@ async function authorizeOwner(vaultId: string) {
   if (!principal) {
     return { error: NextResponse.json({ error: "Sign in required." }, { status: 401 }) };
   }
-  if (!vaultOwnedBy(vaultId, principal.handle)) {
+  if (!vaultOwnedBy(vaultId, ownerTenantHandle(principal))) {
     return { error: NextResponse.json({ error: "Not your vault." }, { status: 403 }) };
   }
   return { principal };

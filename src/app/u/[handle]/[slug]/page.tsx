@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import type { Metadata } from "next";
 import { notFound, permanentRedirect } from "next/navigation";
 import { decodeSlug } from "@/lib/slugify";
@@ -108,8 +109,8 @@ export default async function WikiPageView({ params }: WikiPageProps) {
   // The `disputed` banner no longer reports whether a reconciliation is open:
   // talk is retired with the commons (AD-21), so no surface can open, show, or
   // close a thread, and a reader told one exists has nowhere to act on it.
-  const evidenceBundle = principal && tenantForOwner(principal.handle) === pageTenant
-    ? await getPageEvidence(principal.handle, slug)
+  const evidenceBundle = principal && tenantForOwner(ownerTenantHandle(principal)) === pageTenant
+    ? await getPageEvidence(ownerTenantHandle(principal), slug)
     : null;
   return (
     <ArticleView

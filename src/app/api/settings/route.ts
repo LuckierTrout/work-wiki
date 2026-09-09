@@ -52,7 +52,7 @@ import {
 import { getErrorMessage } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import {
   IF_MATCH_HEADER,
   WRITE_CONFLICT_COPY,
@@ -707,7 +707,7 @@ export async function PUT(request: Request) {
     const nowOn = workbenchSettingsStored(merged, hasWorkersAiBinding).vectorSearchEnabled === true;
     if (wasOff && nowOn) {
       const { enqueueEmbeddingBackfill } = await import("@/lib/ingest-embed");
-      await enqueueEmbeddingBackfill(principal.handle);
+      await enqueueEmbeddingBackfill(ownerTenantHandle(principal));
     }
 
     // Hoisted above BOTH resolvers, the way `GET` hoists it, and for the reason

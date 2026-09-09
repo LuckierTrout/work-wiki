@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -111,8 +112,8 @@ export async function POST(request: NextRequest) {
 
     const contentType = request.headers.get("content-type") || "";
     return contentType.includes("multipart/form-data")
-      ? await intakeFile(request, principal.handle, answerBy)
-      : await intakeUrl(request, principal.handle, answerBy);
+      ? await intakeFile(request, ownerTenantHandle(principal), answerBy, principal.handle)
+      : await intakeUrl(request, ownerTenantHandle(principal), answerBy, principal.handle);
   } catch (error) {
     if (isReadOnlyError(error)) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
@@ -140,6 +141,7 @@ async function intakeFile(
   request: NextRequest,
   owner: string,
   answerBy: number,
+  actor: string,
 ): Promise<NextResponse> {
   const form = await request.formData();
   const file = form.get("file");
@@ -178,6 +180,7 @@ async function intakeFile(
 
     const queued = await enqueueExtract({
       owner,
+      actor,
       slug,
       bytesSha256: digest,
       ext,
@@ -247,6 +250,7 @@ async function intakeFile(
 
   return await storeAndQueue({
     owner,
+    actor,
     slug,
     text,
     title,
@@ -329,6 +333,7 @@ async function intakeUrl(
   request: NextRequest,
   owner: string,
   answerBy: number,
+  actor: string,
 ): Promise<NextResponse> {
   // `?? {}` as well as the catch: a body of the four characters `null` is VALID
   // JSON, so `request.json()` resolves with `null` and never reaches the catch —
@@ -357,6 +362,7 @@ async function intakeUrl(
     const firstLine = clip.split(/\r?\n/, 1)[0]?.trim() ?? "";
     return await storeAndQueue({
       owner,
+      actor,
       slug: intakeUrlSlug(url),
       text: clip,
       title: (firstLine || url).slice(0, 200),
@@ -389,6 +395,7 @@ async function intakeUrl(
 
   return await storeAndQueue({
     owner,
+    actor,
     slug: intakeUrlSlug(url),
     text,
     title: fetched.title,
@@ -413,6 +420,7 @@ async function authorizedShaSkip(
   owner: string,
   sourceUrl?: string,
   sourceType: "text" | "url" = "text",
+  actor: string = owner,
 ): Promise<{ slug: string; path?: string } | null> {
   const existing = await resolveContentSha256(digest);
   if (!existing) return null;
@@ -424,7 +432,7 @@ async function authorizedShaSkip(
   const resee = await recordSourceResee(existing, {
     url: sourceUrl ?? existingPath ?? "text-paste",
     type: sourceType,
-    triggeredBy: owner,
+    triggeredBy: actor,
     actorOwner: owner,
   });
   if (!resee) return null;
@@ -475,6 +483,7 @@ async function recordSkippedJob(input: {
 
 async function storeAndQueue(input: {
   owner: string;
+  actor: string;
   slug: string;
   text: string;
   title: string;
@@ -485,10 +494,10 @@ async function storeAndQueue(input: {
   /** Wall-clock ms after which this request must answer — see `POST`. */
   answerBy: number;
 }): Promise<NextResponse> {
-  const { owner, slug, text, title, sourceType, sourceUrl, relativePath, origin } = input;
+  const { owner, actor, slug, text, title, sourceType, sourceUrl, relativePath, origin } = input;
 
   const digest = await sourceSha256(text);
-  const authorized = await authorizedShaSkip(digest, owner, sourceUrl, sourceType);
+  const authorized = await authorizedShaSkip(digest, owner, sourceUrl, sourceType, actor);
 
   // Loose files keep the 2.1 hash key so a second `notes.md` does not collide.
   // Folder identity is the sanitized relative path (FR-40); both writers share
@@ -579,8 +588,8 @@ async function storeAndQueue(input: {
 
   const options: IngestOptions = {
     owner,
-    author: owner,
-    triggeredBy: owner,
+    author: actor,
+    triggeredBy: actor,
     sourceType,
     ...(sourceUrl ? { sourceUrl } : {}),
     ...(relativePath ? { relativePath } : {}),
@@ -625,8 +634,8 @@ async function storeAndQueue(input: {
       kind: "ingest" as const,
       ...(title ? { title } : {}),
       owner,
-      author: owner,
-      triggeredBy: owner,
+      author: actor,
+      triggeredBy: actor,
       sourceType,
       ...(sourceUrl ? { sourceUrl } : {}),
       ...(relativePath ? { relativePath } : {}),

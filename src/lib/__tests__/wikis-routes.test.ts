@@ -314,7 +314,7 @@ describe("POST /api/wikis/<id>/template", () => {
     );
     expect(response.status).toBe(200);
     expect((await response.json()).wiki.scenario).toBe("reading");
-    expect(mockedApply).toHaveBeenCalledWith("alice", WIKI.id, "reading");
+    expect(mockedApply).toHaveBeenCalledWith("alice", WIKI.id, "reading", "alice");
   });
 
   it("404s on an unknown wiki", async () => {

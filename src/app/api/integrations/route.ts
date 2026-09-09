@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -12,8 +13,8 @@ export async function GET() {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const [settings, events] = await Promise.all([
-      getIntegrationSettings(principal.handle),
-      listOutboxEvents(principal.handle),
+      getIntegrationSettings(ownerTenantHandle(principal)),
+      listOutboxEvents(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({
       settings,
@@ -39,7 +40,7 @@ export async function PUT(request: Request) {
     if (body.webhookUrl !== undefined && body.webhookUrl !== null && typeof body.webhookUrl !== "string") {
       return NextResponse.json({ error: "webhookUrl must be a string or null." }, { status: 400 });
     }
-    const settings = await saveIntegrationSettings(principal.handle, {
+    const settings = await saveIntegrationSettings(ownerTenantHandle(principal), {
       ...(typeof body.webhookEnabled === "boolean" ? { webhookEnabled: body.webhookEnabled } : {}),
       ...(typeof body.calendarEnabled === "boolean" ? { calendarEnabled: body.calendarEnabled } : {}),
       ...(typeof body.webhookUrl === "string" || body.webhookUrl === null

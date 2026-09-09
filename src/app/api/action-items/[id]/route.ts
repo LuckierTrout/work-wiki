@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import {
@@ -29,7 +30,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (body.priority !== undefined && !PRIORITIES.has(body.priority as ActionItemPriority)) {
       return NextResponse.json({ error: "Invalid priority." }, { status: 400 });
     }
-    const item = await updateActionItem(principal.handle, id, {
+    const item = await updateActionItem(ownerTenantHandle(principal), id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
       ...(typeof body.details === "string" ? { details: body.details } : {}),
       ...(typeof body.assignee === "string" ? { assignee: body.assignee } : {}),
@@ -60,7 +61,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const deleted = await deleteActionItem(principal.handle, id);
+    const deleted = await deleteActionItem(ownerTenantHandle(principal), id);
     return deleted
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Action item not found." }, { status: 404 });

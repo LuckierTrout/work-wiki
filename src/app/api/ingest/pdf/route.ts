@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import type { IngestOptions } from "@/lib/ingest";
 import { fetchPdfBytes, isUrl } from "@/lib/fetch";
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
     // Attribution comes from the session, never the request body.
     const options: Omit<IngestOptions, "sourceType"> & { title?: string } = {
       author: principal.handle,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       triggeredBy: principal.handle,
     };
 
@@ -100,7 +101,7 @@ export async function POST(request: NextRequest) {
       const formVaultId = form.get("vaultId");
       let validatedVaultId: string | undefined;
       if (typeof formVaultId === "string" && formVaultId.trim()) {
-        if (!vaultOwnedBy(formVaultId, principal.handle)) {
+        if (!vaultOwnedBy(formVaultId, ownerTenantHandle(principal))) {
           return NextResponse.json(
             { error: "Vault not found or not owned by you" },
             { status: 403 },
@@ -117,7 +118,8 @@ export async function POST(request: NextRequest) {
       // same after it has fetched the bytes.
       const digest = await bytesSha256(bytes);
       const queued = await enqueueExtract({
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
+        actor: principal.handle,
         slug: intakeSourceSlug(file.name),
         bytesSha256: digest,
         ext: "pdf",
@@ -153,7 +155,7 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
-      if (!vaultOwnedBy(body.vaultId, principal.handle)) {
+      if (!vaultOwnedBy(body.vaultId, ownerTenantHandle(principal))) {
         return NextResponse.json(
           { error: "Vault not found or not owned by you" },
           { status: 403 },
@@ -166,7 +168,8 @@ export async function POST(request: NextRequest) {
     const fetched = await fetchPdfBytes(trimmedUrl);
     const digest = await bytesSha256(fetched.bytes);
     const queued = await enqueueExtract({
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
+      actor: principal.handle,
       slug: intakeSourceSlug(fetched.filename),
       bytesSha256: digest,
       ext: "pdf",

@@ -70,6 +70,8 @@ export interface ExtractJob {
   extractId: string;
   /** The handle whose Source this is. Only they (or the service token) may act. */
   owner: string;
+  /** Original session actor; absent on records written before actor separation. */
+  actor?: string;
   status: ExtractJobStatus;
   /** Workbench path of the stored bytes, e.g. `raw/sources/plan/<sha>.pdf`. */
   sourceRel: string;
@@ -139,6 +141,8 @@ function relPathFor(extractId: string): string {
 export interface CreateExtractJobInput {
   extractId: string;
   owner: string;
+  /** Original session actor; absent on records written before actor separation. */
+  actor?: string;
   sourceRel: string;
   slug: string;
   storageKey: string;

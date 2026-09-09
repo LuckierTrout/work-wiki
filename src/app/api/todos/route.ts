@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -27,9 +28,9 @@ export async function GET(request: Request) {
       ? (tabValue as TodoTab)
       : undefined;
     const [items, pendingCount, extractError] = await Promise.all([
-      listTodos(principal.handle, tab),
-      pendingTodoCount(principal.handle),
-      getTodoExtractError(principal.handle),
+      listTodos(ownerTenantHandle(principal), tab),
+      pendingTodoCount(ownerTenantHandle(principal)),
+      getTodoExtractError(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({
       items,
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
       if (typeof body.slug !== "string" || !body.slug.trim()) {
         return NextResponse.json({ error: "slug is required to retry." }, { status: 400 });
       }
-      const outcome = await dispatchMeetingTodoExtract(principal.handle, {
+      const outcome = await dispatchMeetingTodoExtract(ownerTenantHandle(principal), {
         slug: body.slug.trim(),
         ...(typeof body.sourcePath === "string" && body.sourcePath.trim()
           ? { sourcePath: body.sourcePath.trim() }
@@ -85,14 +86,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "ids must be an array of strings." }, { status: 400 });
     }
     const items = await decideTodos(
-      principal.handle,
+      ownerTenantHandle(principal),
       body.ids as string[],
       body.decision as TodoDecision,
       principal.handle,
     );
     return NextResponse.json({
       items,
-      pendingCount: await pendingTodoCount(principal.handle),
+      pendingCount: await pendingTodoCount(ownerTenantHandle(principal)),
     });
   } catch (error) {
     if (isReadOnlyError(error)) {

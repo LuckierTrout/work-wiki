@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import {
@@ -31,15 +32,15 @@ export async function GET(request: Request) {
     const communities = assignCommunities(nodes, edges);
     const rawInsights = computeWorkbenchInsights(nodes, edges, communities);
     const dismissed = isReadOnly()
-      ? await insightDismissalMap(principal.handle)
-      : await reconcileLegacyInsightDismissals(principal.handle, rawInsights);
+      ? await insightDismissalMap(ownerTenantHandle(principal))
+      : await reconcileLegacyInsightDismissals(ownerTenantHandle(principal), rawInsights);
     const insights = filterDismissedInsights(rawInsights, dismissed);
     const eligible = insights.filter((insight) => insight.offersDeepResearch);
     const selected = new Set(eligible.slice(0, RESEARCH_PREFILL_LIMIT).map((insight) => insight.id));
     const selectedInsights = insights.filter((insight) => selected.has(insight.id));
     const context = selected.size > 0
       ? {
-          ...(await loadResearchPrefillContext(principal.handle)),
+          ...(await loadResearchPrefillContext(ownerTenantHandle(principal))),
           pages: await loadResearchPrefillPages(
             allocateResearchPrefillSlugs(selectedInsights.map((insight) => insight.slugs)),
           ),
@@ -53,7 +54,7 @@ export async function GET(request: Request) {
         const prefill = await buildResearchPrefill(
           insight.slugs,
           insight.topic,
-          principal.handle,
+          ownerTenantHandle(principal),
           context,
         );
         applied += 1;

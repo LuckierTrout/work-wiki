@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -43,19 +44,19 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
 
     if (body.decision === "reject") {
-      const approval = await rejectAgentSandboxApproval(principal.handle, id);
+      const approval = await rejectAgentSandboxApproval(ownerTenantHandle(principal), id);
       if (!approval) {
         return NextResponse.json({ error: "Pending approval not found." }, { status: 404 });
       }
       const resumed = await resumeAgent({
         agentId: approval.agentId,
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         message: `Resume after the owner rejected sandbox command approval ${approval.id}. Do not execute or repeat the rejected command unless the owner explicitly requests a revised approach. Explain what could not be completed and offer a safe alternative.`,
       });
       return NextResponse.json({ approval, ...resumed });
     }
 
-    const claimed = await claimAgentSandboxApproval(principal.handle, id);
+    const claimed = await claimAgentSandboxApproval(ownerTenantHandle(principal), id);
     if (!claimed) {
       return NextResponse.json({ error: "Pending approval not found." }, { status: 404 });
     }
@@ -77,13 +78,13 @@ export async function POST(request: Request, { params }: RouteContext) {
         content: `command: ${claimed.approval.command}\nexit: ${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`,
       };
       await appendAgentRunArtifacts({
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         agentId: claimed.approval.agentId,
         runId: claimed.approval.runId,
         artifacts: [log, ...(result.artifacts ?? [])],
       });
       approval = await finishAgentSandboxApproval({
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         id,
         status: result.exitCode === 0 ? "completed" : "failed",
         result: {
@@ -98,7 +99,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     } catch (error) {
       const message = getErrorMessage(error);
       approval = await finishAgentSandboxApproval({
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         id,
         status: "failed",
         result: {
@@ -115,7 +116,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
     const resumed = await resumeAgent({
       agentId: approval.agentId,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       message: resumeMessage,
     });
     return NextResponse.json({ approval, ...resumed });

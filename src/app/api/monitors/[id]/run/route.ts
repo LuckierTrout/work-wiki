@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -10,7 +11,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await params;
-    const result = await runSourceMonitor(principal.handle, id);
+    const result = await runSourceMonitor(ownerTenantHandle(principal), id);
     return NextResponse.json({ result }, { status: result.outcome === "failed" ? 502 : 200 });
   } catch (error) {
     const message = getErrorMessage(error);

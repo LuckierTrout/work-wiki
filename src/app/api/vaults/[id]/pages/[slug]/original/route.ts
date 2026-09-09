@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { listDocumentSources } from "@/lib/document-sources";
@@ -32,7 +33,7 @@ export async function GET(request: Request, { params }: Params) {
   }
 
   const { id, slug: encodedSlug } = await params;
-  const vault = (await listVaults(principal.handle)).find(
+  const vault = (await listVaults(ownerTenantHandle(principal))).find(
     (candidate) => candidate.id === id,
   );
   if (!vault) {
@@ -47,7 +48,7 @@ export async function GET(request: Request, { params }: Params) {
   const digest = new URL(request.url).searchParams.get("source");
   let sources;
   try {
-    sources = await listDocumentSources(slug, principal.handle);
+    sources = await listDocumentSources(slug, ownerTenantHandle(principal));
   } catch {
     return NextResponse.json({ error: "Document not found." }, { status: 404 });
   }

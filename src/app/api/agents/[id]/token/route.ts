@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import {
   generateAgentToken,
@@ -25,7 +26,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
     }
-    const existing = await assertCanMutateAgent(id, principal.handle);
+    const existing = await assertCanMutateAgent(id, ownerTenantHandle(principal));
     if (!existing) {
       return NextResponse.json(
         { error: `Agent "${id}" not found` },
@@ -59,7 +60,7 @@ export async function POST(_req: Request, { params }: RouteParams) {
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
     }
-    const existing = await assertCanMutateAgent(id, principal.handle);
+    const existing = await assertCanMutateAgent(id, ownerTenantHandle(principal));
     if (!existing) {
       return NextResponse.json(
         { error: `Agent "${id}" not found` },
@@ -90,7 +91,7 @@ export async function DELETE(_req: Request, { params }: RouteParams) {
     if (!principal) {
       return NextResponse.json({ error: "Sign in required." }, { status: 401 });
     }
-    const existing = await assertCanMutateAgent(id, principal.handle);
+    const existing = await assertCanMutateAgent(id, ownerTenantHandle(principal));
     if (!existing) {
       return NextResponse.json(
         { error: `Agent "${id}" not found` },

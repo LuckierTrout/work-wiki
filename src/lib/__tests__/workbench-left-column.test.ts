@@ -1480,7 +1480,7 @@ describe("page.tsx loads the trees from the authenticated principal", () => {
     const source = await readFile(path.join(SRC, "app/page.tsx"), "utf8");
     expect(source).toContain("listReadableWikiPages(principal)");
     expect(source).toContain("listWorkbenchFilePaths(");
-    expect(source).toContain("principal.handle");
+    expect(source).toContain("ownerTenantHandle(principal)");
     expect(source).toContain("buildKnowledgeTree(pageIndex.entries)");
     expect(source).toContain("buildFileTree(fileListing.paths)");
     // The Files tab is gated by the KNOWLEDGE TREE ITSELF, not by the index it

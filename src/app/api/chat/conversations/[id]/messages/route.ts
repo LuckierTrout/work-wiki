@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import {
   ChatPersistError,
@@ -129,7 +130,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
 
     if (body.retractLastTurn === true) {
-      const retracted = await retractLastChatTurn(principal.handle, id);
+      const retracted = await retractLastChatTurn(ownerTenantHandle(principal), id);
       if (!retracted) {
         return NextResponse.json({
           conversation: null,
@@ -194,7 +195,7 @@ export async function POST(request: Request, { params }: RouteContext) {
           { status: 400 },
         );
       }
-      const conversation = await persistChatTurn(principal.handle, id, frames, {
+      const conversation = await persistChatTurn(ownerTenantHandle(principal), id, frames, {
         replaceLastTurn: body.replaceLastTurn === true,
       });
       if (!conversation) {

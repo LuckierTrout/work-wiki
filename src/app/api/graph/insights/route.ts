@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -16,7 +17,7 @@ export async function GET() {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    return NextResponse.json({ items: await listInsightDismissals(principal.handle) });
+    return NextResponse.json({ items: await listInsightDismissals(ownerTenantHandle(principal)) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
     if (body.fingerprint.trim().length > MAX_INSIGHT_FINGERPRINT_LENGTH) {
       return NextResponse.json({ error: "fingerprint is too long." }, { status: 400 });
     }
-    const item = await dismissInsight(principal.handle, body.id.trim(), body.fingerprint.trim());
+    const item = await dismissInsight(ownerTenantHandle(principal), body.id.trim(), body.fingerprint.trim());
     return NextResponse.json({ item });
   } catch (error) {
     if (isReadOnlyError(error)) {

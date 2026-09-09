@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -7,7 +8,7 @@ export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    return NextResponse.json({ skills: await listAgentSkills(principal.handle) });
+    return NextResponse.json({ skills: await listAgentSkills(ownerTenantHandle(principal)) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
     if (body.agentIds !== undefined && (!Array.isArray(body.agentIds) || body.agentIds.some((value) => typeof value !== "string"))) {
       return NextResponse.json({ error: "agentIds must be a list of strings" }, { status: 400 });
     }
-    const skill = await createAgentSkill(principal.handle, {
+    const skill = await createAgentSkill(ownerTenantHandle(principal), {
       name: body.name,
       instructions: body.instructions,
       ...(typeof body.description === "string" ? { description: body.description } : {}),

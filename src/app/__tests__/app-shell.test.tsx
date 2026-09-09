@@ -1,3 +1,5 @@
+import { getPrincipal } from "@/lib/auth";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import RootLayout, { metadata } from "@/app/layout";
@@ -49,6 +51,7 @@ const auth = vi.hoisted(() => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  unstable_rethrow: (error: unknown) => { if (error instanceof Error && error.message === "NEXT_REDIRECT") throw error; },
   usePathname: () => nav.pathname,
   useRouter: () => nav.router,
   // `Analytics` reads this; it is `null`-guarded there, but handing back a real
@@ -62,7 +65,11 @@ vi.mock("next/navigation", () => ({
  * shape is what `layout.tsx` consumes: it interpolates `.variable` into the
  * `<html>` className.
  */
-vi.mock("next/font/google", () => {
+vi.mock("@/lib/auth", () => ({
+  getPrincipal: vi.fn(async () => auth.state.isSignedIn ? { id: "user_test", handle: auth.state.user?.username ?? "user_test" } : null),
+}));
+
+vi.mock("next/font/google", async () => {
   const loader = (variable: string) => () => ({
     variable,
     className: variable.replace(/^--/, "font-"),
@@ -184,8 +191,8 @@ function linkNames(): string[] {
 }
 
 /**
- * `RootLayout` is a SYNC server component: calling it returns the element,
- * and rendering that element is the whole mount. React hoists the
+ * `RootLayout` resolves server authority asynchronously. Await its element
+ * before mounting so the real provider nesting and flags are exercised. React hoists the
  * `<html>`/`<head>`/`<body>` it returns onto the real document, which is why
  * the assertions below read `document.documentElement` rather than the render
  * container. (One `In HTML, <html> cannot be a child of <div>` nesting
@@ -195,8 +202,8 @@ function linkNames(): string[] {
  * reachable ONLY through the `<head>` this mount produces, so the head suite
  * below needs the same mount (DW-261).
  */
-function mountLayout() {
-  return render(RootLayout({ children: <Probe /> }));
+async function mountLayout() {
+  return render(await RootLayout({ children: <Probe /> }));
 }
 
 beforeEach(() => {
@@ -248,8 +255,8 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("RootLayout, mounted", () => {
-  it("puts the children on the page through Clerk and the client providers", () => {
-    mountLayout();
+  it("puts the children on the page through Clerk and the client providers", async () => {
+    await mountLayout();
 
     // The probe rendered, so `useToast`, `useShortcutsHelp` and `useUser` all
     // found their providers — i.e. `<ClerkProvider>` and `<ClientProviders>`
@@ -257,15 +264,15 @@ describe("RootLayout, mounted", () => {
     expect(screen.getByText("probe reached the page")).toBeTruthy();
   });
 
-  it("declares the document language on <html>", () => {
-    mountLayout();
+  it("declares the document language on <html>", async () => {
+    await mountLayout();
     // The one attribute every assistive technology reads before anything else
     // (WCAG 3.1.1), and the one this shell is the only source of.
     expect(document.documentElement.lang).toBe("en");
   });
 
-  it("puts exactly one main landmark on the page, and it is SiteChrome's", () => {
-    mountLayout();
+  it("puts exactly one main landmark on the page, and it is SiteChrome's", async () => {
+    await mountLayout();
     expect(landmarks()).toHaveLength(1);
     expect(landmarks()[0].id).toBe("main-content");
     // …and the children are INSIDE it, not beside it.
@@ -274,16 +281,16 @@ describe("RootLayout, mounted", () => {
     );
   });
 
-  it("still renders one main landmark on the chrome-less Workbench route", () => {
+  it("still renders one main landmark on the chrome-less Workbench route", async () => {
     // `/` takes `SiteChrome`'s bare branch — a different subtree, same shell.
     nav.pathname = "/";
-    mountLayout();
+    await mountLayout();
     expect(landmarks()).toHaveLength(1);
     expect(screen.getByText("probe reached the page")).toBeTruthy();
   });
 
-  it("carries the font variables onto <html> so the CSS tokens resolve", () => {
-    mountLayout();
+  it("carries the font variables onto <html> so the CSS tokens resolve", async () => {
+    await mountLayout();
     // `globals.css` reads `--font-sans-next` et al. from the root element; the
     // layout is the only place they are applied, and losing one silently drops
     // the app to a fallback face.
@@ -293,15 +300,15 @@ describe("RootLayout, mounted", () => {
     expect(className).toContain("--font-mono-next");
   });
 
-  it("mounts the nav and the footer on a chrome-carrying route", () => {
-    mountLayout();
+  it("mounts the nav and the footer on a chrome-carrying route", async () => {
+    await mountLayout();
     expect(screen.getByRole("navigation", { name: "Main navigation" })).toBeTruthy();
     expect(document.querySelector("footer")).toBeTruthy();
   });
 
-  it("provisions the signed-in user's yoyo from the shell", () => {
+  it("provisions the signed-in user's yoyo from the shell", async () => {
     signedInAs(OWNER);
-    mountLayout();
+    await mountLayout();
 
     // `EnsureYoyo` renders nothing, so the ONLY evidence it is still mounted is
     // the request it issues. Every user is auto-provisioned by design — there
@@ -309,8 +316,8 @@ describe("RootLayout, mounted", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/agents/ensure", { method: "POST" });
   });
 
-  it("asks for nothing on behalf of a signed-out visitor", () => {
-    mountLayout();
+  it("asks for nothing on behalf of a signed-out visitor", async () => {
+    await mountLayout();
     // The other half of the same gate: provisioning a yoyo for nobody would be
     // a request the server has to reject on every anonymous page view.
     expect(fetchMock).not.toHaveBeenCalledWith(
@@ -319,8 +326,8 @@ describe("RootLayout, mounted", () => {
     );
   });
 
-  it("registers the service worker from the shell", () => {
-    mountLayout();
+  it("registers the service worker from the shell", async () => {
+    await mountLayout();
 
     // `RegisterSW` also renders nothing. Losing it costs the PWA install and
     // the Web Share Target with no visible symptom anywhere in the UI.
@@ -347,13 +354,13 @@ describe("RootLayout, mounted", () => {
 describe("the exported metadata", () => {
   // No mount: `metadata` is a module-level export Next reads at build time, and
   // rendering the layout is not what publishes it.
-  it("bases every relative URL on the brand origin", () => {
+  it("bases every relative URL on the brand origin", async () => {
     // Without `metadataBase`, Next resolves relative OG/Twitter image URLs
     // against `localhost` in production builds and warns rather than failing.
     expect(metadata.metadataBase?.origin).toBe(APP_ORIGIN);
   });
 
-  it("carries the brand title as the default and as a per-page template", () => {
+  it("carries the brand title as the default and as a per-page template", async () => {
     // The TEMPLATE is the half a page cannot supply for itself: every
     // `title: "Settings"` in the app becomes "Settings · work-wiki" only
     // because this is here.
@@ -363,7 +370,7 @@ describe("the exported metadata", () => {
     });
   });
 
-  it("says what the site is, once, for search and for social", () => {
+  it("says what the site is, once, for search and for social", async () => {
     // One sentence, reused three times — a description that drifted between
     // the three would show a different site depending on where it was linked.
     const description = metadata.description;
@@ -373,7 +380,7 @@ describe("the exported metadata", () => {
     expect(metadata.twitter).toMatchObject({ description });
   });
 
-  it("describes the site to Open Graph and to Twitter", () => {
+  it("describes the site to Open Graph and to Twitter", async () => {
     expect(metadata.openGraph).toMatchObject({
       title: APP_TITLE,
       siteName: APP_NAME,
@@ -397,8 +404,8 @@ describe("the exported metadata", () => {
  * `<script>` it injected. A layout that stopped injecting it fails here on the
  * length assertion rather than on a class that happens not to be applied.
  */
-function themeScriptSource(): string {
-  mountLayout();
+async function themeScriptSource(): Promise<string> {
+  await mountLayout();
   const scripts = [...document.head.querySelectorAll("script")];
   expect(scripts).toHaveLength(1);
   const source = scripts[0].textContent ?? "";
@@ -416,8 +423,8 @@ function runThemeScript(source: string): void {
 }
 
 describe("the pre-paint theme script", () => {
-  it("applies the chosen dark theme before the first paint", () => {
-    const source = themeScriptSource();
+  it("applies the chosen dark theme before the first paint", async () => {
+    const source = await themeScriptSource();
     window.localStorage.setItem("theme", "dark");
 
     runThemeScript(source);
@@ -429,8 +436,8 @@ describe("the pre-paint theme script", () => {
     expect(document.documentElement.classList.contains("light")).toBe(false);
   });
 
-  it("defaults an unset visitor to light, not to the OS preference", () => {
-    const source = themeScriptSource();
+  it("defaults an unset visitor to light, not to the OS preference", async () => {
+    const source = await themeScriptSource();
     // No `theme` key at all — `resetDomStorage()` empties the store per test.
 
     runThemeScript(source);
@@ -442,8 +449,8 @@ describe("the pre-paint theme script", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 
-  it("survives a browser that refuses storage, and themes nothing", () => {
-    const source = themeScriptSource();
+  it("survives a browser that refuses storage, and themes nothing", async () => {
+    const source = await themeScriptSource();
     // Safari in private mode, and any profile with site data blocked, throw
     // from `getItem` rather than returning `null`. This runs in `<head>` with
     // nothing to catch it, so an uncaught throw here is a blank page.
@@ -474,7 +481,7 @@ describe("the pre-paint theme script", () => {
 function mountNav() {
   return render(
     <ClerkProvider>
-      <NavHeader />
+      <NavHeader isSiteOwner={isOwnerPrincipal(auth.state.isSignedIn ? { handle: auth.state.user?.username } : null)} />
     </ClerkProvider>,
   );
 }
@@ -506,7 +513,7 @@ const WORKSPACE = [
 ];
 
 describe("NavHeader", () => {
-  it("offers the primary links and a way in, signed out", () => {
+  it("offers the primary links and a way in, signed out", async () => {
     mountNav();
 
     for (const label of PRIMARY) {
@@ -516,7 +523,7 @@ describe("NavHeader", () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
 
-  it("offers no workspace or owner links at all while signed out", () => {
+  it("offers no workspace or owner links at all while signed out", async () => {
     mountNav();
 
     const names = linkNames();
@@ -525,7 +532,7 @@ describe("NavHeader", () => {
     }
   });
 
-  it("opens the workspace to a signed-in member, but not the owner tools", () => {
+  it("opens the workspace to a signed-in member, but not the owner tools", async () => {
     signedInAs("someone-else");
     mountNav();
 
@@ -540,7 +547,7 @@ describe("NavHeader", () => {
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
-  it("adds Settings and Wiki Health for the site owner", () => {
+  it("adds Settings and Wiki Health for the site owner", async () => {
     signedInAs(OWNER);
     mountNav();
 
@@ -552,7 +559,7 @@ describe("NavHeader", () => {
     );
   });
 
-  it("treats the owner handle case-insensitively", () => {
+  it("treats the owner handle case-insensitively", async () => {
     // `isOwnerHandle` lowercases both sides, so an owner whose Clerk username
     // differs in case is still the owner — one silo, not two.
     signedInAs(OWNER.toUpperCase());
@@ -561,7 +568,7 @@ describe("NavHeader", () => {
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   });
 
-  it("marks the primary link for the route the reader is on", () => {
+  it("marks the primary link for the route the reader is on", async () => {
     // `aria-current`, not `fontWeight` (DW-260). The bar used to signal the
     // active route through inline weight and colour alone, which announced
     // NOTHING to a screen reader — and forced this suite to assert on styling
@@ -592,7 +599,7 @@ describe("NavHeader", () => {
     expect(mobileActive.length).toBeGreaterThan(active.length);
   });
 
-  it("marks nothing when the reader is on a route outside the primary set", () => {
+  it("marks nothing when the reader is on a route outside the primary set", async () => {
     nav.pathname = "/studio";
     mountNav();
     openMobileMenu();
@@ -604,7 +611,7 @@ describe("NavHeader", () => {
     }
   });
 
-  it("opens the owner tools nowhere when a signed-in user has no username", () => {
+  it("opens the owner tools nowhere when a signed-in user has no username", async () => {
     // Clerk usernames are optional, so `user.username` is legitimately `null`
     // for a signed-in account. `isOwnerHandle(null)` is `false` — but a gate
     // rewritten as a truthiness check on `user` alone would open Settings and
@@ -619,7 +626,7 @@ describe("NavHeader", () => {
   });
 
   describe("the hamburger panel", () => {
-    it("renders a second copy of the primary links once opened", () => {
+    it("renders a second copy of the primary links once opened", async () => {
       mountNav();
       for (const label of PRIMARY) {
         expect(screen.getAllByRole("link", { name: label })).toHaveLength(1);
@@ -634,7 +641,7 @@ describe("NavHeader", () => {
       }
     });
 
-    it("carries the way in, signed out — and nothing owner-only", () => {
+    it("carries the way in, signed out — and nothing owner-only", async () => {
       mountNav();
       openMobileMenu();
 
@@ -647,7 +654,7 @@ describe("NavHeader", () => {
       }
     });
 
-    it("opens the workspace to a signed-in member, but not the owner tools", () => {
+    it("opens the workspace to a signed-in member, but not the owner tools", async () => {
       signedInAs("someone-else");
       mountNav();
       openMobileMenu();
@@ -661,7 +668,7 @@ describe("NavHeader", () => {
       expect(names).not.toContain("Wiki Health");
     });
 
-    it("adds Settings and Wiki Health for the site owner", () => {
+    it("adds Settings and Wiki Health for the site owner", async () => {
       signedInAs(OWNER);
       mountNav();
       openMobileMenu();
@@ -672,5 +679,36 @@ describe("NavHeader", () => {
         expect(screen.getAllByRole("link", { name: label })).toHaveLength(2);
       }
     });
+  });
+});
+
+
+describe("server authority reaches NavHeader through RootLayout", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it.each([
+    ["changed", "user_stable", true],
+    ["user_stable", "user_stable", true],
+    [OWNER, "user_impostor", false],
+  ])("uses the server decision for %s", async (handle, id, allowed) => {
+    vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_stable");
+    signedInAs(handle);
+    vi.mocked(getPrincipal).mockResolvedValueOnce({ id, handle });
+    await mountLayout();
+    expect(screen.queryByRole("link", { name: "Settings" }) !== null).toBe(allowed);
+  });
+  it("keeps owner controls hidden while Clerk is loading", async () => {
+    vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_stable");
+    auth.state = { isLoaded: false, isSignedIn: false, user: null };
+    vi.mocked(getPrincipal).mockResolvedValueOnce({ id: "user_stable", handle: "changed" });
+    await mountLayout();
+    expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
+  });
+  it("preserves framework control flow and fails closed for ordinary auth errors", async () => {
+    vi.mocked(getPrincipal).mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
+    await expect(RootLayout({ children: null })).rejects.toThrow("NEXT_REDIRECT");
+    signedInAs(OWNER);
+    vi.mocked(getPrincipal).mockRejectedValueOnce(new Error("auth unavailable"));
+    await mountLayout();
+    expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });
 });

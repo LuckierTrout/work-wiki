@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -53,7 +54,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     const notFound: string[] = [];
     for (const id of intent.ids) {
       const item = await skipReviewItem(
-        caller.principal.handle,
+        ownerTenantHandle(caller.principal),
         id,
         caller.wikiId ?? undefined,
       );

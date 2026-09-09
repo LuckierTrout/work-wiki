@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { listVaults, createVault, vaultsContaining } from "@/lib/vault";
@@ -17,12 +18,12 @@ export async function GET(req: Request) {
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
-  const vaults = await listVaults(principal.handle);
+  const vaults = await listVaults(ownerTenantHandle(principal));
   const slug = new URL(req.url).searchParams.get("slug");
   if (slug) {
     return NextResponse.json({
       vaults,
-      containing: await vaultsContaining(principal.handle, slug),
+      containing: await vaultsContaining(ownerTenantHandle(principal), slug),
     });
   }
   return NextResponse.json({ vaults });
@@ -46,6 +47,6 @@ export async function POST(req: Request) {
     );
   }
   // v1: public vaults only (private is paid/clone-to-private, future).
-  const vault = await createVault(principal.handle, name.trim(), "public");
+  const vault = await createVault(ownerTenantHandle(principal), name.trim(), "public");
   return NextResponse.json({ vault }, { status: 201 });
 }

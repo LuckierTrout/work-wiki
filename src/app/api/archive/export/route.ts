@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
 import { buildPortableArchive } from "@/lib/portable-archive";
@@ -6,7 +7,7 @@ export async function GET(request: Request) {
   const principal = (await getPrincipal()) ?? getServicePrincipal(request);
   if (!principal) return Response.json({ error: "Sign in required." }, { status: 401 });
   try {
-    const { manifest, bytes } = await buildPortableArchive(principal.handle);
+    const { manifest, bytes } = await buildPortableArchive(ownerTenantHandle(principal));
     const date = manifest.createdAt.slice(0, 10);
     return new Response(bytesBuffer(bytes), {
       headers: {

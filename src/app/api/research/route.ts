@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -43,10 +44,10 @@ export async function GET(request: Request) {
     // possibly a task enqueue — and a read-only deployment refuses those on every
     // other door. A GET that quietly wrote would be the one exception.
     const projects = isReadOnly()
-      ? await listResearchProjects(principal.handle)
+      ? await listResearchProjects(ownerTenantHandle(principal))
       : await reconcileResearchProjects(
-          principal.handle,
-          await listResearchProjects(principal.handle),
+          ownerTenantHandle(principal),
+          await listResearchProjects(ownerTenantHandle(principal)),
         );
     return NextResponse.json({
       projects: filterResearchProjects(projects, wikiId),
@@ -126,7 +127,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `${field} must be text` }, { status: 400 });
       }
     }
-    const project = await createResearchProject(principal.handle, {
+    const project = await createResearchProject(ownerTenantHandle(principal), {
       title: body.title,
       question: body.question,
       queries: body.queries as string[] | undefined,
@@ -135,7 +136,7 @@ export async function POST(request: Request) {
       // Graph/Review/mode-direct all read it from there. Accepting both spellings
       // beats making three call sites remember to rename it — and `vaultId`
       // wins when both ride, because it is the field's own name.
-      ...(await researchWikiField(principal.handle, body)),
+      ...(await researchWikiField(ownerTenantHandle(principal), body)),
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {

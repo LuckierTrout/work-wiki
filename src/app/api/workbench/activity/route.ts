@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -55,7 +56,7 @@ export async function GET(request: Request) {
   }
   const wikiId = new URL(request.url).searchParams.get("wikiId")?.trim() || undefined;
   const jobs = await listIngestJobs({
-    owner: principal.handle,
+    owner: ownerTenantHandle(principal),
     limit: 100,
     ...(wikiId ? { wikiId } : {}),
   });
@@ -121,20 +122,20 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "cancel") {
-      const job = await cancelIngestJob(jobId, principal.handle);
+      const job = await cancelIngestJob(jobId, ownerTenantHandle(principal));
       if (!job) return NextResponse.json({ error: "Job not found." }, { status: 404 });
       return NextResponse.json({ ok: true, cancelled: true });
     }
 
     if (body.action === "retry") {
-      const job = await retryIngestJob(jobId, principal.handle);
+      const job = await retryIngestJob(jobId, ownerTenantHandle(principal));
       if (!job) return NextResponse.json({ error: "Job cannot be retried." }, { status: 400 });
       if (job.kind === "embed") {
         const response = await enqueueOrInline(
           job.jobId,
           {
             kind: "ingest",
-            owner: principal.handle,
+            owner: ownerTenantHandle(principal),
             jobId: job.jobId,
             rebuildEmbeddings: true,
             ...(job.title ? { title: job.title } : {}),
@@ -171,7 +172,7 @@ export async function POST(request: NextRequest) {
       // the job's kind AND by what the stored Source actually is, because a
       // record written before the `extract` kind existed still names a `.pdf`.
       if (job.kind === "extract" || isBinarySource(job.sourceRel)) {
-        if (await retryExtract(principal.handle, job.jobId)) {
+        if (await retryExtract(ownerTenantHandle(principal), job.jobId)) {
           return NextResponse.json({ ok: true, retried: true, extract: true });
         }
         return NextResponse.json(
@@ -188,7 +189,7 @@ export async function POST(request: NextRequest) {
       const reuseAnalysis = job.jobId ? await hasIngestAnalysis(job.jobId) : false;
       const task: Task = {
         kind: "ingest",
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         author: principal.handle,
         triggeredBy: principal.handle,
         jobId: job.jobId,
@@ -216,7 +217,7 @@ export async function POST(request: NextRequest) {
         task,
         () =>
           ingest(job.title || "Untitled", text, {
-            owner: principal.handle,
+            owner: ownerTenantHandle(principal),
             author: principal.handle,
             triggeredBy: principal.handle,
             jobId: job.jobId,

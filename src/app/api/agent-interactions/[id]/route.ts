@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -16,14 +17,14 @@ export async function POST(request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: "values must be an object" }, { status: 400 });
     }
     const interaction = await submitAgentInteraction(
-      principal.handle,
+      ownerTenantHandle(principal),
       id,
       body.values as Record<string, string | number | boolean>,
     );
     if (!interaction) return NextResponse.json({ error: "Pending interaction not found." }, { status: 404 });
     const activity = await runSpecializedAgent({
       agentId: interaction.agentId,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       trigger: "manual",
       prompt: `Resume after owner input for request "${interaction.title}". The submitted values are:\n${JSON.stringify(interaction.values, null, 2)}\nUse these values only for the requested continuation.`,
     });

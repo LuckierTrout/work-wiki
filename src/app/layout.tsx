@@ -1,3 +1,6 @@
+import { getPrincipal } from "@/lib/auth";
+import { isOwnerPrincipal } from "@/lib/owner";
+import { unstable_rethrow } from "next/navigation";
 import type { Metadata } from "next";
 import { Inter, Source_Serif_4, JetBrains_Mono } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -79,20 +82,18 @@ const themeScript = `
  * (DW-534). With no `<ClerkProvider>` here, `useViewerHandle()` used to answer
  * SIGNED OUT for the very owner `middleware.ts` admits, so Delete, Re-ingest,
  * Graphify and Revert all failed closed for the only viewer the E2E lane has.
- * `<E2eViewerIdentity>` resolves the cookie on the server and injects the
- * resulting handle; it wraps the armed branch ONLY, so the live Clerk path is
- * byte-for-byte what it was. This function stays SYNCHRONOUS — the async work
- * lives inside `<E2eViewerIdentity>`, which React awaits during the server
- * render — because `src/app/__tests__/app-shell.test.tsx` mounts
- * `RootLayout({children})` by calling it directly.
+ * `<E2eViewerIdentity>` resolves the cookie and injects the handle in the
+ * armed branch. AppProviders remains synchronous; RootLayout additionally
+ * resolves the server owner flag on each render before passing it to NavHeader.
+ * Ordinary auth failures hide owner controls; Next control-flow errors rethrow.
  */
-function AppProviders({ children }: { children: React.ReactNode }) {
+function AppProviders({ children, isSiteOwner }: { children: React.ReactNode; isSiteOwner: boolean }) {
   const e2e = isE2eIdentityArmed();
   const shell = (
     <ClientProviders>
       {e2e ? null : <EnsureYoyo />}
       <RegisterSW />
-      <SiteChrome nav={e2e ? null : <NavHeader />} footer={e2e ? null : <Footer />}>
+      <SiteChrome nav={e2e ? null : <NavHeader isSiteOwner={isSiteOwner} />} footer={e2e ? null : <Footer />}>
         {children}
       </SiteChrome>
     </ClientProviders>
@@ -109,11 +110,18 @@ function AppProviders({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Resolve authority per server render; keep the actual identity private.
+  let isSiteOwner = false;
+  try {
+    isSiteOwner = isOwnerPrincipal(await getPrincipal());
+  } catch (error) {
+    unstable_rethrow(error);
+  }
   return (
     <html
       lang="en"
@@ -127,7 +135,7 @@ export default function RootLayout({
         {/* No `waitlistUrl`: /waitlist is retired. This deployment is
             owner-only — there is no self-serve sign-up to route anywhere, and
             no public read path behind it. */}
-        <AppProviders>{children}</AppProviders>
+        <AppProviders isSiteOwner={isSiteOwner}>{children}</AppProviders>
       </body>
     </html>
   );

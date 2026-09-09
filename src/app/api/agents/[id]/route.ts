@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import {
   getAgent,
@@ -88,7 +89,7 @@ export async function DELETE(_req: Request, { params }: RouteParams) {
       );
     }
     // Owns-or-403; also resolves whether the agent exists at all.
-    const existing = await assertCanMutateAgent(id, principal.handle);
+    const existing = await assertCanMutateAgent(id, ownerTenantHandle(principal));
     if (!existing) {
       return NextResponse.json(
         { error: `Agent "${id}" not found` },
@@ -246,7 +247,7 @@ export async function PUT(req: Request, { params }: RouteParams) {
     }
 
     // Owns-or-403; also resolves whether the agent exists (404 below).
-    const existing = await assertCanMutateAgent(id, principal.handle);
+    const existing = await assertCanMutateAgent(id, ownerTenantHandle(principal));
     if (!existing) {
       return NextResponse.json(
         { error: `Agent "${id}" not found` },

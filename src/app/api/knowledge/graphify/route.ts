@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -55,8 +56,8 @@ export async function GET() {
 
   try {
     const [slugs, latest] = await Promise.all([
-      listGraphifiableWikiPages(principal.handle),
-      getLatestGraphifyJob(principal.handle),
+      listGraphifiableWikiPages(ownerTenantHandle(principal)),
+      getLatestGraphifyJob(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({
       eligibleCount: slugs.length,
@@ -79,9 +80,9 @@ export async function POST(request: Request) {
       if (typeof body.jobId !== "string") {
         return NextResponse.json({ error: "jobId is required for retry." }, { status: 400 });
       }
-      const retry = await prepareGraphifyRetry(principal.handle, body.jobId);
+      const retry = await prepareGraphifyRetry(ownerTenantHandle(principal), body.jobId);
       const queued = await queueGraphifyPages(
-        principal.handle,
+        ownerTenantHandle(principal),
         retry.job,
         retry.slugs,
       );
@@ -98,7 +99,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const latest = await getLatestGraphifyJob(principal.handle);
+    const latest = await getLatestGraphifyJob(ownerTenantHandle(principal));
     const effectiveLatest = latest ? effectiveGraphifyJob(latest) : null;
     if (
       effectiveLatest &&
@@ -117,9 +118,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const slugs = await listGraphifiableWikiPages(principal.handle);
-    const job = await createGraphifyJob(principal.handle, slugs);
-    const queued = await queueGraphifyPages(principal.handle, job, slugs);
+    const slugs = await listGraphifiableWikiPages(ownerTenantHandle(principal));
+    const job = await createGraphifyJob(ownerTenantHandle(principal), slugs);
+    const queued = await queueGraphifyPages(ownerTenantHandle(principal), job, slugs);
     return NextResponse.json(
       { job: effectiveGraphifyJob(queued.job), enqueued: queued.enqueued, warning: queued.warning },
       { status: queued.status },

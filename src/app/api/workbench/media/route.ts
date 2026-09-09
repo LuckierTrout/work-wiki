@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
@@ -72,7 +73,7 @@ async function handle(request: Request): Promise<Response> {
 
   let currentId: string | null = null;
   try {
-    currentId = (await getWikiRegistry(principal.handle)).currentId;
+    currentId = (await getWikiRegistry(ownerTenantHandle(principal))).currentId;
   } catch {
     currentId = null;
   }
@@ -84,7 +85,7 @@ async function handle(request: Request): Promise<Response> {
   const slugGate = workbenchSlugGate(entries, buildKnowledgeTree(entries));
 
   const bytes = await readWorkbenchFileBytes(
-    principal.handle,
+    ownerTenantHandle(principal),
     currentId,
     displayPath,
     slugGate,

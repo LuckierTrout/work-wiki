@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentSandboxApprovals } from "@/lib/agent-workspaces";
@@ -5,7 +6,7 @@ import { listAgentSandboxApprovals } from "@/lib/agent-workspaces";
 export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-  const all = await listAgentSandboxApprovals(principal.handle);
+  const all = await listAgentSandboxApprovals(ownerTenantHandle(principal));
   const ordered = [
     ...all.filter((approval) => approval.status === "pending" || approval.status === "executing"),
     ...all.filter((approval) => approval.status !== "pending" && approval.status !== "executing"),

@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -49,11 +50,11 @@ export async function GET(request: Request, { params }: RouteContext) {
     const snapshot =
       scope === "all"
         ? await reviewSnapshotIncludingResolved(
-            caller.principal.handle,
+            ownerTenantHandle(caller.principal),
             caller.wikiId ?? undefined,
           )
         : await reviewSnapshot(
-            caller.principal.handle,
+            ownerTenantHandle(caller.principal),
             caller.wikiId ?? undefined,
           );
     return NextResponse.json({
@@ -112,7 +113,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       { status: 403 },
     );
   }
-  const owner = caller.principal.handle;
+  const owner = ownerTenantHandle(caller.principal);
   const scope = caller.wikiId ?? undefined;
   try {
     const body = (await request.json().catch(() => ({}))) as {

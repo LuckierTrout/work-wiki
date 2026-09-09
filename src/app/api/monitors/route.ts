@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage, isClientInputError, isInfrastructureFault } from "@/lib/errors";
@@ -13,7 +14,7 @@ export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    return NextResponse.json({ monitors: await listSourceMonitors(principal.handle) });
+    return NextResponse.json({ monitors: await listSourceMonitors(ownerTenantHandle(principal)) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
     if (body.cadence !== undefined && !CADENCES.has(body.cadence as SourceMonitorCadence)) {
       return NextResponse.json({ error: "cadence must be manual, daily, or weekly." }, { status: 400 });
     }
-    const monitor = await createSourceMonitor(principal.handle, {
+    const monitor = await createSourceMonitor(ownerTenantHandle(principal), {
       name: body.name,
       url: body.url,
       targetSlug: body.targetSlug,

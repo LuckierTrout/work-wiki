@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { runSpecializedAgent } from "@/lib/agent-runtime";
@@ -26,7 +27,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
     const activity = await runSpecializedAgent({
       agentId: id,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       trigger: "manual",
       dryRun: body.dryRun === true,
       ...(typeof body.prompt === "string" && body.prompt.trim()

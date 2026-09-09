@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { PrivateWorkspaceNotice } from "@/components/PrivateWorkspaceNotice";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentsForOwner } from "@/lib/agents";
@@ -19,7 +20,7 @@ export default async function AgentsPage() {
     );
   }
 
-  const handle = principal.handle;
+  const handle = ownerTenantHandle(principal);
   const agents = await listAgentsForOwner(handle);
 
   return (

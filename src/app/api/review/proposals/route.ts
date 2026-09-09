@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage, isClientInputError, isInfrastructureFault } from "@/lib/errors";
@@ -27,7 +28,7 @@ export async function GET(request: Request) {
       ? (value as MemoryProposalStatus)
       : undefined;
     return NextResponse.json({
-      proposals: await listMemoryChangeProposals(principal.handle, status),
+      proposals: await listMemoryChangeProposals(ownerTenantHandle(principal), status),
     });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
     if (body.risk !== undefined && !RISKS.has(body.risk as MemoryProposalRisk)) {
       return NextResponse.json({ error: "risk must be low, medium, or high." }, { status: 400 });
     }
-    const proposal = await createMemoryChangeProposal(principal.handle, {
+    const proposal = await createMemoryChangeProposal(ownerTenantHandle(principal), {
       targetSlug: body.targetSlug,
       title: body.title,
       summary: body.summary,

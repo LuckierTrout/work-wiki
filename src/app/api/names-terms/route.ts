@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -16,7 +17,7 @@ export async function GET() {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    return NextResponse.json({ entries: await listNamesTerms(principal.handle) });
+    return NextResponse.json({ entries: await listNamesTerms(ownerTenantHandle(principal)) });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
     }
     const entry = await createNamesTerm(
-      principal.handle,
+      ownerTenantHandle(principal),
       parseNamesTermInput(parsed as Record<string, unknown>),
     );
     return NextResponse.json({ entry }, { status: 201 });

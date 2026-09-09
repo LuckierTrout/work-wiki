@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -37,7 +38,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   try {
     const { name } = parseRenameWikiInput(body);
     const { id } = await params;
-    const wiki = await renameWiki(principal.handle, id, name);
+    const wiki = await renameWiki(ownerTenantHandle(principal), id, name);
     return wiki
       ? NextResponse.json({ wiki })
       : NextResponse.json({ error: "Wiki not found." }, { status: 404 });
@@ -76,7 +77,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const wiki = await deleteWiki(principal.handle, id);
+    const wiki = await deleteWiki(ownerTenantHandle(principal), id);
     return wiki
       ? NextResponse.json({ wiki })
       : NextResponse.json({ error: "Wiki not found." }, { status: 404 });

@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -29,7 +30,8 @@ export async function DELETE(request: NextRequest) {
     }
     const leafBase = rest.split("/").pop()?.replace(/\.[^.]+$/, "") ?? rest;
     const result = await cascadeDeleteSource({
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
+      actor: principal.handle,
       path,
       sourceTitle: leafBase,
     });

@@ -18,9 +18,8 @@
  *      admits the principal carrying that id whatever its handle says.
  *  (b) SOURCE SCAN — no server-side surface reaches for `isOwnerHandle(` any
  *      more. A behavioural test can only cover the gates it thinks to call; the
- *      scan is what stops the fifteenth gate, or a new one, from quietly going
- *      back to the handle. The three client islands are the deliberate
- *      exceptions (see below).
+ *      scan is what stops another gate from returning to a handle comparison.
+ *      Client islands now receive server-computed owner flags.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
@@ -270,29 +269,8 @@ describe("a middleware-admitted owner passes every server owner gate", () => {
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const SRC_ROOT = path.join(REPO_ROOT, "src");
 
-/**
- * The ONLY files allowed to call `isOwnerHandle(` in production source.
- *
- * `src/lib/owner.ts` defines it and spends it as `isOwnerPrincipal`'s fallback.
- * The other three are CLIENT islands, and they stay handle-based on purpose:
- * `YOPEDIA_OWNER_USER_ID` is a server var that is never inlined into the
- * browser bundle, so in the client `getOwnerUserId()` is `null` and there is no
- * id to decide on.
- *
- * Their answer can therefore differ from the server's in BOTH directions, and
- * both are acceptable because a client gate offers nothing the server honours:
- * NARROWER (the drifted-handle owner is admitted everywhere but sees fewer
- * affordances — an unoffered button is recoverable, a 403 on an admitted write
- * is not), and WIDER (with an owner id configured and a STALE
- * `NEXT_PUBLIC_OWNER_HANDLE`, whoever now holds that handle is refused by every
- * server gate yet is still shown the owner controls — a dead control, not
- * access). Closing either would need a build-inlined public mirror of the
- * owner's Clerk id, which DW-486 deliberately does not add.
- */
+/** Only the owner helper may fall back to a handle; clients receive server flags. */
 const HANDLE_GATE_ALLOWED = [
-  "src/components/ArticleActions.tsx",
-  "src/components/NavHeader.tsx",
-  "src/components/RevisionHistory.tsx",
   "src/lib/owner.ts",
 ];
 
@@ -318,7 +296,7 @@ async function sourceFiles(dir: string): Promise<string[]> {
 }
 
 describe("no server surface decides owner-ness on the handle", () => {
-  it("calls isOwnerHandle( only from owner.ts and the three client islands", async () => {
+  it("calls isOwnerHandle( only from owner.ts", async () => {
     const files = await sourceFiles(SRC_ROOT);
     // Non-vacuity: a walk that found nothing would pass trivially.
     expect(files.length).toBeGreaterThan(100);
@@ -333,27 +311,19 @@ describe("no server surface decides owner-ness on the handle", () => {
 
     expect(
       callers.sort(),
-      `DW-486: ${callers.filter((f) => !HANDLE_GATE_ALLOWED.includes(f)).join(", ")} ` +
-        `calls \`isOwnerHandle\`. TWO legitimate resolutions, and which one is ` +
-        `right depends on where the file runs. (1) A SERVER gate must decide ` +
-        `with \`isOwnerPrincipal\` instead — on the handle it can refuse the very ` +
-        `principal \`handlePrivateRequest\` admitted on YOPEDIA_OWNER_USER_ID, ` +
-        `and the owner has no in-app way back (NEXT_PUBLIC_OWNER_HANDLE is ` +
-        `inlined at build time). (2) A new CLIENT island ("use client") must ` +
-        `STAY on the handle and be added to HANDLE_GATE_ALLOWED above: the owner ` +
-        `id is a server var that never reaches the bundle, so there is nothing ` +
-        `else for it to gate on, and a client gate costs an affordance rather ` +
-        `than access either way it is wrong.`,
+      `Owner checks must use isOwnerPrincipal on the server and a required ` +
+        `isSiteOwner flag on clients; only owner.ts may compare the public handle.`,
     ).toEqual(HANDLE_GATE_ALLOWED);
   });
 
-  it("keeps the client islands on the handle, and off the owner id", async () => {
+  it("keeps client islands on server flags and off the owner id", async () => {
     // The other direction of the same rule: importing `getOwnerUserId` into a
     // client island would read `undefined` in the browser and quietly gate the
     // owner OUT of their own nav, so the islands must not reach for it.
-    for (const file of HANDLE_GATE_ALLOWED.filter((f) => f !== "src/lib/owner.ts")) {
+    for (const file of ["src/components/ArticleActions.tsx", "src/components/NavHeader.tsx", "src/components/RevisionHistory.tsx"]) {
       const code = stripComments(await fs.readFile(path.join(REPO_ROOT, file), "utf8"));
-      expect(code, `${file} must gate on isOwnerHandle`).toMatch(/\bisOwnerHandle\(/);
+      expect(code, `${file} receives server authority`).toContain("isSiteOwner: boolean");
+      expect(code).not.toMatch(/\bisOwnerHandle\(/);
       expect(code, `${file} must not read the server-only owner id`).not.toMatch(
         /\bgetOwnerUserId\b|\bYOPEDIA_OWNER_USER_ID\b/,
       );

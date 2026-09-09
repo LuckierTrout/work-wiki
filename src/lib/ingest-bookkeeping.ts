@@ -17,6 +17,7 @@ import { getStorage } from "./storage";
 import {
   listWikiPages,
   readWikiPageWithFrontmatter,
+  tenantForOwner,
 } from "./wiki";
 import type { SourceEntry } from "./types";
 
@@ -28,7 +29,7 @@ function today(): string {
 
 export async function regenerateOverview(owner: string): Promise<void> {
   const pages = await listWikiPages();
-  const entries = pages.filter((entry) => !BOOKKEEPING.has(entry.slug));
+  const entries = pages.filter((entry) => !BOOKKEEPING.has(entry.slug) && entry.type !== "overview");
   const lines = [
     "# Overview",
     "",
@@ -42,6 +43,7 @@ export async function regenerateOverview(owner: string): Promise<void> {
   const now = today();
   const content = serializeFrontmatter(
     {
+      type: "overview",
       created: now,
       updated: now,
       owner,
@@ -55,16 +57,33 @@ export async function regenerateOverview(owner: string): Promise<void> {
   // back as `null` and the write takes the `createOnly` branch over a stored
   // overview — either rejected as a conflict or clobbering the page whose
   // `created` date this read exists to preserve.
-  const existing = await readWikiPageWithFrontmatter("overview", {
+  let existing = await readWikiPageWithFrontmatter("overview", {
     fresh: true,
     strict: true,
   });
+  // A different owner's globally visible overview is not our merge base.
+  // Numbered overviews keep their own identity across subsequent compiles.
+  let slug = "overview";
+  if (!existing || !sameOwner(existing.frontmatter.owner, owner)) {
+    existing = null;
+    for (const entry of pages) {
+      if (entry.type !== "overview" || !sameOwner(entry.owner, owner)) continue;
+      const candidate = await readWikiPageWithFrontmatter(entry.slug, { fresh: true, strict: true });
+      if (candidate?.frontmatter.type === "overview" && sameOwner(candidate.frontmatter.owner, owner)) {
+        existing = candidate;
+        slug = entry.slug;
+        break;
+      }
+    }
+    if (!existing) slug = await freeSummarySlug("overview");
+  }
   const created =
     typeof existing?.frontmatter.created === "string"
       ? existing.frontmatter.created
       : now;
   const withCreated = serializeFrontmatter(
     {
+      type: "overview",
       created,
       updated: now,
       owner,
@@ -74,7 +93,7 @@ export async function regenerateOverview(owner: string): Promise<void> {
     lines.join("\n") + "\n",
   );
   await writeWikiPageWithSideEffects({
-    slug: "overview",
+    slug,
     title: "Overview",
     content: existing ? withCreated : content,
     summary: `This wiki has ${entries.length} ${entries.length === 1 ? "page" : "pages"}.`,
@@ -160,7 +179,7 @@ export async function ensureSourceSummary(input: {
   const { extractSummary } = await import("./ingest");
   const summary = extractSummary(input.sourceText, 400);
   const title = `${input.sourceTitle} — source summary`;
-  const existing = await findExistingSourceSummary(input.sourcePath, input.rawId);
+  const existing = await findExistingSourceSummary(input.owner, input.sourcePath, input.rawId);
   const slug =
     existing?.slug ??
     (await freeSummarySlug(slugify(`src-summary ${input.sourceTitle}`) || "src-summary"));
@@ -218,7 +237,12 @@ export async function ensureSourceSummary(input: {
   return slug;
 }
 
+function sameOwner(stored: unknown, owner: string): boolean {
+  return typeof stored === "string" && stored.trim().length > 0 && tenantForOwner(stored) === tenantForOwner(owner);
+}
+
 async function findExistingSourceSummary(
+  owner: string,
   sourcePath: string,
   rawId?: string,
 ): Promise<{ slug: string; frontmatter: Record<string, unknown>; content: string } | null> {
@@ -235,7 +259,7 @@ async function findExistingSourceSummary(
       fresh: true,
       strict: true,
     });
-    if (!page || page.frontmatter.type !== "summary") continue;
+    if (!page || page.frontmatter.type !== "summary" || !sameOwner(page.frontmatter.owner, owner)) continue;
     const sources = parseSources(
       typeof page.frontmatter.sources === "string" ||
         Array.isArray(page.frontmatter.sources)

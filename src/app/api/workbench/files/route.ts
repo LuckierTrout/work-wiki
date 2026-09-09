@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { logger } from "@/lib/logger";
@@ -22,13 +23,13 @@ export async function GET() {
   }
   try {
     const [registry, entries] = await Promise.all([
-      getWikiRegistry(principal.handle),
+      getWikiRegistry(ownerTenantHandle(principal)),
       listReadableWikiPages(principal),
     ]);
     const knowledge = buildKnowledgeTree(entries);
     const slugGate = workbenchSlugGate(entries, knowledge);
     const listing = await listWorkbenchFilePaths(
-      principal.handle,
+      ownerTenantHandle(principal),
       registry.currentId,
       { ...slugGate, limit: WORKBENCH_FILE_LIMIT },
     );

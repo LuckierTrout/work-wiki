@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { summarizeBackup, verifyOwnerBackup } from "@/lib/backups";
@@ -11,7 +12,7 @@ export async function POST(
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await context.params;
-    return NextResponse.json({ backup: summarizeBackup(await verifyOwnerBackup(principal.handle, id)) });
+    return NextResponse.json({ backup: summarizeBackup(await verifyOwnerBackup(ownerTenantHandle(principal), id)) });
   } catch (error) {
     const message = getErrorMessage(error);
     return NextResponse.json(

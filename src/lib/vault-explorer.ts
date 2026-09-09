@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 import type { DocumentFormat } from "./document-extract";
 import type { Principal } from "./auth";
 import { canReadPage } from "./authz";
@@ -152,7 +153,7 @@ export async function getVaultExplorerEntries(
         : fallbackEntry(slug);
       // Source metadata is optional enrichment. A transient/missing source
       // index must not make the vault's authoritative page list disappear.
-      const sourcesPromise = listDocumentSources(slug, principal.handle).catch(
+      const sourcesPromise = listDocumentSources(slug, ownerTenantHandle(principal)).catch(
         () => [] as StoredDocumentSource[],
       );
       const [metadata, records] = await Promise.all([

@@ -9,7 +9,6 @@ import { ThemeToggle } from "./folio/ThemeToggle";
 import { Avatar } from "./folio/primitives";
 import { AppMark } from "./Logo";
 import { APP_NAME } from "@/lib/brand";
-import { isOwnerHandle } from "@/lib/owner";
 
 // Primary actions — the only links in the bar. Secondary/exploration links
 // (Graph, Log) live in the footer per the Folio design; owner admin (Lint,
@@ -43,14 +42,14 @@ function getActiveHref(pathname: string): string | null {
   return null;
 }
 
-export function NavHeader() {
+export function NavHeader({ isSiteOwner }: { isSiteOwner: boolean }) {
   const pathname = usePathname();
   const activeHref = getActiveHref(pathname);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const { user } = useUser();
+  const { user, isLoaded, isSignedIn } = useUser();
   const handle = user?.username ?? null;
-  const isOwner = isOwnerHandle(handle);
+  const isOwner = isLoaded && !!isSignedIn && isSiteOwner;
 
   // Close the mobile menu on navigation.
   useEffect(() => {

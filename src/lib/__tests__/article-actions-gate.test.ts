@@ -215,7 +215,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     const history = await read("RevisionHistory.tsx");
     expect(history).toContain('"use client"');
     const historySpecifiers = importSpecifiers(history);
-    expect(historySpecifiers).toContain("@/lib/owner");
+    expect(historySpecifiers).not.toContain("@/lib/owner");
     expect(historySpecifiers).toContain("@/lib/viewer-handle");
   });
 
@@ -229,7 +229,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     // and passes the server's check on a realm page — while the page owner is
     // now gated on the realm, which is the divergence DW-120 names.
     expect(actions).toContain(
-      "const canDelete = isSiteOwner || (isOwner && !realmDeniesDelete);",
+      "const canDelete = isResolvedViewer && (isSiteOwner || (isOwner && !realmDeniesDelete));",
     );
   });
 
@@ -268,7 +268,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     // rather than being dropped. `@/lib/owner` stays local: it is a plain env
     // read, not a session read.
     const actionSpecifiers = importSpecifiers(actions);
-    expect(actionSpecifiers).toContain("@/lib/owner");
+    expect(actionSpecifiers).not.toContain("@/lib/owner");
     expect(actionSpecifiers).toContain("@/lib/viewer-handle");
     // …and the session read really does happen, one hop away.
     expect(importSpecifiers(await readLib(CLIENT_LIB))).toContain("@clerk/nextjs");
@@ -278,7 +278,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     // below is what enforces the negative half).
     const historySpecifiers = importSpecifiers(await read("RevisionHistory.tsx"));
     expect(historySpecifiers).toContain("@/lib/viewer-handle");
-    expect(historySpecifiers).toContain("@/lib/owner");
+    expect(historySpecifiers).not.toContain("@/lib/owner");
     expect(historySpecifiers).not.toContain("@clerk/nextjs");
     // Not in the island itself — a second `useUser` here would be the drift the
     // extraction exists to prevent.
@@ -299,7 +299,7 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     // Both halves the Revert gate now needs are the hook's, not the island's.
     expect(lib).toContain("isSignedIn: boolean;");
     expect(await read("RevisionHistory.tsx")).toContain(
-      "const { isLoaded, isSignedIn, handle } = useViewerHandle();",
+      "const { isLoaded, isSignedIn } = useViewerHandle();",
     );
 
     // Neither island restates it.

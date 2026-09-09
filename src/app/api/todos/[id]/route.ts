@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -49,7 +50,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (body.due !== undefined && body.due !== null && typeof body.due !== "string") {
       return NextResponse.json({ error: "due must be a string or null." }, { status: 400 });
     }
-    const item = await patchTodo(principal.handle, id, {
+    const item = await patchTodo(ownerTenantHandle(principal), id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
       ...(body.due === null || typeof body.due === "string" ? { due: body.due } : {}),
       ...(STATUSES.has(body.status as TodoStatus)
@@ -62,7 +63,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     return item
       ? NextResponse.json({
           item,
-          pendingCount: await pendingTodoCount(principal.handle),
+          pendingCount: await pendingTodoCount(ownerTenantHandle(principal)),
         })
       : NextResponse.json({ error: "Todo not found." }, { status: 404 });
   } catch (error) {
@@ -87,11 +88,11 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const deleted = await deleteTodo(principal.handle, id);
+    const deleted = await deleteTodo(ownerTenantHandle(principal), id);
     return deleted
       ? NextResponse.json({
           deleted: true,
-          pendingCount: await pendingTodoCount(principal.handle),
+          pendingCount: await pendingTodoCount(ownerTenantHandle(principal)),
         })
       : NextResponse.json({ error: "Todo not found." }, { status: 404 });
   } catch (error) {

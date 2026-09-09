@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useState } from "react";
 import { rawPath } from "@/lib/links";
-import { isOwnerHandle } from "@/lib/owner";
 import { useViewerHandle } from "@/lib/viewer-handle";
 import { ReingestButton } from "@/components/ReingestButton";
 import { DeletePageButton } from "@/components/DeletePageButton";
@@ -16,6 +15,10 @@ import {
 
 interface ArticleActionsProps {
   slug: string;
+  /** Server authority; never derived from a public handle. */
+  isSiteOwner: boolean;
+  /** Canonical session storage owner, for Graphify only. */
+  viewerOwner: string;
   /** The page's canonical tenant — for the Edit / View-source links. */
   tenant: string;
   /** The page owner handle (lowercased compare against the viewer's username). */
@@ -75,9 +78,9 @@ interface ArticleActionsProps {
 }
 
 /**
- * The article action bar — self-gating per-viewer. ArticleView renders the same
- * context-free article for everyone (cacheable); this client island reads the
- * Clerk session and shows only the actions the signed-in viewer is allowed:
+ * The article action bar combines server-computed site ownership with the
+ * resolved client session, page ownership and contributors. Every action is
+ * re-authorized by its server route:
  *
  *   - View raw        — when a raw source exists.
  *   - Reingest        — when a source URL exists, and the viewer is the site
@@ -97,6 +100,8 @@ interface ArticleActionsProps {
  */
 export function ArticleActions({
   slug,
+  isSiteOwner,
+  viewerOwner,
   tenant,
   owner,
   contributors,
@@ -120,14 +125,16 @@ export function ArticleActions({
   const [graphifyError, setGraphifyError] = useState<string | null>(null);
 
   const isOwner = !!handleLc && handleLc === owner.toLowerCase();
-  const isSiteOwner = isOwnerHandle(handleLc);
+  const isResolvedViewer = isLoaded && !!isSignedIn;
+  const canGraphify = isResolvedViewer && !!viewerOwner && viewerOwner.toLowerCase() === owner.toLowerCase();
   const ownsOrContributes =
     !!handleLc &&
     (isOwner || contributors.some((c) => c.toLowerCase() === handleLc));
   // The Delete gate, split the way the knowledge is split.
   //
-  // WHAT THE CLIENT KNOWS: who the viewer is. Only the browser holds the Clerk
-  // session, so `isOwner`/`isSiteOwner` can only be decided here.
+  // WHAT THE CLIENT KNOWS: session loading and the live contributor handle.
+  // Site ownership arrives from the server, whose stable-id decision also
+  // controls the routes. Graphify separately compares canonical storage owners.
   // WHAT THE SERVER KNOWS: the page's realm. `belongsInCommons` reaches
   // storage/lock/wiki, so `realmDeniesDelete` arrives as a prop from
   // `ArticleView` — the same predicate `canWritePage`'s realm branch decides
@@ -143,7 +150,7 @@ export function ArticleActions({
   // knowledge page the realm gate always refused). The server re-authorizes
   // every request regardless; `article-actions-delete-gate.test.tsx` pins the
   // inequality against `canWritePage` itself.
-  const canDelete = isSiteOwner || (isOwner && !realmDeniesDelete);
+  const canDelete = isResolvedViewer && (isSiteOwner || (isOwner && !realmDeniesDelete));
   // The Re-ingest gate, split the same way and for the same reasons (DW-269).
   // `POST /api/ingest/reingest` re-authorizes with `writeKind: "body"`, so an
   // owner or contributor on a realm page is refused there — and the site owner
@@ -151,7 +158,7 @@ export function ArticleActions({
   // exactly as they keep Delete. Narrower than the server, never wider: an
   // `ADMIN_HANDLES` admin who is not the site owner is under-offered this too.
   const canReingest =
-    hasSourceUrl && (isSiteOwner || (ownsOrContributes && !realmDeniesBodyWrite));
+    isResolvedViewer && hasSourceUrl && (isSiteOwner || (ownsOrContributes && !realmDeniesBodyWrite));
   // Any signed-in user can curate a curatable page (public + non-agent, incl.
   // artifacts) into their vault — including owners and contributors (owned/
   // contributed pages are NOT automatically in vaults, so excluding them created
@@ -199,7 +206,7 @@ export function ArticleActions({
         </Link>
       )}
       {canReingest && <ReingestButton slug={slug} readOnly={readOnly} />}
-      {isOwner && (
+      {canGraphify && (
         <button
           type="button"
           className="btn"

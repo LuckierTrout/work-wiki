@@ -45,6 +45,8 @@ export interface ReviewItem {
   sourcePath?: string;
   operationId?: string;
   claimExpiresAt?: string;
+  /** Initiating actor survives lifecycle repair after process loss. Absent on legacy claims. */
+  claimActor?: string;
   deliveryId?: string;
 }
 
@@ -160,6 +162,7 @@ function isReviewItem(value: unknown): value is ReviewItem {
       (typeof item.wikiId === "string" && item.wikiId.trim().length > 0)) &&
     (item.sourcePath === undefined || typeof item.sourcePath === "string") &&
     (item.operationId === undefined || typeof item.operationId === "string") &&
+    (item.claimActor === undefined || typeof item.claimActor === "string") &&
     (item.deliveryId === undefined || typeof item.deliveryId === "string") &&
     (item.claimExpiresAt === undefined ||
       isCanonicalTimestamp(item.claimExpiresAt))
@@ -270,7 +273,6 @@ function claimedPageBody(owner: string, item: ReviewItem): string | null {
 async function repairClaimedPageLifecycle(
   owner: string,
   item: ReviewItem,
-  author = owner,
 ): Promise<boolean> {
   if (!item.pageSlug) return false;
   const content = await readClaimedPageContent(owner, item);
@@ -284,7 +286,7 @@ async function repairClaimedPageLifecycle(
     logOp: "save",
     logDetails: () => "repair create from Workbench Review",
     crossRefSource: null,
-    author: author.trim() || owner,
+    author: item.claimActor?.trim() || owner,
   });
   return true;
 }
@@ -366,6 +368,7 @@ async function recoverInterruptedCreates(owner: string): Promise<void> {
       item.status = "pending";
       delete item.pageSlug;
       delete item.operationId;
+      delete item.claimActor;
       delete item.claimExpiresAt;
       if (item.sourcePath) item.path = item.sourcePath;
       item.updatedAt = now;
@@ -695,6 +698,7 @@ export async function createPageFromReview(
     row.status = "creating";
     row.pageSlug = nextSlug;
     row.operationId = operationId;
+    row.claimActor = author.trim() || owner;
     row.claimExpiresAt = claimExpiresAt;
     row.path = wikiPath(nextSlug);
     row.updatedAt = now;
@@ -744,14 +748,14 @@ export async function createPageFromReview(
       logOp: "save",
       logDetails: () => "create from Workbench Review",
       crossRefSource: null,
-      author: author.trim() || owner,
+      author: locked.claimActor || owner,
       createOnly: true,
     });
   } catch (error) {
     // The primary Page may have landed before a later lifecycle side effect
     // failed. Repair those side effects before making the row terminal.
     if (await claimPageMatches(owner, locked)) {
-      await repairClaimedPageLifecycle(owner, locked, author);
+      await repairClaimedPageLifecycle(owner, locked);
       const repaired = await finish();
       if (repaired) return { item: repaired, slug: pageSlug };
     }
@@ -765,6 +769,7 @@ export async function createPageFromReview(
         row.status = "pending";
         delete row.pageSlug;
         delete row.operationId;
+        delete row.claimActor;
         delete row.claimExpiresAt;
         row.path = originalPath;
         row.updatedAt = new Date().toISOString();
@@ -778,7 +783,7 @@ export async function createPageFromReview(
   const finished = await finish();
   if (finished) return { item: finished, slug: pageSlug };
   if (await claimPageMatches(owner, locked)) {
-    await repairClaimedPageLifecycle(owner, locked, author);
+    await repairClaimedPageLifecycle(owner, locked);
     const repaired = await finish();
     if (repaired) return { item: repaired, slug: pageSlug };
     const recovered = await withQueue(owner, (store) => {
@@ -787,6 +792,7 @@ export async function createPageFromReview(
       row.status = "created";
       row.pageSlug = pageSlug;
       row.operationId = operationId;
+      row.claimActor = locked.claimActor;
       row.path = wikiPath(pageSlug);
       row.updatedAt = new Date().toISOString();
       delete row.claimExpiresAt;

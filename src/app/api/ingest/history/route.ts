@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { readLedger, type LedgerEntry } from "@/lib/ingest";
 import { getPrincipal } from "@/lib/auth";
@@ -233,7 +234,7 @@ async function readableOnDisk(
     const page = await readWikiPageWithFrontmatter(slug, {
       fresh: true,
       strict: true,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
     });
     const readable = page
       ? canReadFrontmatter(page.frontmatter, principal)
@@ -635,7 +636,7 @@ export async function DELETE(request: NextRequest) {
     const selectedJobs: IngestJob[] = [];
     for (const jobId of jobIds) {
       const job = await getIngestJob(jobId);
-      if (!job || job.owner !== principal.handle) {
+      if (!job || job.owner !== ownerTenantHandle(principal)) {
         refusedJobIds.add(jobId);
         continue;
       }
@@ -706,7 +707,7 @@ export async function DELETE(request: NextRequest) {
       //
       // WHY IT WAS NEEDED. `ingestIds` are preflighted, so the ones that reach
       // here arrive selectable. `jobIds` were not — the only gate they pass is
-      // `job.owner !== principal.handle`, a check on the JOB record, so a
+      // `job.owner !== ownerTenantHandle(principal)`, a check on the JOB record, so a
       // caller who owned a job whose page they may not read reached the ACL
       // below holding that page. This route was the one deny site in the app
       // that could describe a page the caller was never allowed to learn
@@ -825,7 +826,7 @@ export async function DELETE(request: NextRequest) {
         continue;
       }
       try {
-        await deleteIngestJob(jobId, principal.handle);
+        await deleteIngestJob(jobId, ownerTenantHandle(principal));
         deletedJobIds.push(jobId);
       } catch (error) {
         const message = getErrorMessage(error);

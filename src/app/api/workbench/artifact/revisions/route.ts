@@ -4,7 +4,7 @@ import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import {
   MAX_ARTIFACT_REVISIONS,
@@ -109,7 +109,7 @@ async function gate(
   options: { refuseWhenReadOnly: boolean },
 ): Promise<
   | { ok: false; response: NextResponse }
-  | { ok: true; owner: string; wikiId: string; file: EditableArtifactFile }
+  | { ok: true; owner: string; actor: string; wikiId: string; file: EditableArtifactFile }
 > {
   const principal = await getPrincipal();
   if (!principal) {
@@ -136,12 +136,12 @@ async function gate(
     return { ok: false, response: json(NOT_EDITABLE, 400) };
   }
 
-  const { currentId } = await getWikiRegistry(principal.handle);
+  const { currentId } = await getWikiRegistry(ownerTenantHandle(principal));
   if (!currentId) {
     return { ok: false, response: json({ error: "Wiki not found." }, 404) };
   }
 
-  return { ok: true, owner: principal.handle, wikiId: currentId, file: target };
+  return { ok: true, owner: ownerTenantHandle(principal), actor: principal.handle, wikiId: currentId, file: target };
 }
 
 /**
@@ -301,6 +301,7 @@ export async function POST(request: Request) {
     // The `reason` rides the options object beside it, where the two named
     // fields cannot be transposed (DW-193).
     await writeWikiArtifact(owner, wikiId, file, content, {
+      actor: gated.actor,
       reason: `reverted to revision ${new Date(timestamp).toISOString()}`,
     });
     // The version of what landed — `content` is stored verbatim — so an editor

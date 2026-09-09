@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 import type { FinishReason } from "ai";
 import { callLLMWithFinish, hasLLMKey } from "./llm";
 import {
@@ -352,7 +353,7 @@ export async function query(
 
     // Determine which pages to load
     const retrievalQuestion = principal
-      ? await expandQueryWithNamesTerms(principal.handle, question)
+      ? await expandQueryWithNamesTerms(ownerTenantHandle(principal), question)
       : question;
     const selectedSlugs = await selectPagesForQuery(
       retrievalQuestion,
@@ -378,7 +379,7 @@ export async function query(
       entries,
       selectedSlugs,
       format,
-      principal?.handle,
+      principal ? ownerTenantHandle(principal) : undefined,
     );
 
     // DW-662. `callLLMWithFinish`, not `callLLM`: the model reports WHY it

@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -11,7 +12,7 @@ import {
 export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-  return NextResponse.json({ clients: await listLocalSyncClients(principal.handle) });
+  return NextResponse.json({ clients: await listLocalSyncClients(ownerTenantHandle(principal)) });
 }
 
 export async function POST(request: Request) {
@@ -37,7 +38,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "state must be ok, watching, or failed." }, { status: 400 });
     }
     const client = await recordLocalSyncHeartbeat({
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       clientId: body.clientId,
       label: typeof body.label === "string" ? body.label : undefined,
       mode: body.mode as LocalSyncClient["mode"],
@@ -57,7 +58,7 @@ export async function DELETE(request: Request) {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const id = new URL(request.url).searchParams.get("id") ?? "";
-    return await removeLocalSyncClient(principal.handle, id)
+    return await removeLocalSyncClient(ownerTenantHandle(principal), id)
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Sync client not found." }, { status: 404 });
   } catch (error) {
