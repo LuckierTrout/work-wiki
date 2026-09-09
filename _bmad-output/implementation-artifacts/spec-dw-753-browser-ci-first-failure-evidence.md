@@ -3,7 +3,7 @@ title: 'DW-753: browser CI with first-failure evidence'
 type: 'chore'
 created: '2026-09-09'
 status: 'done'
-delivery_status: 'local-complete-github-validation-pending'
+delivery_status: 'published-pr-final-checks-tracked-on-github'
 approval_status: 'approved-local-implementation'
 review_loop_iteration: 0
 baseline_commit: 'b9a1d5ca7d4b021411be37a014078809b7c8190e'
@@ -164,6 +164,52 @@ identifier, dependency, production credential or production data was changed.
   approved local configuration successfully; no protected-file action remains
   blocked. Publication remains separately gated by the approved intent.
 
+## GitHub publication evidence — 2026-09-09
+
+Publication and GitHub execution/upload validation were explicitly authorized
+by the user after local commit `bf363001746066f27a895ad271d539b7b0f02d13`.
+PR: [#17](https://github.com/LuckierTrout/work-wiki/pull/17).
+Merge and deployment remain separate; neither has been performed.
+
+### Controlled upload receipt
+
+- Probe head: `3f71615fea7ddb5b8cd17f73111658b724409d55`.
+- [CI run 34408612792](https://github.com/LuckierTrout/work-wiki/actions/runs/34408612792),
+  Browser E2E job `102657497541`: all **26 existing browser cases passed**;
+  only the temporary synthetic probe failed as intended, zero retries,
+  **3.6 minutes** for the browser suite.
+- Upload step succeeded: artifact `browser-e2e-failure-1`, ID `10126463365`,
+  **25,700 bytes**. GitHub creation time `2026-09-09T21:49:31Z`, expiry
+  `2026-09-16T21:49:30Z`; configured retention is seven days.
+- Downloaded from GitHub using `gh run download`; exactly one trace ZIP
+  (nine CRC-valid members, trace-event file present) and one CRC-valid
+  **1280×720 PNG** were verified locally. Archive contents are synthetic test
+  output; no production data or credentials were supplied to the browser job.
+- Local downloaded evidence: `/private/tmp/browser-ci-github-probe-artifact/`;
+  job log: `/private/tmp/browser-ci-github-probe-job.log`.
+- Temporary probe removed in `3ffc31333b8753540553397e89733406ba90047e`.
+  The published final diff will contain no failing fixture. Workflow and
+  recording settings were unchanged between the probe and restored suite.
+
+### Successful browser enrollment
+
+[CI run 34409087884](https://github.com/LuckierTrout/work-wiki/actions/runs/34409087884)
+ran the restored suite on `3ffc31333b8753540553397e89733406ba90047e`.
+Browser E2E job `102659289230` completed successfully with all 26 tests in **3.4 minutes**,
+one Chromium worker, zero skips and zero retries. The failure-upload step was
+skipped on success. Its downloaded log is
+`/private/tmp/browser-ci-github-green-browser.log`.
+
+This executed evidence permits updating AGENTS.md's former local-only sentence.
+The subsequent documentation commit leaves all executable configuration and
+tests unchanged. Its focused browser-CI, workbench-chrome and brand-copy checks
+passed **79 tests in three files, 1.30 seconds**; whitespace checks passed. Final-head Application, Browser E2E and Sandbox Worker results
+are tracked on [PR #17's checks](https://github.com/LuckierTrout/work-wiki/pull/17/checks);
+the PR description records the exact validated head and run once all finish.
+The earlier pending-publication notes above describe their historical local
+checkpoint and are superseded by this publication evidence. The packet is not
+merged or deployed. The deferred-work ledger remains orchestrator-owned.
+
 ## Suggested Review Order
 
 **Browser CI execution**
@@ -186,4 +232,3 @@ identifier, dependency, production credential or production data was changed.
 
 - Clarifies that the shared Vitest invocation covers both test projects.
   [vitest.config.ts:71](../../vitest.config.ts#L71)
-

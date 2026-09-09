@@ -113,7 +113,8 @@ scan reads this file too.
   time. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
 - Browser-level questions — real layout, real focus across platforms, real
   assistive technology — are Playwright's, `pnpm test:e2e`
-  (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus
+  (`playwright.config.ts`, specs in `e2e/`). CI runs these in the Chromium-only
+  Browser E2E job; `pnpm test:e2e` also runs locally. Focus
   ORDER is executable in jsdom (`workbench-sheet.test.tsx` asserts
   `document.activeElement`); what a screen reader announces is not. Shared
   seeding lives in `e2e/fixtures/` — and it is the FILENAME that keeps those
