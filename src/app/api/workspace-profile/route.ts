@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -21,9 +22,9 @@ export async function GET() {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    const wiki = await getCurrentWiki(principal.handle);
+    const wiki = await getCurrentWiki(ownerTenantHandle(principal));
     const profile = wiki
-      ? await getWorkspaceProfile(principal.handle, wiki.id)
+      ? await getWorkspaceProfile(ownerTenantHandle(principal), wiki.id)
       : emptyWorkspaceProfile();
     return NextResponse.json({
       profile,

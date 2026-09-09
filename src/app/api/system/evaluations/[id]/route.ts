@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { deleteRetrievalEvalCase } from "@/lib/retrieval-evals";
@@ -11,7 +12,7 @@ export async function DELETE(
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await context.params;
-    const deleted = await deleteRetrievalEvalCase(principal.handle, id);
+    const deleted = await deleteRetrievalEvalCase(ownerTenantHandle(principal), id);
     return deleted
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Evaluation case not found." }, { status: 404 });

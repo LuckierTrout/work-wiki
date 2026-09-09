@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { requireOwnerPrincipal } from "@/lib/owner-route";
 import {
@@ -17,7 +18,7 @@ export async function GET() {
   }
   try {
     return NextResponse.json({
-      conversations: (await listChatConversations(principal.handle)).map(
+      conversations: (await listChatConversations(ownerTenantHandle(principal))).map(
         conversationWithName,
       ),
     });
@@ -74,7 +75,7 @@ export async function POST(request: Request) {
     if (body.historyDepth !== undefined && typeof body.historyDepth !== "number") {
       return NextResponse.json({ error: "historyDepth must be a number" }, { status: 400 });
     }
-    const conversation = await createChatConversation(principal.handle, {
+    const conversation = await createChatConversation(ownerTenantHandle(principal), {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(typeof body.scope === "string" ? { scope: body.scope } : {}),

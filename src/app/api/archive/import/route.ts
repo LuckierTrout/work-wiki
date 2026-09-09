@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -12,10 +13,10 @@ export async function POST(request: Request) {
     const bytes = await request.arrayBuffer();
     if (!bytes.byteLength) return NextResponse.json({ error: "Archive body is required." }, { status: 400 });
     if (action === "preview") {
-      return NextResponse.json({ inspection: await inspectPortableArchive(principal.handle, bytes) });
+      return NextResponse.json({ inspection: await inspectPortableArchive(ownerTenantHandle(principal), bytes) });
     }
     if (action !== "import") return NextResponse.json({ error: "Invalid archive action." }, { status: 400 });
-    return NextResponse.json({ result: await importPortableArchive(principal.handle, bytes, collision) });
+    return NextResponse.json({ result: await importPortableArchive(ownerTenantHandle(principal), bytes, collision) });
   } catch (error) {
     const message = getErrorMessage(error);
     return NextResponse.json({ error: message }, { status: /invalid|unsafe|checksum|missing|limit/i.test(message) ? 400 : 500 });

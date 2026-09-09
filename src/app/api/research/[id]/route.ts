@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -65,7 +66,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // gate above arrives here as a `ReadOnlyError` rather than a `null` the
     // 409 below would mislabel as "cannot be edited".
     const project = await editResearchProject(
-      principal.handle,
+      ownerTenantHandle(principal),
       id,
       (current) => EDITABLE.has(current.status) && !current.deleteRequested,
       {
@@ -75,7 +76,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       },
     );
     if (project) return NextResponse.json({ project });
-    const current = await getResearchProject(principal.handle, id);
+    const current = await getResearchProject(ownerTenantHandle(principal), id);
     if (!current || current.deleteRequested) {
       return NextResponse.json({ error: "Research project not found." }, { status: 404 });
     }
@@ -125,7 +126,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    return (await retireResearchProject(principal.handle, id))
+    return (await retireResearchProject(ownerTenantHandle(principal), id))
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Research project not found." }, { status: 404 });
   } catch (error) {

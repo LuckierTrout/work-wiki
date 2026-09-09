@@ -1,3 +1,4 @@
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
@@ -178,6 +179,8 @@ function mount(row: Row) {
     : { isLoaded: true, isSignedIn: false, user: null };
   render(
     <ArticleActions
+      isSiteOwner={isOwnerPrincipal(principalFor(clerk.current.user?.username ?? null))}
+      viewerOwner={ownerTenantHandle(principalFor(clerk.current.user?.username ?? null))}
       slug="transformers"
       tenant={OWNER}
       owner={OWNER}
@@ -281,6 +284,8 @@ describe("ArticleActions — the Delete affordance against canWritePage (DW-120)
     clerk.current = { isLoaded: false, isSignedIn: false, user: null };
     render(
       <ArticleActions
+      isSiteOwner={isOwnerPrincipal(principalFor(clerk.current.user?.username ?? null))}
+      viewerOwner={ownerTenantHandle(principalFor(clerk.current.user?.username ?? null))}
         slug="transformers"
         tenant={OWNER}
         owner={OWNER}
@@ -390,6 +395,8 @@ function mountReingest(row: Row) {
     : { isLoaded: true, isSignedIn: false, user: null };
   render(
     <ArticleActions
+      isSiteOwner={isOwnerPrincipal(principalFor(clerk.current.user?.username ?? null))}
+      viewerOwner={ownerTenantHandle(principalFor(clerk.current.user?.username ?? null))}
       slug="transformers"
       tenant={OWNER}
       owner={OWNER}
@@ -439,6 +446,8 @@ describe("ArticleActions — the Re-ingest affordance against canWritePage (DW-2
     clerk.current = { isLoaded: true, isSignedIn: true, user: { username: OWNER } };
     render(
       <ArticleActions
+      isSiteOwner={isOwnerPrincipal(principalFor(clerk.current.user?.username ?? null))}
+      viewerOwner={ownerTenantHandle(principalFor(clerk.current.user?.username ?? null))}
         slug="transformers"
         tenant={OWNER}
         owner={OWNER}
@@ -492,14 +501,17 @@ function articlePage(frontmatter: Frontmatter) {
   };
 }
 
-async function renderArticle(frontmatter: Frontmatter) {
+async function renderArticle(
+  frontmatter: Frontmatter,
+  principal = principalFor(clerk.current.user?.username ?? null),
+) {
   // A sync render of an async server component: await the element, then mount
   // what it returned. There is no test-only seam in the component itself.
   const element = await ArticleView({
     page: articlePage(frontmatter),
     slug: "transformers",
     pageTenant: OWNER,
-    principal: { id: `user_${OWNER}`, handle: OWNER } as Principal,
+    principal,
   });
   render(element);
 }
@@ -737,5 +749,38 @@ describe("ArticleView — the realm fact it computes, seen on the article (DW-12
 
     expect(screen.queryByRole("button", { name: /^Restore revision from/ })).toBeNull();
     expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy();
+  });
+});
+
+
+describe("server-computed owner controls with divergent identity facts", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true, status: 200, json: async () => ({ revisions: [{ timestamp: 1700000000000, date: new Date(1700000000000).toISOString(), slug: "transformers", sizeBytes: 42 }] }),
+  }))));
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+  it.each([
+    ["changed", "user_stable", true],
+    ["user_stable", "user_stable", true],
+    [SITE_OWNER, "user_impostor", false],
+  ])("resolves %s from the server principal, not the public handle", async (handle, id, allowed) => {
+    vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_stable");
+    vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", SITE_OWNER);
+    clerk.current = { isLoaded: true, isSignedIn: true, user: { username: handle } };
+    await renderArticle({ title: "Canonical page", owner: SITE_OWNER, visibility: "public", source_url: "https://example.com/source" }, { id, handle });
+    expect(deleteButton() !== null).toBe(allowed);
+    expect(reingestButton() !== null).toBe(allowed);
+    if (allowed) expect(screen.queryByRole("button", { name: "Graphify page" })).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /^Restore revision from/ }) !== null).toBe(allowed);
+  });
+
+  it("does not turn the site-owner flag into a Graphify grant on another owner's page", async () => {
+    vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_stable");
+    vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", SITE_OWNER);
+    clerk.current = { isLoaded: true, isSignedIn: true, user: { username: "changed" } };
+    await renderArticle({ title: "Another page", owner: "other", visibility: "public" }, { id: "user_stable", handle: "changed" });
+    expect(deleteButton()).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Graphify page" })).toBeNull();
   });
 });

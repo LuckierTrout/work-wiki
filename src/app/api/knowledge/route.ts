@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -21,7 +22,7 @@ export async function GET(request: Request) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
-    const graph = await getStructuredKnowledge(principal.handle);
+    const graph = await getStructuredKnowledge(ownerTenantHandle(principal));
     const kindValue = new URL(request.url).searchParams.get("kind");
     const kind = kindValue && KINDS.has(kindValue as KnowledgeKind)
       ? (kindValue as KnowledgeKind)
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
     if (typeof body.slug !== "string" || !body.slug.trim()) {
       return NextResponse.json({ error: "slug is required." }, { status: 400 });
     }
-    const graph = await extractStructuredKnowledge(principal.handle, body.slug);
+    const graph = await extractStructuredKnowledge(ownerTenantHandle(principal), body.slug);
     return NextResponse.json({ graph });
   } catch (error) {
     const message = getErrorMessage(error);

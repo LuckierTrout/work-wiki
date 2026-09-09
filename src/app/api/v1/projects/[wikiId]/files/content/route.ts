@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import {
@@ -56,7 +57,7 @@ export async function GET(request: Request, { params }: RouteContext) {
     }
     const slugGate = await v1SlugGate(caller.principal);
     const file = await readWorkbenchFile(
-      caller.principal.handle,
+      ownerTenantHandle(caller.principal),
       caller.wikiId,
       path,
       slugGate,

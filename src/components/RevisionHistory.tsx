@@ -2,7 +2,6 @@
 
 import { useState, useCallback, useId } from "react";
 import { useRouter } from "next/navigation";
-import { isOwnerHandle } from "@/lib/owner";
 import { useViewerHandle } from "@/lib/viewer-handle";
 import { RevisionItem } from "./RevisionItem";
 import type { Revision } from "./RevisionItem";
@@ -28,6 +27,7 @@ export const REVERT_READ_ONLY_COPY =
 
 interface RevisionHistoryProps {
   slug: string;
+  isSiteOwner: boolean;
   /**
    * The REALM half of the Revert gate: whether `canWritePage`'s commons-realm
    * branch refuses a BODY write of this page.
@@ -102,34 +102,14 @@ interface RevisionHistoryProps {
  */
 export function RevisionHistory({
   slug,
+  isSiteOwner,
   realmDeniesRevert,
   readOnly = false,
 }: RevisionHistoryProps) {
   const router = useRouter();
-  // The identity half of the Revert gate, mirroring `ArticleActions`: only the
-  // browser holds the Clerk session, so whether the viewer is signed in and
-  // whether they are the site owner can both only be decided here, while the
-  // realm arrives as a prop from the server. `ADMIN_HANDLES` is
-  // server-only, so an admin who is not the site owner is under-offered Revert —
-  // narrower than the server's answer, which is the one safe direction. Both
-  // facts come from the shared `@/lib/viewer-handle` hook (whose handle is
-  // already lowercased, which is why `isOwnerHandle` is called on it directly)
-  // so this gate and the Delete/Re-ingest gates read one copy of the resolution
-  // rule — the Clerk hook is never called a second time in this island, and
-  // `article-actions-gate.test.ts` pins that as a source scan.
-  const { isLoaded, isSignedIn, handle } = useViewerHandle();
-  // `isLoaded` guards this term because before the session resolves `handle` is
-  // null for a viewer who will turn out to be the site owner, so an unguarded
-  // `isOwnerHandle` would answer `false` by accident of a missing handle rather
-  // than by a decision — and on a realm page that is the difference between
-  // "we do not know yet" and "no". Guarded, the fail-closed hydration answer is
-  // deliberate and matches `ArticleActions`'s `canCurate`, the one affordance
-  // over there that is `isLoaded`-guarded for the same reason (`canDelete` and
-  // `canReingest` lean on `handleLc` being null instead). It guards the
-  // signed-in term below for the same reason, which
-  // is now what decides a NON-realm page too: `!realmDeniesRevert` alone no
-  // longer makes `canRevert` true there.
-  const isSiteOwner = isLoaded && isOwnerHandle(handle);
+  // The server resolves site ownership. Clerk still supplies loading and
+  // signed-in state, so hydration and a signed-out viewer fail closed.
+  const { isLoaded, isSignedIn } = useViewerHandle();
   // The signed-in term (DW-392), and the reason `isLoaded` now guards two
   // things. A signed-out viewer of a page the realm does not restrict — a
   // public artifact, an agent-scoped page — passed `!realmDeniesRevert` and was

@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { appendQuery, listQueries, markSaved } from "@/lib/query-history";
 import { getPrincipal } from "@/lib/auth";
@@ -24,7 +25,8 @@ export async function GET(request: NextRequest) {
     }
 
     // History is per-asker — anonymous callers get nothing.
-    const entries = await listQueries(limit, (await getPrincipal())?.handle);
+    const principal = await getPrincipal();
+    const entries = await listQueries(limit, principal ? ownerTenantHandle(principal) : undefined);
     return NextResponse.json({ entries });
   } catch (error) {
     logger.error("query", "Query history GET error", error);
@@ -65,7 +67,8 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
-      await markSaved(id, slug, (await getPrincipal())?.handle);
+      const principal = await getPrincipal();
+      await markSaved(id, slug, principal ? ownerTenantHandle(principal) : undefined);
       return NextResponse.json({ success: true });
     }
 
@@ -90,12 +93,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const principal = await getPrincipal();
     const entry = await appendQuery({
       question: question.trim(),
       answer: answer.trim(),
       sources: Array.isArray(sources) ? sources : [],
       timestamp: new Date().toISOString(),
-      owner: (await getPrincipal())?.handle,
+      owner: principal ? ownerTenantHandle(principal) : undefined,
       format: validFormat,
     });
 

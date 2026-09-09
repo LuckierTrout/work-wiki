@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { redirect } from "next/navigation";
 import { WikiWorkbench } from "@/components/WikiWorkbench";
 import { DataVersionWatcher } from "@/components/workbench/DataVersionWatcher";
@@ -71,7 +72,7 @@ export default async function Home() {
     // ("No wiki yet." + Create Wiki), and creating rewrites the tenant workspace
     // profile. So a failed read is flagged rather than flattened — the workbench
     // says the read failed instead of claiming the owner has no wikis.
-    getWikiRegistry(principal.handle)
+    getWikiRegistry(ownerTenantHandle(principal))
       .then((registry) => ({ registry, unavailable: false }))
       .catch((error) => {
         logger.error("home", "wiki registry read failed", error);
@@ -100,7 +101,7 @@ export default async function Home() {
   const slugGate = workbenchSlugGate(pageIndex.entries, knowledge);
 
   const fileListing = await listWorkbenchFilePaths(
-    principal.handle,
+    ownerTenantHandle(principal),
     wikiRegistry.registry.currentId,
     { ...slugGate, limit: WORKBENCH_FIRST_PAINT_LIMIT },
   )

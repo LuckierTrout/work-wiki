@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -15,7 +16,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const body = (await request.json()) as Record<string, unknown>;
-    const monitor = await updateSourceMonitor(principal.handle, id, {
+    const monitor = await updateSourceMonitor(ownerTenantHandle(principal), id, {
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(body.cadence === "manual" || body.cadence === "daily" || body.cadence === "weekly"
         ? { cadence: body.cadence as SourceMonitorCadence }
@@ -42,7 +43,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const { id } = await params;
-    return (await deleteSourceMonitor(principal.handle, id))
+    return (await deleteSourceMonitor(ownerTenantHandle(principal), id))
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Monitor not found." }, { status: 404 });
   } catch (error) {

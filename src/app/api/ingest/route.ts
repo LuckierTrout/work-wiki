@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { ingest, ingestUrl, deriveTitleFromContent } from "@/lib/ingest";
 import type { IngestOptions } from "@/lib/ingest";
@@ -99,7 +100,7 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
-      if (!vaultOwnedBy(body.vaultId, principal.handle)) {
+      if (!vaultOwnedBy(body.vaultId, ownerTenantHandle(principal))) {
         return NextResponse.json(
           { error: "Vault not found or not owned by you" },
           { status: 403 },
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest) {
     // Attribution from the authenticated session (authoritative; overrides any
     // client-supplied triggeredBy to prevent spoofing).
     options.author = principal.handle;
-    options.owner = principal.handle;
+    options.owner = ownerTenantHandle(principal);
     options.triggeredBy = principal.handle;
 
     const tagsForTask =
@@ -137,7 +138,7 @@ export async function POST(request: NextRequest) {
     if (url && typeof url === "string" && isUrl(url.trim())) {
       const trimmedUrl = url.trim();
       const jobId = crypto.randomUUID();
-      await createIngestJob({ jobId, url: trimmedUrl, owner: principal.handle });
+      await createIngestJob({ jobId, url: trimmedUrl, owner: ownerTenantHandle(principal) });
       return await enqueueOrInline(
         jobId,
         {
@@ -185,7 +186,7 @@ export async function POST(request: NextRequest) {
     const displayTitle = trimmedTitle || deriveTitleFromContent(trimmedContent) || "Untitled";
 
     const jobId = crypto.randomUUID();
-    await createIngestJob({ jobId, owner: principal.handle, title: displayTitle });
+    await createIngestJob({ jobId, owner: ownerTenantHandle(principal), title: displayTitle });
 
     // Small enough to ride inline in the queue message; otherwise stage to R2.
     let task: Task;

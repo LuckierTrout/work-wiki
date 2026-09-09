@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { notFound, redirect } from "next/navigation";
 import { VaultExplorer } from "@/components/VaultExplorer";
 import { getPrincipal } from "@/lib/auth";
@@ -16,7 +17,7 @@ export default async function VaultExplorerPage({
   if (!principal) redirect("/vault");
 
   const { id } = await params;
-  const vaults = await listVaults(principal.handle);
+  const vaults = await listVaults(ownerTenantHandle(principal));
   const vault = vaults.find((candidate) => candidate.id === id);
   if (!vault) notFound();
 

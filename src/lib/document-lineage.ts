@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 import type { Principal } from "./auth";
 import { canReadSlug } from "./authz";
 import { listActionItems, type ActionItemStatus } from "./action-items";
@@ -107,7 +108,7 @@ export async function getDocumentLineage(
   const pageOwner =
     typeof page.frontmatter.owner === "string" && page.frontmatter.owner.trim()
       ? page.frontmatter.owner
-      : principal.handle;
+      : ownerTenantHandle(principal);
   const pageType =
     typeof page.frontmatter.type === "string" ? page.frontmatter.type : undefined;
   const isArtifact = isArtifactType(pageType);
@@ -119,11 +120,11 @@ export async function getDocumentLineage(
 
   const [graph, compilation, actionItems, readablePages, originalFiles] =
     await Promise.all([
-      getStructuredKnowledge(principal.handle),
-      getKnowledgeCompilation(principal.handle, slug),
-      listActionItems(principal.handle),
+      getStructuredKnowledge(ownerTenantHandle(principal)),
+      getKnowledgeCompilation(ownerTenantHandle(principal), slug),
+      listActionItems(ownerTenantHandle(principal)),
       listReadableWikiPages(principal),
-      listDocumentSources(slug, principal.handle).catch(() => []),
+      listDocumentSources(slug, ownerTenantHandle(principal)).catch(() => []),
     ]);
 
   const records = graph.records.filter((record) =>
@@ -137,7 +138,7 @@ export async function getDocumentLineage(
   const proposalResults = await mapWithConcurrency(
     proposalIds,
     READ_CONCURRENCY,
-    (id) => getMemoryChangeProposal(principal.handle, id),
+    (id) => getMemoryChangeProposal(ownerTenantHandle(principal), id),
   );
   const proposals = proposalResults
     .filter((proposal): proposal is NonNullable<typeof proposal> => Boolean(proposal))

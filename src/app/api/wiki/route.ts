@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import {
   validateSlug,
@@ -80,6 +81,7 @@ export async function POST(req: Request) {
         ? (body as { tags: unknown }).tags
         : undefined;
     const authorStr = principal.handle;
+    const owner = ownerTenantHandle(principal);
     const tagsArr: string[] =
       Array.isArray(tags) && tags.every((t: unknown) => typeof t === "string")
         ? (tags as string[])
@@ -138,7 +140,7 @@ export async function POST(req: Request) {
       updated: today,
       confidence: 0.5,
       expiry,
-      owner: authorStr,
+      owner,
       visibility: "public",
       authors: [authorStr],
       valid_from: today,
@@ -166,7 +168,7 @@ export async function POST(req: Request) {
 
     // Echo the owner so the client can navigate to the canonical
     // `/u/<tenant>/<slug>` URL after creation (tenant-silos P2).
-    return NextResponse.json({ ...result, owner: authorStr }, { status: 201 });
+    return NextResponse.json({ ...result, owner }, { status: 201 });
   } catch (err) {
     // Deployment read-only (DW-187). `writeWikiPageWithSideEffects` is the
     // enforcement point — this maps its refusal to the 403 the sibling

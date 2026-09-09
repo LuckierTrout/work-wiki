@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { createTextStreamResponse } from "ai";
 import { hasLLMKey, callLLMStream } from "@/lib/llm";
@@ -164,7 +165,7 @@ export async function POST(request: NextRequest) {
 
     // Select relevant pages and build context (same logic as query())
     const retrievalQuestion = await expandQueryWithNamesTerms(
-      principal.handle,
+      ownerTenantHandle(principal),
       trimmedQuestion,
     );
     const selectedSlugs = await selectPagesForQuery(
@@ -181,7 +182,7 @@ export async function POST(request: NextRequest) {
       entries,
       selectedSlugs,
       queryFormat,
-      principal.handle,
+      ownerTenantHandle(principal),
     );
 
     // Stream the LLM response

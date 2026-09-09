@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { requireOwnerPrincipal } from "@/lib/owner-route";
 import {
@@ -23,7 +24,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const conversation = await getChatConversation(principal.handle, id);
+    const conversation = await getChatConversation(ownerTenantHandle(principal), id);
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
@@ -111,7 +112,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         { status: 400 },
       );
     }
-    const conversation = await updateChatConversation(principal.handle, id, {
+    const conversation = await updateChatConversation(ownerTenantHandle(principal), id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
       ...(typeof body.name === "string" ? { name: body.name } : {}),
       ...(body.scope === null || typeof body.scope === "string"
@@ -153,7 +154,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const deleted = await deleteChatConversation(principal.handle, id);
+    const deleted = await deleteChatConversation(ownerTenantHandle(principal), id);
     return deleted
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Conversation not found." }, { status: 404 });

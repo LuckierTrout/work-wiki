@@ -166,6 +166,8 @@ async function clearMarker(owner: string, rest: string): Promise<void> {
 
 export async function cascadeDeleteSource(input: {
   owner: string;
+  /** Actual actor, separate from the namespace being cleaned up. */
+  actor?: string;
   path: string;
   sourceTitle?: string;
 }): Promise<{ deletedPages: string[]; updatedPages: string[] }> {
@@ -189,7 +191,7 @@ export async function cascadeDeleteSource(input: {
   } else {
     const pages = await listWikiPages();
     for (const entry of pages) {
-      if (BOOKKEEPING.has(entry.slug)) continue;
+      if (BOOKKEEPING.has(entry.slug) || entry.type === "overview") continue;
       // STRICT (DW-737), and it matters MORE here than at the sibling read
       // below. This read decides MEMBERSHIP: without `strict` a non-ENOENT
       // storage blip reads back as `null`, the `continue` under it drops the
@@ -237,7 +239,7 @@ export async function cascadeDeleteSource(input: {
   }
 
   for (const slug of [...summaries]) {
-    await deleteWikiPage(slug, input.owner);
+    await deleteWikiPage(slug, input.actor ?? input.owner);
     deletedPages.push(slug);
     summaries = summaries.filter((item) => item !== slug);
     await writeMarker(input.owner, rest, {
@@ -264,7 +266,7 @@ export async function cascadeDeleteSource(input: {
       continue;
     }
     if (soleSource(page.frontmatter, keys)) {
-      await deleteWikiPage(slug, input.owner);
+      await deleteWikiPage(slug, input.actor ?? input.owner);
       deletedPages.push(slug);
     } else {
       const sources = parseSources(
@@ -291,7 +293,7 @@ export async function cascadeDeleteSource(input: {
         summary: page.body.replace(/^#\s+.+$/m, "").trim().slice(0, 200),
         logOp: "edit",
         crossRefSource: null,
-        author: input.owner,
+        author: input.actor ?? input.owner,
         expectedContent: page.content,
         logDetails: () => `dropped source ${input.path} from "${slug}"`,
       });

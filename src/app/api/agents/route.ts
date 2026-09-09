@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import {
   listAgents,
@@ -26,7 +27,7 @@ export async function GET(req: Request) {
       );
     }
     const agents = principal
-      ? await listAgentsForOwner(principal.handle)
+      ? await listAgentsForOwner(ownerTenantHandle(principal))
       : await listAgents();
     return NextResponse.json({ agents });
   } catch (err) {
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
     // The id is ALWAYS derived from (owner, name) — never trusted from the body —
     // so a caller can only ever create an agent inside their own namespace
     // (`<handle>--<name>`), never under another owner's id.
-    const id = agentIdFor(principal.handle, name);
+    const id = agentIdFor(ownerTenantHandle(principal), name);
     if (!description || typeof description !== "string") {
       return NextResponse.json(
         { error: "Missing or invalid 'description' — must be a non-empty string" },
@@ -89,7 +90,7 @@ export async function POST(req: Request) {
       id,
       name,
       description,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       identityPages: Array.isArray(body.identityPages) ? body.identityPages : [],
       learningPages: Array.isArray(body.learningPages) ? body.learningPages : [],
       socialPages: Array.isArray(body.socialPages) ? body.socialPages : [],

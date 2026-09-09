@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import {
@@ -41,7 +42,7 @@ export async function GET(request: Request, { params }: RouteContext) {
     );
     const slugGate = await v1SlugGate(caller.principal);
     const listing = await listWorkbenchFilePaths(
-      caller.principal.handle,
+      ownerTenantHandle(caller.principal),
       caller.wikiId,
       { ...slugGate, limit: V1_MAX_TREE_NODES },
     );

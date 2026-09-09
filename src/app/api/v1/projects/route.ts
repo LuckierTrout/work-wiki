@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
@@ -25,7 +26,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    const registry = await getWikiRegistry(principal.handle);
+    const registry = await getWikiRegistry(ownerTenantHandle(principal));
     return NextResponse.json({
       currentId: registry.currentId,
       projects: registry.wikis.map((wiki) => ({
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
         // wants bytes uses `files` and `files/content`, never this string.
         // Owner project folders come from WORKWIKI_WIKI_ROOTS on the sidecar,
         // not from resolving this path against DATA_DIR.
-        path: wikiDirPath(principal.handle, wiki.id),
+        path: wikiDirPath(ownerTenantHandle(principal), wiki.id),
         isCurrent: wiki.id === registry.currentId,
       })),
     });

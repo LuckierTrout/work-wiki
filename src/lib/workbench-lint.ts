@@ -4,6 +4,7 @@
  * Gap classes point at Graph Insights — they are not a second gap product.
  */
 
+import { parseFrontmatter } from "./frontmatter";
 import { resolveAlias } from "./alias-index";
 import { extractAllInternalLinks } from "./links";
 import { lint } from "./lint";
@@ -52,10 +53,12 @@ const GAP_POINTER: WorkbenchLintIssue = {
 export async function checkInboundWikilinkOrphans(
   diskSlugs: readonly string[],
 ): Promise<WorkbenchLintIssue[]> {
+  const overviews = new Set<string>();
   const inbound = new Map(diskSlugs.map((slug) => [slug, 0]));
   for (const slug of diskSlugs) {
     const page = await readWikiPage(slug);
     if (!page) continue;
+    if (parseFrontmatter(page.content).data.type === "overview") overviews.add(slug);
     for (const { targetSlug } of extractAllInternalLinks(page.content)) {
       const canonical = (await resolveAlias(targetSlug)) ?? targetSlug;
       if (canonical === slug) continue;
@@ -65,7 +68,7 @@ export async function checkInboundWikilinkOrphans(
   }
   const issues: WorkbenchLintIssue[] = [];
   for (const slug of diskSlugs) {
-    if (BOOKKEEPING.has(slug.toLowerCase())) continue;
+    if (BOOKKEEPING.has(slug.toLowerCase()) || overviews.has(slug)) continue;
     if (INFRASTRUCTURE_FILES.has(`${slug}.md`)) continue;
     if ((inbound.get(slug) ?? 0) > 0) continue;
     issues.push({

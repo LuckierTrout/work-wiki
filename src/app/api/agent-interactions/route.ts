@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentInteractions } from "@/lib/agent-workspaces";
@@ -9,5 +10,5 @@ export async function GET(request: Request) {
   const status = rawStatus === "pending" || rawStatus === "submitted" || rawStatus === "cancelled"
     ? rawStatus
     : undefined;
-  return NextResponse.json({ interactions: await listAgentInteractions(principal.handle, status) });
+  return NextResponse.json({ interactions: await listAgentInteractions(ownerTenantHandle(principal), status) });
 }

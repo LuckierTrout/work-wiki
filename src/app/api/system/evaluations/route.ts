@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage, isClientInputError, isInfrastructureFault } from "@/lib/errors";
@@ -19,8 +20,8 @@ export async function GET() {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     const [cases, runs] = await Promise.all([
-      listRetrievalEvalCases(principal.handle),
-      listRetrievalEvalRuns(principal.handle),
+      listRetrievalEvalCases(ownerTenantHandle(principal)),
+      listRetrievalEvalRuns(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({ cases, runs });
   } catch (error) {
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     if (body.action === "run") {
-      return NextResponse.json({ run: await runRetrievalEvaluation(principal.handle) });
+      return NextResponse.json({ run: await runRetrievalEvaluation(ownerTenantHandle(principal)) });
     }
     const expectedSlugs = stringArray(body.expectedSlugs);
     const forbiddenSlugs = stringArray(body.forbiddenSlugs ?? []);
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
     if (typeof body.label !== "string" || typeof body.question !== "string" || !expectedSlugs || !forbiddenSlugs || !requiredPhrases) {
       return NextResponse.json({ error: "label, question, and string-array checks are required." }, { status: 400 });
     }
-    const value = await saveRetrievalEvalCase(principal.handle, {
+    const value = await saveRetrievalEvalCase(ownerTenantHandle(principal), {
       ...(typeof body.id === "string" ? { id: body.id } : {}),
       label: body.label,
       question: body.question,

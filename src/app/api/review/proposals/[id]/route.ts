@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -20,7 +21,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const review = await getMemoryProposalReview(principal.handle, id);
+    const review = await getMemoryProposalReview(ownerTenantHandle(principal), id);
     return review
       ? NextResponse.json({ review })
       : NextResponse.json({ error: "Proposal not found." }, { status: 404 });
@@ -47,7 +48,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       : undefined;
     if (action === "accept") {
       const proposal = await applyMemoryChangeProposal(
-        principal.handle,
+        ownerTenantHandle(principal),
         id,
         principal.handle,
         decisionNote,
@@ -56,7 +57,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     }
     if (action === "reject") {
       const proposal = await rejectMemoryChangeProposal(
-        principal.handle,
+        ownerTenantHandle(principal),
         id,
         principal.handle,
         decisionNote,
@@ -70,7 +71,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         return NextResponse.json({ error: "proposedBody is required." }, { status: 400 });
       }
       const proposal = await reviseMemoryChangeProposal(
-        principal.handle,
+        ownerTenantHandle(principal),
         id,
         principal.handle,
         body.proposedBody,

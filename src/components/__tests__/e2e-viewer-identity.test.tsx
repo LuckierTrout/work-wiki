@@ -204,7 +204,8 @@ describe("the root layout wraps ONLY the armed branch", () => {
     // `RootLayout({children})` by calling it directly, and an async one would
     // hand it a promise instead of an element.
     expect(layout).toContain("function AppProviders({");
-    expect(layout).not.toMatch(/async function (AppProviders|RootLayout)/);
+    expect(layout).not.toMatch(/async function AppProviders/);
+    expect(layout).toContain("async function RootLayout");
     // The harness stays out of production render paths: the layout itself never
     // reads cookies.
     expect(layout).not.toContain("next/headers");

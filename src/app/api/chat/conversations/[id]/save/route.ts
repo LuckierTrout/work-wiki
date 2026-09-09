@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { citationPathAllowed } from "@/lib/chat-citations";
 import { getChatConversation } from "@/lib/chat";
@@ -48,7 +49,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const conversation = await getChatConversation(principal.handle, id);
+    const conversation = await getChatConversation(ownerTenantHandle(principal), id);
     if (!conversation) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
@@ -95,7 +96,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       undefined,
       wikiSlugs.length > 0 ? wikiSlugs : undefined,
       "markdown",
-      principal.handle,
+      ownerTenantHandle(principal),
       principal.handle,
       {
         conversationId: conversation.id,
@@ -106,13 +107,13 @@ export async function POST(request: Request, { params }: RouteContext) {
     const sourceSlug = queryAnswerSourceSlug(result.slug);
     const contentSha256 = await sourceSha256(contentWithProvenance);
     await saveRawSourceFor(sourceSlug, contentSha256, contentWithProvenance, {
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
     });
     const sourcePath = `raw/sources/${sourceSlug}/${contentSha256}.md`;
     const jobId = crypto.randomUUID();
     await createIngestJob({
       jobId,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       title,
     });
     const pagePayload = {
@@ -128,7 +129,7 @@ export async function POST(request: Request, { params }: RouteContext) {
           kind: "ingest",
           title,
           content: contentWithProvenance,
-          owner: principal.handle,
+          owner: ownerTenantHandle(principal),
           author: principal.handle,
           tags: ["query-answer"],
           jobId,
@@ -138,7 +139,7 @@ export async function POST(request: Request, { params }: RouteContext) {
         },
         () =>
           ingest(title, contentWithProvenance, {
-            owner: principal.handle,
+            owner: ownerTenantHandle(principal),
             author: principal.handle,
             triggeredBy: principal.handle,
             tags: ["query-answer"],

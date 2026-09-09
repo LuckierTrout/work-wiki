@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { getErrorMessage } from "@/lib/errors";
@@ -40,7 +41,7 @@ export async function GET(request: Request) {
       entries = entries.filter((entry) => !isAgentScopedType(entry.type));
     }
     const retrievalQuery = await expandQueryWithNamesTerms(
-      principal.handle,
+      ownerTenantHandle(principal),
       query,
     );
     const selected = (await selectPagesForQuery(

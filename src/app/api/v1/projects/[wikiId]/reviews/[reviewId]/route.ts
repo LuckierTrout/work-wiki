@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
@@ -77,7 +78,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       { status: 403 },
     );
   }
-  const owner = caller.principal.handle;
+  const owner = ownerTenantHandle(caller.principal);
   const scope = caller.wikiId ?? undefined;
   try {
     const parsed = await readV1JsonBody(request);
@@ -136,7 +137,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     }
 
     if (intent.kind === "create_page") {
-      const created = await createPageFromReview(owner, reviewId, owner, scope);
+      const created = await createPageFromReview(owner, reviewId, caller.principal.handle, scope);
       if (!created) {
         return NextResponse.json({ error: "not_found" }, { status: 404 });
       }

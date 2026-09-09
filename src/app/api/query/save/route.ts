@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { saveAnswerToWiki } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
@@ -71,6 +72,7 @@ export async function POST(request: NextRequest) {
     // — surface it. Prose/table save as markdown (unchanged, system-owned commons).
     const isArtifact = format === "html" || format === "slides";
     let owner: string | undefined;
+    let author: string | undefined;
     if (isArtifact) {
       const principal = await getPrincipal();
       if (!principal) {
@@ -80,7 +82,8 @@ export async function POST(request: NextRequest) {
           { status: 401 },
         );
       }
-      owner = principal.handle;
+      owner = ownerTenantHandle(principal);
+      author = principal.handle;
     }
 
     const contentType =
@@ -93,7 +96,7 @@ export async function POST(request: NextRequest) {
       validatedSources,
       contentType,
       owner,
-      owner,  // author — same as owner for web saves
+      author,
     );
 
     // Return the CANONICAL url so the client links correctly — always the

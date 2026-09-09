@@ -1101,7 +1101,7 @@ describe("Revert, on a read-only deployment", () => {
         }) as unknown as Response,
     );
     render(
-      <RevisionHistory slug="alpha" realmDeniesRevert={false} readOnly={readOnly} />,
+      <RevisionHistory isSiteOwner={false} slug="alpha" realmDeniesRevert={false} readOnly={readOnly} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() =>

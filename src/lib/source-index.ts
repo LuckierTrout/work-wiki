@@ -123,7 +123,7 @@ export async function buildSourceIndex(): Promise<SourceIndex> {
   const pages = await listWikiPages();
 
   for (const entry of pages) {
-    if (entry.slug === "index" || entry.slug === "log" || entry.slug === "overview") continue;
+    if (entry.slug === "index" || entry.slug === "log" || entry.slug === "overview" || entry.type === "overview") continue;
     const page = await readWikiPageWithFrontmatter(entry.slug);
     if (!page) continue;
 

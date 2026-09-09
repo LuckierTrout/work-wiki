@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { ingestXMention } from "@/lib/ingest";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
@@ -69,7 +70,7 @@ export async function POST(request: NextRequest) {
     // logged-in user; the @yoyoevolve service loop is a later phase).
     const result = await ingestXMention(url.trim(), triggeredBy.trim(), {
       author: principal.handle,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
     });
     return NextResponse.json(result);
   } catch (error) {

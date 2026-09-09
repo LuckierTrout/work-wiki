@@ -4,7 +4,7 @@ import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { artifactDisplayName, isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import {
@@ -41,7 +41,7 @@ import {
  * door onto the same bytes than the read side has.
  *
  * THE WIKI IS RE-DERIVED, NEVER NAMED BY THE CALLER. The id comes from
- * `getWikiRegistry(principal.handle).currentId`, exactly as
+ * `getWikiRegistry(ownerTenantHandle(principal)).currentId`, exactly as
  * `api/workbench/preview/route.ts` resolves it for the read. The browser can
  * address neither a tenant, nor a Wiki, nor a storage key.
  *
@@ -213,7 +213,7 @@ async function handle(request: Request) {
     return json({ error: PAGE_CONVENTIONS_REQUIRED_COPY }, 400);
   }
 
-  const { currentId } = await getWikiRegistry(principal.handle);
+  const { currentId } = await getWikiRegistry(ownerTenantHandle(principal));
   if (!currentId) {
     return json({ error: "Wiki not found." }, 404);
   }
@@ -261,8 +261,9 @@ async function handle(request: Request) {
   // One writer, and it owns the tail: the bytes, then the activity log and the
   // `dataVersion` bump, both fail-soft. A log or counter hiccup after the bytes
   // landed must never be reported to the owner as a failed save.
-  await writeWikiArtifact(principal.handle, currentId, target, content, {
+  await writeWikiArtifact(ownerTenantHandle(principal), currentId, target, content, {
     expectedVersion,
+    actor: principal.handle,
   });
   // The version of what landed — `content` is stored verbatim — so the editor
   // can save again without a reload. SCOPED by the Wiki the server resolved

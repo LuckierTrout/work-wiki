@@ -653,6 +653,7 @@ async function recordRetemplatedArtifacts(
   wikiId: string,
   snapshot: SeededFileSnapshot[],
   scenario: CreatableScenario,
+  actor: string,
 ): Promise<void> {
   try {
     const reason = normalizeArtifactEditReason(retemplateRevisionReason(scenario));
@@ -664,7 +665,7 @@ async function recordRetemplatedArtifacts(
       // did not overwrite anything either.
       if (!entry || entry.content === null) continue;
       try {
-        await saveWikiArtifactRevision(owner, wikiId, file, entry.content, owner, reason);
+        await saveWikiArtifactRevision(owner, wikiId, file, entry.content, actor, reason);
       } catch (error) {
         // PER FILE, so one unwritable history does not skip the next — the same
         // independence `restoreSeededFiles` keeps between its three entries.
@@ -1084,9 +1085,11 @@ export async function writeWikiArtifact(
      * read inside the lock still hash to it. Omitted → an unconditional write.
      */
     expectedVersion?: string;
+    /** Actual authenticated author; owner still selects storage. */
+    actor?: string;
   },
 ): Promise<void> {
-  const { reason, expectedVersion } = options ?? {};
+  const { reason, expectedVersion, actor = owner } = options ?? {};
   // Deployment read-only (DW-188), answered BEFORE the lock is taken and before
   // a single byte is read. The Schema is EXECUTABLE at runtime, so a read-only
   // deployment must not rewrite it through any caller — both of today's callers
@@ -1231,7 +1234,7 @@ export async function writeWikiArtifact(
           wikiId,
           file,
           existing,
-          owner,
+          actor,
           editReason,
         );
       } catch (error) {
@@ -1842,6 +1845,7 @@ export async function applyScenarioTemplate(
   owner: string,
   wikiId: string,
   scenario: CreatableScenario,
+  actor: string = owner,
 ): Promise<WikiRecord | null> {
   // Before the lock, before `snapshotSeededFiles` and therefore before
   // `restoreSeededFiles` could ever run (DW-266). A re-template is the most
@@ -1927,7 +1931,7 @@ export async function applyScenarioTemplate(
     // after the `try/catch` so it runs on the committed path ONLY, and fail-soft
     // so a history miss cannot turn a stored re-template into a reported
     // failure. The `catch` keeps `restoreSeededFiles` as its only compensation.
-    await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario);
+    await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario, actor);
     return { kind: "applied", wiki };
   });
 

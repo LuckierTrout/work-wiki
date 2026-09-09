@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerPrincipal } from "@/lib/owner-route";
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "wikiId is required." }, { status: 400 });
     }
     const { items, pendingCount: rawCount } = await reviewSnapshot(
-      principal.handle,
+      ownerTenantHandle(principal),
       wikiId,
     );
     const pendingCount = normalizeReviewCount(rawCount) ?? items.length;

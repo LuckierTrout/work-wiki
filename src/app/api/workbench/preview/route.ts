@@ -6,7 +6,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { parseFrontmatter, type Frontmatter } from "@/lib/frontmatter";
 import { stripFrontmatterBlock } from "@/lib/markdown";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
 import {
   isEditableArtifactFile,
@@ -226,7 +226,7 @@ async function handle(request: Request) {
   // nothing rather than to another Wiki's copy.
   let currentId: string | null = null;
   try {
-    currentId = (await getWikiRegistry(principal.handle)).currentId;
+    currentId = (await getWikiRegistry(ownerTenantHandle(principal))).currentId;
   } catch {
     // An unreadable registry costs the artifacts, not the whole Preview: a
     // `wiki/` or `raw/` path does not depend on it.
@@ -249,20 +249,20 @@ async function handle(request: Request) {
   // gate still runs here, so a media file outside the caller's reach is a 404
   // in the Preview before the column ever asks for it.
   if (format === "unsupported" || isPreviewMediaFormat(format)) {
-    if (!(await workbenchFileExists(principal.handle, currentId, displayPath, gate))) {
+    if (!(await workbenchFileExists(ownerTenantHandle(principal), currentId, displayPath, gate))) {
       return notFound();
     }
   } else {
     if (displayPath === "purpose.md" && currentId !== null) {
       const effective = await readEffectiveWikiArtifact(
-        principal.handle,
+        ownerTenantHandle(principal),
         currentId,
         "purpose.md",
       );
       if (effective === null) return notFound();
       content = effective;
     } else {
-      const file = await readWorkbenchFile(principal.handle, currentId, displayPath, gate);
+      const file = await readWorkbenchFile(ownerTenantHandle(principal), currentId, displayPath, gate);
       if (!file) return notFound();
       content = file.content;
     }

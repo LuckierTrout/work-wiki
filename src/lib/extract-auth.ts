@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 /**
  * Who may act on an extract record, and about whose Sources (Story 7.1).
  *
@@ -51,8 +52,8 @@ export async function resolveExtractCaller(
   }
   const principal = await getPrincipal();
   if (!principal) return null;
-  if (requestedOwner && requestedOwner.trim() !== principal.handle) return null;
-  return { owner: principal.handle, service: false };
+  if (requestedOwner && requestedOwner.trim() !== ownerTenantHandle(principal)) return null;
+  return { owner: ownerTenantHandle(principal), service: false };
 }
 
 /**

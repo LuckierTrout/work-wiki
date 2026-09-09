@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
     }
 
     const options: Omit<IngestOptions, "sourceType"> & { title?: string } = {
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       author: principal.handle,
       triggeredBy: principal.handle,
     };
@@ -91,7 +92,7 @@ export async function POST(request: NextRequest) {
     const formVaultId = form.get("vaultId");
     let vaultId: string | undefined;
     if (typeof formVaultId === "string" && formVaultId.trim()) {
-      if (!vaultOwnedBy(formVaultId, principal.handle)) {
+      if (!vaultOwnedBy(formVaultId, ownerTenantHandle(principal))) {
         return NextResponse.json(
           { error: "Vault not found or not owned by you" },
           { status: 403 },
@@ -111,7 +112,8 @@ export async function POST(request: NextRequest) {
     if (intakeRequiresExtract(format as IntakeFormat)) {
       const digest = await bytesSha256(bytes);
       const queued = await enqueueExtract({
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
+        actor: principal.handle,
         slug: intakeSourceSlug(file.name),
         bytesSha256: digest,
         ext: format,
@@ -139,7 +141,7 @@ export async function POST(request: NextRequest) {
     const jobId = crypto.randomUUID();
     await createIngestJob({
       jobId,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       title: options.title ?? file.name,
     });
     const key = await stageBytes(jobId, file.name, `document.${format}`, bytes);
@@ -147,7 +149,7 @@ export async function POST(request: NextRequest) {
       jobId,
       {
         kind: "ingest",
-        owner: principal.handle,
+        owner: ownerTenantHandle(principal),
         author: principal.handle,
         triggeredBy: principal.handle,
         ...(options.title ? { title: options.title } : {}),

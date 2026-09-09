@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
-import { isOwnerPrincipal } from "@/lib/owner";
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import {
   MAX_EMAIL_SENDERS,
   isEmailAddress,
@@ -27,8 +27,8 @@ export async function GET() {
   }
   const config = await loadEmailIngestConfig();
   const [vaults, agents] = await Promise.all([
-    listVaults(principal.handle),
-    listAgentsForOwner(principal.handle),
+    listVaults(ownerTenantHandle(principal)),
+    listAgentsForOwner(ownerTenantHandle(principal)),
   ]);
   const routingReady =
     config.inboundAddress.length > 0 &&
@@ -142,7 +142,7 @@ export async function PUT(request: Request) {
     }
     if (destinationVaultId) {
       const vault = await getVault(destinationVaultId);
-      if (!vault || !vaultOwnedBy(destinationVaultId, principal.handle)) {
+      if (!vault || !vaultOwnedBy(destinationVaultId, ownerTenantHandle(principal))) {
         return NextResponse.json(
           { error: "Choose a vault owned by this work-wiki account" },
           { status: 400 },
@@ -151,7 +151,7 @@ export async function PUT(request: Request) {
     }
     if (destinationAgentId) {
       const agent = await getAgent(destinationAgentId).catch(() => null);
-      if (!agent || agent.owner?.toLowerCase() !== principal.handle.toLowerCase()) {
+      if (!agent || agent.owner?.toLowerCase() !== ownerTenantHandle(principal).toLowerCase()) {
         return NextResponse.json(
           { error: "Choose an agent owned by this work-wiki account" },
           { status: 400 },
@@ -167,8 +167,8 @@ export async function PUT(request: Request) {
       destinationAgentId,
     });
     const [vaults, agents] = await Promise.all([
-      listVaults(principal.handle),
-      listAgentsForOwner(principal.handle),
+      listVaults(ownerTenantHandle(principal)),
+      listAgentsForOwner(ownerTenantHandle(principal)),
     ]);
     return NextResponse.json({
       saved: true,

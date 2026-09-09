@@ -1,3 +1,4 @@
+import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { slugify } from "@/lib/slugify";
@@ -114,7 +115,7 @@ interface ArticleViewProps {
   /** The page's canonical tenant (lowercased owner). */
   pageTenant: string;
   /**
-   * The reader identity — used ONLY to filter backlinks to readable pages.
+   * The reader identity — filters readable backlinks and resolves owner controls.
    * Always the real principal now: the owner-scoped route is the only reader.
    */
   principal: Principal | null;
@@ -145,9 +146,8 @@ function evidenceLocationLabel(location: EvidenceLocation): string {
 
 /**
  * The shared READ rendering for a wiki page (Folio redesign). Deliberately
- * principal-light: the only per-viewer branch is the backlink readability
- * filter (`findBacklinks(slug, principal)`). The action bar self-gates client-
- * side via {@link ArticleActions}.
+ * Backlink readability and owner controls use the same original principal.
+ * Only the owner boolean and canonical storage handle cross into the islands.
  */
 export async function ArticleView({
   page,
@@ -527,12 +527,15 @@ export async function ArticleView({
           )}
 
           <RevisionHistory
+            isSiteOwner={isOwnerPrincipal(principal)}
             slug={slug}
             realmDeniesRevert={realmDeniesBodyWrite}
             readOnly={readOnly}
           />
 
           <ArticleActions
+            isSiteOwner={isOwnerPrincipal(principal)}
+            viewerOwner={ownerTenantHandle(principal)}
             slug={slug}
             tenant={pageTenant}
             owner={pageOwner}

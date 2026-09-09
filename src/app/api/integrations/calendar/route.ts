@@ -1,10 +1,11 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { getPrincipal } from "@/lib/auth";
 import { eventToIcalendar, listOutboxEvents } from "@/lib/integration-outbox";
 
 export async function GET() {
   const principal = await getPrincipal();
   if (!principal) return new Response("Sign in required.", { status: 401 });
-  const events = (await listOutboxEvents(principal.handle)).filter(
+  const events = (await listOutboxEvents(ownerTenantHandle(principal))).filter(
     (event) => event.destination === "icalendar" && event.status !== "cancelled",
   );
   const todos = events.map((event) => {

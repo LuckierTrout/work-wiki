@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -37,9 +38,10 @@ export async function POST(request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const wiki = await applyScenarioTemplate(
-      principal.handle,
+      ownerTenantHandle(principal),
       id,
       parseScenarioInput(body),
+      principal.handle,
     );
     return wiki
       ? NextResponse.json({ wiki })

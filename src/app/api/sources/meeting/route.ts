@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
   try {
     return NextResponse.json({
       path: canonical,
-      meeting: await isSourceMeeting(principal.handle, canonical),
+      meeting: await isSourceMeeting(ownerTenantHandle(principal), canonical),
     });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -52,7 +53,7 @@ export async function POST(request: Request) {
       );
     }
     const meeting = body.meeting === undefined ? true : body.meeting;
-    const result = await setSourceMeeting(principal.handle, body.path, meeting);
+    const result = await setSourceMeeting(ownerTenantHandle(principal), body.path, meeting);
     return NextResponse.json(result);
   } catch (error) {
     if (isReadOnlyError(error)) {

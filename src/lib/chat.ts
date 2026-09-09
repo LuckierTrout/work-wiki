@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 import { isCoverageSentence, sanitizeCitedAnswer } from "./chat-citations";
 import { extractCitedSlugs } from "./citations";
 import { isEnoent } from "./errors";
@@ -789,7 +790,7 @@ async function generateChatAnswer(
     question,
   ].join("\n");
   const retrievalQuestion = await expandQueryWithNamesTerms(
-    principal.handle,
+    ownerTenantHandle(principal),
     rawRetrievalQuestion,
   );
   const selected = (await selectPagesForQuery(
@@ -813,8 +814,8 @@ async function generateChatAnswer(
     }
     rawChunks = rawContext.chunks;
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(principal.handle),
-      buildNamesTermsGuidance(principal.handle),
+      buildWorkspaceGuidance(ownerTenantHandle(principal)),
+      buildNamesTermsGuidance(ownerTenantHandle(principal)),
     ]);
     system = [
       "You are work-wiki's source-grounded conversation assistant.",
@@ -835,7 +836,7 @@ async function generateChatAnswer(
       entries,
       selected,
       "prose",
-      principal.handle,
+      ownerTenantHandle(principal),
     );
     system +=
       "\n\nThis is a multi-turn conversation. Use prior turns only to understand the user's intent. " +

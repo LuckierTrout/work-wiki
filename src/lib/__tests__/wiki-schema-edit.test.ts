@@ -1350,7 +1350,7 @@ describe("the two routes", () => {
     expect(source).toContain("await getPrincipal()");
     expect(source).toContain("isReadOnly()");
     // The Wiki id comes from the registry, never from the request.
-    expect(source).toContain("await getWikiRegistry(principal.handle)");
+    expect(source).toContain("await getWikiRegistry(ownerTenantHandle(principal))");
     expect(source).not.toMatch(/searchParams\.get\("(wikiId|owner|tenant|key)"\)/);
     // The allowlist is the shared constant, not a second list.
     expect(source).toContain("isEditableArtifactFile(target)");

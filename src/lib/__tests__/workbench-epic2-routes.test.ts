@@ -467,6 +467,7 @@ describe("DELETE /api/workbench/source", () => {
     });
     expect(mockedCascade).toHaveBeenCalledWith({
       owner: "alice",
+      actor: "alice",
       path: "raw/sources/papers/energy/note.md",
       sourceTitle: "note",
     });
@@ -493,4 +494,16 @@ describe("GET /api/workbench/files", () => {
       expect.objectContaining({ limit: WORKBENCH_FILE_LIMIT }),
     );
   });
+});
+
+
+it("separates the canonical Source-delete namespace from the live destructive actor", async () => {
+  vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_stable");
+  vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "canonical");
+  try {
+    mockedPrincipal.mockResolvedValue({ id: "user_stable", handle: "changed" });
+    const response = await DELETE_SOURCE(jsonRequest("http://localhost/api/workbench/source", { path: "raw/sources/note.md" }) as never);
+    expect(response.status).toBe(200);
+    expect(mockedCascade).toHaveBeenCalledWith({ owner: "canonical", actor: "changed", path: "raw/sources/note.md", sourceTitle: "note" });
+  } finally { vi.unstubAllEnvs(); }
 });

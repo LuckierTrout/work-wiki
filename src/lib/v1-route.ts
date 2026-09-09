@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "./owner";
 /**
  * The three things every cloud `/api/v1` route does before it does anything
  * (Story 8.2).
@@ -63,14 +64,14 @@ export async function resolveV1Caller(
 ): Promise<V1Caller> {
   const principal = await requireOwnerOrServicePrincipal(request);
   if (!principal) return { ok: false, status: 401, error: "Sign in required." };
-  const access = await requireAccessibleWikiId(principal.handle, wikiId);
+  const access = await requireAccessibleWikiId(ownerTenantHandle(principal), wikiId);
   if (!access.ok) {
     return { ok: false, status: access.status, error: access.error };
   }
   if (wikiId !== "current") {
     return { ok: true, principal, wikiId, requested: wikiId };
   }
-  const registry = await getWikiRegistry(principal.handle);
+  const registry = await getWikiRegistry(ownerTenantHandle(principal));
   return {
     ok: true,
     principal,

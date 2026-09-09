@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -13,7 +14,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
     if (!/^mdg_[a-f0-9]{16}$/.test(id)) {
       return NextResponse.json({ error: "Invalid monitor digest id." }, { status: 400 });
     }
-    const digest = await markMonitorDigestRead(principal.handle, id);
+    const digest = await markMonitorDigestRead(ownerTenantHandle(principal), id);
     return digest
       ? NextResponse.json({ digest })
       : NextResponse.json({ error: "Monitor digest not found." }, { status: 404 });

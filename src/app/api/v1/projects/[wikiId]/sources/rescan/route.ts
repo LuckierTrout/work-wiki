@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
@@ -104,7 +105,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
     const slugGate = await v1SlugGate(caller.principal);
     const result = await rescanSources({
-      owner: caller.principal.handle,
+      owner: ownerTenantHandle(caller.principal),
       wikiId: caller.wikiId,
       ...slugGate,
       ...(paths ? { paths } : {}),

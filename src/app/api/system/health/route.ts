@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/errors";
@@ -8,7 +9,7 @@ export async function GET() {
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   try {
     return NextResponse.json(
-      { health: await getSystemHealth(principal.handle) },
+      { health: await getSystemHealth(ownerTenantHandle(principal)) },
       { headers: { "Cache-Control": "private, no-store" } },
     );
   } catch (error) {

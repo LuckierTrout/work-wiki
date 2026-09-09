@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import {
@@ -27,7 +28,7 @@ export async function GET(request: Request) {
       ? (value as ActionItemStatus)
       : undefined;
     return NextResponse.json({
-      items: await listActionItems(principal.handle, status),
+      items: await listActionItems(ownerTenantHandle(principal), status),
     });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
     ) {
       return NextResponse.json({ error: "priority must be low, medium, or high" }, { status: 400 });
     }
-    const [item] = await proposeActionItems(principal.handle, [{
+    const [item] = await proposeActionItems(ownerTenantHandle(principal), [{
       title: body.title,
       ...(typeof body.details === "string" ? { details: body.details } : {}),
       ...(typeof body.assignee === "string" ? { assignee: body.assignee } : {}),

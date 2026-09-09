@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { listAgentActivity } from "@/lib/agent-runtime";
@@ -16,11 +17,11 @@ export async function GET(_request: Request, { params }: RouteContext) {
   try {
     const { id } = await params;
     const agent = await getAgent(id);
-    if (!agent || agent.owner?.toLowerCase() !== principal.handle.toLowerCase()) {
+    if (!agent || agent.owner?.toLowerCase() !== ownerTenantHandle(principal).toLowerCase()) {
       return NextResponse.json({ error: "Agent not found." }, { status: 404 });
     }
     return NextResponse.json({
-      activity: await listAgentActivity(principal.handle, id),
+      activity: await listAgentActivity(ownerTenantHandle(principal), id),
     });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

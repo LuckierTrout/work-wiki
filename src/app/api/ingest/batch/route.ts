@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextRequest, NextResponse } from "next/server";
 import { ingestUrl } from "@/lib/ingest";
 import { isUrl } from "@/lib/fetch";
@@ -73,7 +74,7 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
-      if (!vaultOwnedBy(body.vaultId, principal.handle)) {
+      if (!vaultOwnedBy(body.vaultId, ownerTenantHandle(principal))) {
         return NextResponse.json(
           { error: "Vault not found or not owned by you" },
           { status: 403 },
@@ -130,7 +131,7 @@ export async function POST(request: NextRequest) {
     const ingestOptions = {
       ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {}),
       author: principal.handle,
-      owner: principal.handle,
+      owner: ownerTenantHandle(principal),
       triggeredBy: principal.handle,
       guidanceCache: createGuidanceCache(),
     };
@@ -148,7 +149,7 @@ export async function POST(request: NextRequest) {
         ok = await enqueueTask({
           kind: "ingest",
           url,
-          owner: principal.handle,
+          owner: ownerTenantHandle(principal),
           author: principal.handle,
           ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {}),
           ...(validatedVaultId ? { vaultId: validatedVaultId } : {}),

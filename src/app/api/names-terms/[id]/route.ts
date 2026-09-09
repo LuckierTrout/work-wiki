@@ -1,3 +1,4 @@
+import { ownerTenantHandle } from "@/lib/owner";
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
@@ -43,7 +44,7 @@ export async function PUT(request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
     }
     const entry = await updateNamesTerm(
-      principal.handle,
+      ownerTenantHandle(principal),
       id,
       parseNamesTermInput(parsed as Record<string, unknown>),
     );
@@ -87,7 +88,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const deleted = await deleteNamesTerm(principal.handle, id);
+    const deleted = await deleteNamesTerm(ownerTenantHandle(principal), id);
     return deleted
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Names & Terms entry not found." }, { status: 404 });
