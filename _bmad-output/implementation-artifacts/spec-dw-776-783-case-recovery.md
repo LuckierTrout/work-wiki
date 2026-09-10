@@ -25,4 +25,4 @@ Final product code `e862ba6b52df8e50e0f96f1d6f5849f6b0344bcb`: full suite 414 fi
 
 Nine real local Miniflare R2/KV cases drive the lifecycle through equivalent/conflicting/foreign-owner copies, interrupted enumeration/deletion, restart, publication and receipt faults, identity mismatch and receipt deduplication. The local runtime alone enables the existing durable-lock readiness flag for synthetic resources; production gates are unchanged.
 
-Public publication, exact-head CI, merge and orchestrator ledger closure require the new-packet publication approval identified during DW-768/770 finalization.
+The owner explicitly approved public publication of this packet on 2026-09-10. Publish after the bulk-history fix, then complete exact-head CI, merge and orchestrator ledger closure.
