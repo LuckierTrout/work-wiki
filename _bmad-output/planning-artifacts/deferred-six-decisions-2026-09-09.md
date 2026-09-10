@@ -1,13 +1,13 @@
 # Six decisions to unblock eight deferred items
 
-Status: recommendations prepared for owner approval; **not adopted contracts**.
+Status: **all six rulings approved by the owner on 2026-09-09** for future local implementation packets.
 Source baseline: `3e786d97090347b012d30b0dee485c3b761c2c2d` (PR #17 including
 merged PR #16). Prepared 2026-09-09. No historical frozen contract or ledger
 entry is edited by this document. Approval means these rulings can govern new
 local implementation packets; provisioning, deployment and destructive live
 operations remain separately authorized.
 
-## Recommended approval package
+## Approved decision package
 
 | Decision | Items | Recommended ruling | Main tradeoff |
 | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ operations remain separately authorized.
 
 ## D1 — runtime egress (F3)
 
-**Ruling to approve:** The 2026-08-28 per-runtime decision supersedes the earlier
+**Approved ruling:** The 2026-08-28 per-runtime decision supersedes the earlier
 2026-08-26 synchronous-only proposal for this new packet. Preserve cheap URL
 syntax/literal-address screening, then apply asynchronous runtime-specific
 protection. In Node, resolve and classify all candidate addresses, bind the
@@ -45,7 +45,7 @@ Use synthetic local endpoints, never real metadata/private-network probes.
 
 ## D2 — case variants (D2)
 
-**Ruling to approve:** Reuse the existing logical-slug matching rules. Resolve
+**Approved ruling:** Reuse the existing logical-slug matching rules. Resolve
 all physical spellings in the same authorized tenant/compatibility scope before
 mutation. Identical, proven-owned copies belong to the logical delete together.
 Differing bytes, contradictory ownership or an incomplete enumeration cause a
@@ -67,7 +67,7 @@ mismatch, interrupted enumeration/delete, restart, and receipt deduplication.
 
 ## D3 — source deletion and cancellation (D3)
 
-**Ruling to approve:** Keep an interrupted source deletion visible as a pending
+**Approved ruling:** Keep an interrupted source deletion visible as a pending
 or failed recoverable operation. Record durable intent and the source identity
 before cancelling related jobs; every relevant publisher must honor that intent
 before publishing. Snapshot the complete affected-address set from current source
@@ -91,7 +91,7 @@ partial writes/deletes, restart, and a delayed publisher released mid-cascade.
 
 ## D4 — navigation focus (U2)
 
-**Ruling to approve:** Replace the historical canvas-only scope with a
+**Approved ruling:** Replace the historical canvas-only scope with a
 transition-owned focus rule for Workbench navigation. Sample focus before the
 transition. If its region will be hidden or removed (including SettingsNav),
 restore a valid destination in the newly active surface without scrolling. Use
@@ -110,7 +110,7 @@ unestablished.
 
 ## D5 — canonical miss hints (V3)
 
-**Ruling to approve:** Extend the current raw/wiki miss contract to exactly:
+**Approved ruling:** Extend the current raw/wiki miss contract to exactly:
 GET `/api/wiki/[slug]/revisions`, GET `/api/wiki/[slug]/lineage`, and the
 wiki-page branch of GET `/api/workbench/preview`. Keep HTTP 404; attach the
 existing `canonicalSlug` field only after resolving an alias and verifying that
@@ -129,7 +129,7 @@ scoped-token mismatch, and each consumer's handling of a safe hint.
 
 ## D6 — invalid stored review input (V4)
 
-**Ruling to approve:** In PATCH `/api/v1/projects/[wikiId]/reviews/[reviewId]`
+**Approved ruling:** In PATCH `/api/v1/projects/[wikiId]/reviews/[reviewId]`
 with `action: deep_research`, classify validation failures originating from the
 stored review's research fields as HTTP 500 with machine token
 `stored_review_invalid`. Use safe guidance: “The stored review cannot be used
@@ -148,12 +148,11 @@ DW-748 ruling intentionally changed capacity only.
 **Acceptance:** valid request + invalid stored review, malformed caller request,
 missing/hidden review, capacity/busy failures, and no new project after refusal.
 
-## Implementation order after approval
+## Implementation order
 
 D4, D5 and D6 can be specified independently. D2 precedes recovery-sensitive
 lifecycle work; D3 must resolve publication fencing before activation. D1 can
 prove the Node path locally while the Workers enforcement dependency stays open.
 Ordinary DW-766/767/772 fixes need none of these new rulings.
 
-Approval is still required for these six proposed contracts. It closes ambiguity,
-not implementation, CI acceptance or the separate production migration gates.
+The owner explicitly approved all six rulings in the instruction to “finish publishing DW-766, approve the six rulings, then tackle DW-767 and DW-772.” This closes the contract ambiguity for new local packets. It does not complete their implementation, CI acceptance or the separate production migration gates. Historical frozen specs and the orchestrator-owned ledger remain unchanged.
