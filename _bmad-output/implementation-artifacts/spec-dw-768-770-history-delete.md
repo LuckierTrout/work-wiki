@@ -22,4 +22,4 @@ Preserve route authentication, read-only refusal, whole-batch active-job and del
 
 Local validation: 52 focused route/composition tests pass. Full suite: 413 files passed, 10,160 tests passed and one existing skip (150.59 seconds). Full lint passes with the three existing TSNonNullExpression diagnostics. Production build with synthetic public identity, standalone TypeScript and diff checks pass. The initial sandbox-restricted full run was stopped after socket-dependent failures and rerun with local networking enabled; only the completed rerun counts as evidence.
 
-Public PR publication was blocked by automatic approval review because the explicit public-repository approval covered the earlier decision record and three fix PRs, not this packet. Exact-head CI, merge and post-merge orchestrator ledger closure remain pending that approval.
+The owner explicitly approved public publication of this packet on 2026-09-10. Exact-head CI, merge and post-merge orchestrator ledger closure follow publication.
