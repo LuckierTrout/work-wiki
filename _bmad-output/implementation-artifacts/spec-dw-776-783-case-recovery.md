@@ -1,7 +1,7 @@
 ---
 title: 'Case-variant page deletion and receipt-missing recovery'
 status: in-review
-baseline_commit: 20f4f450625a67e183a68baf514b84c3fe71cbd7
+baseline_commit: 4a64156d6e7b2f31268f53c120ea47d2e92bf62c
 ---
 
 ## Intent
