@@ -750,31 +750,38 @@ function extractXlsx(files: Record<string, Uint8Array>): string {
     for (const rel of xml.matchAll(/<Relationship\b([^>]*)\/?>(?:<\/Relationship>)?/gi)) {
       const id = attr(rel[1], "Id");
       const target = attr(rel[1], "Target").replace(/^\/?/, "");
-      if (id && target && !target.includes("..")) {
+      const type = attr(rel[1], "Type");
+      if (id && target && !target.includes("..") &&
+          attr(rel[1], "TargetMode").toLowerCase() !== "external" &&
+          (!type || type.endsWith("/worksheet"))) {
         relationshipPaths.set(id, target.startsWith("xl/") ? target : `xl/${target}`);
       }
     }
   }
 
-  const sheets: { name: string; path: string }[] = [];
+  const sheets: { name: string; bytes: Uint8Array }[] = [];
   if (workbook) {
     const xml = new TextDecoder().decode(workbook);
     for (const sheet of xml.matchAll(/<sheet\b([^>]*)\/?>(?:<\/sheet>)?/gi)) {
       const name = decodeXml(attr(sheet[1], "name")) || `Sheet ${sheets.length + 1}`;
       const id = attr(sheet[1], "r:id");
       const path = relationshipPaths.get(id);
-      if (path && files[path]) sheets.push({ name, path });
+      // A shared-string/style/chart part is not a worksheet merely because it
+      // exists. Match the worksheet parts admitted by archiveEntryKind.
+      if (path && /^xl\/worksheets\/sheet\d+\.xml$/i.test(path) && files[path]) {
+        sheets.push({ name, bytes: files[path] });
+      }
     }
   }
   if (sheets.length === 0) {
-    for (const [number] of numberedFiles(files, /^xl\/worksheets\/sheet(\d+)\.xml$/i)) {
-      sheets.push({ name: `Sheet ${number}`, path: `xl/worksheets/sheet${number}.xml` });
+    for (const [number, bytes] of numberedFiles(files, /^xl\/worksheets\/sheet(\d+)\.xml$/i)) {
+      sheets.push({ name: `Sheet ${number}`, bytes });
     }
   }
   if (sheets.length === 0) throw new ClientInputError("The XLSX file has no worksheets.");
 
-  return sheets.slice(0, MAX_SHEETS).map(({ name, path }) => {
-    const rows = worksheetRows(new TextDecoder().decode(files[path]), shared);
+  return sheets.slice(0, MAX_SHEETS).map(({ name, bytes }) => {
+    const rows = worksheetRows(new TextDecoder().decode(bytes), shared);
     return `## ${name}\n\n${markdownTable(rows) || "[Empty worksheet]"}`;
   }).join("\n\n");
 }
