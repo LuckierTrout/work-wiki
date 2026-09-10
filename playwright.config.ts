@@ -24,7 +24,8 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL: E2E_ORIGIN,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: {
     command: `rm -rf e2e/.data && pnpm exec next dev --turbopack --hostname 127.0.0.1 -p ${E2E_PORT}`,
