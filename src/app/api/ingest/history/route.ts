@@ -515,28 +515,10 @@ export async function GET(request: NextRequest) {
  * 403, the whole-batch queued/processing 409, the one `SELECTION_NOT_FOUND`
  * sentence and `failed[]`'s shape and submission order are all unchanged.
  *
- * WHAT THE LADDER KNOWINGLY LEAVES BEHIND: THE SILO-ONLY ORPHAN. The ladder
- * ADMITS one — that is the shape the probe's `owner` hint exists for — but the
- * delete cannot finish it. `deleteWikiPage` re-reads the page itself, as
- * `readWikiPage(slug, { fresh: true, strict: true })` with NO `owner`
- * (`src/lib/lifecycle.ts`), and `readWikiPage` consults the caller's silo only
- * when `options.owner !== undefined` (`src/lib/wiki.ts`) — so a page that
- * exists ONLY at `tenants/<t>/wiki/<slug>.md`, with no flat copy and no index
- * row, is invisible to that second read and the kernel throws
- * `page not found: <slug>`. The route's pre-existing delete-throw path catches
- * it, so the row lands in `failed[]` carrying the KERNEL's message, its page is
- * not deleted, its ledger id stays out of `deletedIngestIds`, and nothing else
- * in the batch is vetoed. That is a worse answer than a clean delete but a
- * HONEST one — and it is not a `SELECTION_NOT_FOUND` violation: a delete-time
- * throw has always been its own failure family with its own message, distinct
- * from the not-found SELECTION family the one sentence covers.
- *
- * The FLAT orphan — `wiki/<slug>.md` present, absent from the page index, which
- * is `checkOrphanPages`' own drift and the common shape — deletes end to end,
- * because an ordinary unhinted read resolves it. Closing the silo-only residue
- * means giving the lifecycle delete the same owner-hinted resolution the probe
- * uses, which is a change to the kernel rather than to these two gates, and
- * this change deliberately does not make it.
+ * DW-768/770: the owner hint and authorized bytes now reach the lifecycle
+ * delete. Indexed reads and absence checks are fresh and strict. A read fault
+ * retains the selected job with a per-item failure; it is never proof that a
+ * page is gone. The lifecycle rechecks the authorized bytes under its lock.
  */
 export async function DELETE(request: NextRequest) {
   const principal = await getPrincipal();
@@ -664,92 +646,91 @@ export async function DELETE(request: NextRequest) {
     // per-entry attribution — already reads this map, so the gate needs no new
     // machinery to keep an unreadable page out of every one of them.
     const failedSlugs = new Map<string, string>();
-    const existingSlugs = new Set<string>();
+    const existingSlugs = new Map<string, string>();
     for (const slug of slugs) {
       // THE LADDER, run once per slug and MEMOIZED with the preflight's
       // (DW-704). A slug both gates ask about costs exactly one disk read.
       const verdict = await prober.verdict(slug);
-      if (!verdict.readable) {
-        // "NOTHING IS STORED HERE" IS THE ONE SILENT EXIT, and it is the
-        // already-gone cleanup this route exists to perform: a done job whose
-        // page has since been deleted clears its record rather than landing in
-        // `failed[]` forever. Every other refusal — an orphan on disk that is
-        // not theirs, a probe that threw, a spent budget — fails CLOSED to the
-        // one selection sentence.
+      try {
+        if (!verdict.readable) {
+          // "NOTHING IS STORED HERE" IS THE ONE SILENT EXIT, and it is the
+          // already-gone cleanup this route exists to perform: a done job whose
+          // page has since been deleted clears its record rather than landing in
+          // `failed[]` forever. Every other refusal — an orphan on disk that is
+          // not theirs, a probe that threw, a spent budget — fails CLOSED to the
+          // one selection sentence.
+          //
+          // TWO WAYS TO ESTABLISH IT, because the ladder's two refusing rungs
+          // know different things. Rung 3 (the probe) already looked, so
+          // `verdict.absent` is its answer. Rung 2 (`hidden`) never looked: the
+          // INDEX said a page is here and not for you, and the index's claim that
+          // the page EXISTS is the one claim this ladder does not verify. So a
+          // hidden slug takes a fresh, strict read — no new cost, and no way to be admitted by it, since
+          // its only outcome is `null` → clear, or a page → refuse. Without this
+          // read a done job pointing at a slug whose index entry outlived its
+          // page would be stuck in `failed[]` forever: the very "row that can
+          // never be cleared" shape DW-704 exists to remove.
+          const goneOnDisk = verdict.hidden
+            ? (await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true, owner: ownerTenantHandle(principal) })) === null
+            : verdict.absent;
+          if (!goneOnDisk) failedSlugs.set(slug, SELECTION_NOT_FOUND);
+          continue;
+        }
+        // Reuse the admitted orphan bytes; indexed pages need a strict read.
+        const page = verdict.page ?? (await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true, owner: ownerTenantHandle(principal) }));
+        if (!page) continue; // Already gone: clear its terminal UI record below.
         //
-        // TWO WAYS TO ESTABLISH IT, because the ladder's two refusing rungs
-        // know different things. Rung 3 (the probe) already looked, so
-        // `verdict.absent` is its answer. Rung 2 (`hidden`) never looked: the
-        // INDEX said a page is here and not for you, and the index's claim that
-        // the page EXISTS is the one claim this ladder does not verify. So a
-        // hidden slug takes the same plain read this loop always took for it
-        // before DW-704 — no new cost, and no way to be admitted by it, since
-        // its only outcome is `null` → clear, or a page → refuse. Without this
-        // read a done job pointing at a slug whose index entry outlived its
-        // page would be stuck in `failed[]` forever: the very "row that can
-        // never be cleared" shape DW-704 exists to remove.
-        const goneOnDisk = verdict.hidden
-          ? (await readWikiPageWithFrontmatter(slug)) === null
-          : verdict.absent;
-        if (!goneOnDisk) failedSlugs.set(slug, SELECTION_NOT_FOUND);
-        continue;
+        // THE READ CLOAK (DW-270), now the ladder's own verdict above.
+        //
+        // WHY IT WAS NEEDED. `ingestIds` are preflighted, so the ones that reach
+        // here arrive selectable. `jobIds` were not — the only gate they pass is
+        // `job.owner !== ownerTenantHandle(principal)`, a check on the JOB record, so a
+        // caller who owned a job whose page they may not read reached the ACL
+        // below holding that page. This route was the one deny site in the app
+        // that could describe a page the caller was never allowed to learn
+        // existed.
+        //
+        // WHY IN THIS LOOP RATHER THAN IN THE `jobIds` PREFLIGHT. The check
+        // covers BOTH selection paths in one place — "everything that reaches the
+        // delete ACL is selectable" is now true for either way a slug got here —
+        // and it keeps the already-gone cleanup that only the `jobIds` path
+        // exercises: a flat gate up in the preflight would refuse exactly those
+        // records instead of clearing them.
+        //
+        // The sentence is `SELECTION_NOT_FOUND`, the same constant both
+        // preflights use — an unreadable page must look like an unselectable one,
+        // not like a permission the caller lacks. Since DW-393 it is RECORDED
+        // against this slug rather than returned: the job holding it lands in
+        // `failed[]` with that one sentence, its page is never deleted, its job
+        // record is never cleared, and the rest of the batch proceeds.
+        //
+        // WHAT THIS ORDERING KNOWINGLY LEAVES BEHIND. Because "nothing is stored
+        // here" clears rather than refuses, a `jobIds` selection whose page EXISTS
+        // but is unselectable lands in `failed[]`, while one whose page is already
+        // GONE is cleared — so a caller who owns the job can still tell those two
+        // apart. That is a deliberate trade, not an oversight: the only way to
+        // close it is to refuse the absent case too, which would break the one
+        // repair this route exists to perform. The residue is narrow — it leaks
+        // "a page still exists at this slug" to someone who already holds a job
+        // record naming that slug, and nothing about the page's owner, realm or
+        // contents.
+        if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
+          // Read-cloaked above, so the resolver may name this page's realm: a
+          // readable page that the delete ACL still refuses is a realm page, and
+          // the resolver re-derives that from the frontmatter rather than
+          // inheriting it from this comment.
+          return NextResponse.json(
+            {
+              error: resolveWriteDenial("bulkDelete", page.frontmatter, "delete"),
+            },
+            { status: 403 },
+          );
+        }
+        existingSlugs.set(slug, page.content);
+      } catch (error) {
+        failedSlugs.set(slug, "Could not verify the page. Please retry.");
+        logger.error("ingest", `Bulk ingest delete verification failed for ${slug}`, error);
       }
-      // A slug the DISK FALLBACK admitted is judged and deleted against the
-      // bytes the probe already read (DW-704). The read below is UNHINTED, and
-      // a silo-only orphan — the case the probe's `owner` hint exists for —
-      // answers `null` to it; that `null` would fall into the already-gone
-      // branch and report the row as deleted while `GET` kept listing it. An
-      // INDEXED-readable slug takes the plain read, exactly as before.
-      const page = verdict.page ?? (await readWikiPageWithFrontmatter(slug));
-      if (!page) continue; // Already gone: clear its terminal UI record below.
-      //
-      // THE READ CLOAK (DW-270), now the ladder's own verdict above.
-      //
-      // WHY IT WAS NEEDED. `ingestIds` are preflighted, so the ones that reach
-      // here arrive selectable. `jobIds` were not — the only gate they pass is
-      // `job.owner !== ownerTenantHandle(principal)`, a check on the JOB record, so a
-      // caller who owned a job whose page they may not read reached the ACL
-      // below holding that page. This route was the one deny site in the app
-      // that could describe a page the caller was never allowed to learn
-      // existed.
-      //
-      // WHY IN THIS LOOP RATHER THAN IN THE `jobIds` PREFLIGHT. The check
-      // covers BOTH selection paths in one place — "everything that reaches the
-      // delete ACL is selectable" is now true for either way a slug got here —
-      // and it keeps the already-gone cleanup that only the `jobIds` path
-      // exercises: a flat gate up in the preflight would refuse exactly those
-      // records instead of clearing them.
-      //
-      // The sentence is `SELECTION_NOT_FOUND`, the same constant both
-      // preflights use — an unreadable page must look like an unselectable one,
-      // not like a permission the caller lacks. Since DW-393 it is RECORDED
-      // against this slug rather than returned: the job holding it lands in
-      // `failed[]` with that one sentence, its page is never deleted, its job
-      // record is never cleared, and the rest of the batch proceeds.
-      //
-      // WHAT THIS ORDERING KNOWINGLY LEAVES BEHIND. Because "nothing is stored
-      // here" clears rather than refuses, a `jobIds` selection whose page EXISTS
-      // but is unselectable lands in `failed[]`, while one whose page is already
-      // GONE is cleared — so a caller who owns the job can still tell those two
-      // apart. That is a deliberate trade, not an oversight: the only way to
-      // close it is to refuse the absent case too, which would break the one
-      // repair this route exists to perform. The residue is narrow — it leaks
-      // "a page still exists at this slug" to someone who already holds a job
-      // record naming that slug, and nothing about the page's owner, realm or
-      // contents.
-      if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
-        // Read-cloaked above, so the resolver may name this page's realm: a
-        // readable page that the delete ACL still refuses is a realm page, and
-        // the resolver re-derives that from the frontmatter rather than
-        // inheriting it from this comment.
-        return NextResponse.json(
-          {
-            error: resolveWriteDenial("bulkDelete", page.frontmatter, "delete"),
-          },
-          { status: 403 },
-        );
-      }
-      existingSlugs.add(slug);
     }
     // Both gates have asked everything they will ask, so the shared budget's
     // verdict is final. It cannot bite while `MAX_BULK_DELETE` and
@@ -761,7 +742,9 @@ export async function DELETE(request: NextRequest) {
     for (const slug of slugs) {
       if (!existingSlugs.has(slug)) continue;
       try {
-        await deleteWikiPage(slug, principal.handle);
+        await deleteWikiPage(slug, principal.handle, existingSlugs.get(slug), undefined, {
+          ownerHint: ownerTenantHandle(principal),
+        });
         deletedPageSlugs.push(slug);
       } catch (error) {
         const message = getErrorMessage(error);

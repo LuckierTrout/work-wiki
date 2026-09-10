@@ -177,6 +177,8 @@ type PageLifecycleOp =
     }
   | {
       kind: "delete";
+      /** Resolution hint for an authorized owner-silo orphan; not the actor. */
+      ownerHint?: string;
       /** Title used in the log entry (captured before unlink). */
       title: string;
       /** Who performed the deletion. Carried for symmetry with the write op;
@@ -647,7 +649,7 @@ async function runPageLifecycleOp(
             content: op.expectedContent,
             frontmatter: parseFrontmatter(op.expectedContent).data,
           }
-        : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+        : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true, owner: op.ownerHint });
       if (op.expectedContent !== undefined && pre?.content !== op.expectedContent) {
         throw new LifecyclePageConflictError(slug, "Page changed before delete");
       }
@@ -661,7 +663,7 @@ async function runPageLifecycleOp(
           )
         : [];
     } catch (error) {
-      if (error instanceof LifecyclePageConflictError || op.expectedContent !== undefined) {
+      if (error instanceof LifecyclePageConflictError || op.expectedContent !== undefined || op.ownerHint !== undefined) {
         throw error;
       }
       // Owner/contributors unknown → falls back to the default tenant in step 3c.
@@ -1283,6 +1285,7 @@ export async function deleteWikiPage(
   author?: string,
   expectedContent?: string,
   triggeredBy?: string,
+  options?: { ownerHint?: string },
 ): Promise<DeletePageResult> {
   // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
   // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
@@ -1302,7 +1305,7 @@ export async function deleteWikiPage(
   // the caller their page is gone, through the very door DW-378 hardened one
   // read earlier. The locked sibling `deleteWikiPageWhileLocked` below is
   // already fresh+strict; this is the parity gap.
-  const page = await readWikiPage(slug, { fresh: true, strict: true });
+  const page = await readWikiPage(slug, { fresh: true, strict: true, owner: options?.ownerHint });
   if (!page) {
     throw new Error(`page not found: ${slug}`);
   }
@@ -1310,7 +1313,7 @@ export async function deleteWikiPage(
 
   const result = await withDurableLock("merge-pages", () => runPageLifecycleOp(
     slug,
-    { kind: "delete", title, author, expectedContent },
+    { kind: "delete", title, author, expectedContent, ownerHint: options?.ownerHint },
     "delete",
     ({ strippedBacklinksFrom }) =>
       withTriggeredBy(
