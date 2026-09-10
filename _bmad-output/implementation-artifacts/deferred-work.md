@@ -6631,6 +6631,7 @@ source_spec: `spec-dw-711-workload-routing-at-chat-and-ingest.md`
 severity: low
 reason: `workloadModelSettings` (`src/lib/config.ts`) sets `usesPrimary = provider === undefined && model === undefined`, so a store holding only `chatModel` reports and now routes that saved model while the provider inherits. The sentence under both model pickers (`src/lib/workbench-settings.ts:333-334`) describes both halves as inherited. PRE-EXISTING: the resolver has reported the saved model this way since Story 1.9; DW-711 only made the same store also select the model a call uses, which raises the copy's cost without having caused it.
 status: open
+decision: 2026-09-10 Describe existing routing accurately — Correct provider/model help without changing routing. Ingest uses a saved model even with an inherited provider; an explicit provider with no model uses that provider default. Describe Workbench Chat separately because the sidecar has its own provider and model resolution.
 
 ### DW-783: A crash-resume whose silo object is spelled with a case variant now throws `LifecyclePageConflictError` on every retry instead of completing, so the lifecycle receipt can never be written and the op i
 origin: spec-deferred 3a18deec6a05

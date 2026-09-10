@@ -34,5 +34,14 @@
     "key": "approved",
     "label": "Verify the complete agent identity",
     "resolution": ""
+  },
+  "DW-782": {
+    "answered_at": "2026-09-10",
+    "bundle_name": "dw-782-model-help",
+    "effect": "build",
+    "intent": "Correct provider/model help without changing routing. Ingest uses a saved model even with an inherited provider; an explicit provider with no model uses that provider default. Describe Workbench Chat separately because the sidecar has its own provider and model resolution.",
+    "key": "approved",
+    "label": "Describe existing routing accurately",
+    "resolution": ""
   }
 }
