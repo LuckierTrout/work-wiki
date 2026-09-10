@@ -257,8 +257,8 @@ describe("DELETE /api/ingest/history", () => {
     const data = await response.json();
 
     expect(mockedDeletePage).toHaveBeenCalledTimes(2);
-    expect(mockedDeletePage).toHaveBeenCalledWith("page-ok", "owner");
-    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-ok", "owner", expect.any(String), undefined, { ownerHint: "owner" });
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(data.deletedIngestIds).toEqual(["ing-ok", "ing-orphan"]);
     expect(data.deletedPageSlugs).toEqual(["page-ok", "page-orphan"]);
     expect(data.failed).toEqual([]);
@@ -359,7 +359,7 @@ describe("DELETE /api/ingest/history", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
 
-    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(data.deletedPageSlugs).toEqual(["page-orphan"]);
     expect(mockedDeleteJob).toHaveBeenCalledWith("job-1", "owner");
     expect(data.deletedJobIds).toEqual(["job-1"]);
@@ -430,7 +430,7 @@ describe("DELETE /api/ingest/history", () => {
 
     // The ladder ADMITTED it — the delete was attempted, which is what
     // separates this outcome from a `SELECTION_NOT_FOUND` refusal.
-    expect(mockedDeletePage).toHaveBeenCalledWith("page-silo", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-silo", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(data.failed).toEqual([
       { id: "ing-silo", kind: "ingest", error: "page not found: page-silo" },
     ]);
@@ -645,7 +645,7 @@ describe("DELETE /api/ingest/history", () => {
 
     // The deletable job went all the way through, page and record.
     expect(mockedDeletePage).toHaveBeenCalledTimes(1);
-    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(mockedDeleteJob).toHaveBeenCalledTimes(1);
     expect(mockedDeleteJob).toHaveBeenCalledWith("job-mine", "owner");
     expect(data.deletedJobIds).toEqual(["job-mine"]);
@@ -879,7 +879,7 @@ describe("DELETE /api/ingest/history", () => {
 
     const response = await DELETE(request({ jobIds: ["job-ok"] }));
     expect(response.status).toBe(200);
-    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(mockedDeleteJob).toHaveBeenCalledWith("job-ok", "owner");
   });
 
@@ -942,7 +942,7 @@ describe("DELETE /api/ingest/history", () => {
     expect(mockedDeletePage).not.toHaveBeenCalled();
     // The plain, UNHINTED read — never the probe's owner-hinted one, which
     // would be rung 3 overturning the index's answer.
-    expect(mockedReadPage).toHaveBeenCalledWith("stale-index-entry");
+    expect(mockedReadPage).toHaveBeenCalledWith("stale-index-entry", { fresh: true, strict: true, owner: "owner" });
   });
 
   it("refuses a hidden slug whose page IS still there, without ever probing it", async () => {
@@ -984,7 +984,7 @@ describe("DELETE /api/ingest/history", () => {
     expect(mockedDeleteJob).not.toHaveBeenCalled();
     expect(mockedDeletePage).not.toHaveBeenCalled();
     expect(mockedReadPage).toHaveBeenCalledTimes(1);
-    expect(mockedReadPage).toHaveBeenCalledWith("bobs-page");
+    expect(mockedReadPage).toHaveBeenCalledWith("bobs-page", { fresh: true, strict: true, owner: "owner" });
   });
 
   it("refuses the whole batch on a read-only deployment (DW-187)", async () => {
@@ -1067,8 +1067,8 @@ describe("DELETE /api/ingest/history", () => {
     const data = await response.json();
 
     expect(mockedDeletePage).toHaveBeenCalledTimes(2);
-    expect(mockedDeletePage).toHaveBeenNthCalledWith(1, "page-a", "owner");
-    expect(mockedDeletePage).toHaveBeenNthCalledWith(2, "page-b", "owner");
+    expect(mockedDeletePage).toHaveBeenNthCalledWith(1, "page-a", "owner", expect.any(String), undefined, { ownerHint: "owner" });
+    expect(mockedDeletePage).toHaveBeenNthCalledWith(2, "page-b", "owner", expect.any(String), undefined, { ownerHint: "owner" });
     expect(mockedDeleteJob).toHaveBeenCalledWith("job-done", "owner");
     expect(mockedDeleteJob).toHaveBeenCalledWith("job-failed", "owner");
     expect(data.deletedIngestIds).toEqual(["ing-a", "ing-b"]);
@@ -1120,7 +1120,7 @@ describe("DELETE /api/ingest/history", () => {
     expect(removedBody.deletedIngestIds).toEqual(["ing-orphan"]);
     expect(removedBody.deletedPageSlugs).toEqual(["page-orphan"]);
     expect(removedBody.failed).toEqual([]);
-    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner");
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-orphan", "owner", expect.any(String), undefined, { ownerHint: "owner" });
   });
 });
 
