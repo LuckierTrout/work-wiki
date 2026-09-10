@@ -186,7 +186,11 @@ export function useChatConversations({
       const fallback = next[0];
       setActiveId(fallback?.id ?? null);
       setMessages([]);
-      if (fallback) void loadConversation(fallback.id);
+      if (fallback) {
+        void loadConversation(fallback.id).catch((cause) => {
+          errorRef.current(cause instanceof Error ? cause.message : "Could not open conversation.");
+        });
+      }
       return { switched: true, fallbackId: fallback?.id ?? null };
     },
     [readOnly, conversations, activeId, loadConversation],

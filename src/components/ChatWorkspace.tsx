@@ -246,6 +246,7 @@ export function ChatWorkspace() {
   async function saveAnswer(message: ChatMessage) {
     if (!active) return;
     setSavedMessage(null);
+    setError(null);
     try {
       const result = await json<{ slug: string; url?: string }>(await fetch("/api/query/save", {
         method: "POST",
