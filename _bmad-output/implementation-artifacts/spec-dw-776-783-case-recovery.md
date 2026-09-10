@@ -1,6 +1,6 @@
 ---
 title: 'Case-variant page deletion and receipt-missing recovery'
-status: in-review
+status: done
 baseline_commit: 4a64156d6e7b2f31268f53c120ea47d2e92bf62c
 ---
 
@@ -25,4 +25,8 @@ Final product code `e862ba6b52df8e50e0f96f1d6f5849f6b0344bcb`: full suite 414 fi
 
 Nine real local Miniflare R2/KV cases drive the lifecycle through equivalent/conflicting/foreign-owner copies, interrupted enumeration/deletion, restart, publication and receipt faults, identity mismatch and receipt deduplication. The local runtime alone enables the existing durable-lock readiness flag for synthetic resources; production gates are unchanged.
 
-The owner explicitly approved public publication of this packet on 2026-09-10. Publish after the bulk-history fix, then complete exact-head CI, merge and orchestrator ledger closure.
+The owner explicitly approved public publication of this packet on 2026-09-10. Publication, exact-head CI and merge are complete; the orchestrator reconciles the corresponding ledger entries.
+
+## Merge evidence
+
+[PR #32](https://github.com/LuckierTrout/work-wiki/pull/32) merged on 2026-09-10 as `dd1a0f7a4fdf1b86ea8b710cd9b779cba5bd61e5`. Application, Browser E2E and Sandbox Worker checks all passed on exact head `487557937ba7703ba032635107426d531ee76043` in [CI run 34515962936](https://github.com/LuckierTrout/work-wiki/actions/runs/34515962936). No production deployment is claimed.
