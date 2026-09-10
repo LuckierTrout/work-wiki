@@ -10,7 +10,7 @@ import {
 import type { UpdateAgentOptions } from "@/lib/agents";
 import { listReadableWikiPages } from "@/lib/wiki";
 import { getPrincipal } from "@/lib/auth";
-import { getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { isReadOnlyError } from "@/lib/read-only";
 
 interface RouteParams {
@@ -285,6 +285,7 @@ export async function PUT(req: Request, { params }: RouteParams) {
     }
     const message = getErrorMessage(err);
     if (
+      isClientInputError(err) ||
       message.includes("Invalid agent ID") ||
       message.includes("must be a non-empty string") ||
       message.includes("must be a vault you own")
