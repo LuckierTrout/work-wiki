@@ -4090,7 +4090,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/hooks/useDialogA11y.ts (withdrawn)
 severity: medium
 reason: `getClientRects()` is non-empty for a `visibility: hidden` element, and `globals.css`'s `@media (max-width: 899px)` block hides the closed rail exactly that way (`.wb-rail { transform: translateX(-100%); visibility: hidden }`, its own comment saying visibility is what "takes them out of both"). The predicate's docblock claims "only the ELEMENT can answer it ... a node cannot lie about it", which is broader than what it covers. No currently reachable dialog has a rail control as its opener, so this is not a demonstrated failure - but closing it needs a mechanism the node suites can execute (`Element.checkVisibility` is the candidate), and this spec's Never list rules out the computed-style route.
-status: open
+status: done 2026-09-10
+resolution: closed by human decision: No reachable dialog-focus failure has been demonstrated. Preserve the approved D4 navigation-focus ruling; reopen only with a concrete reproducer. No speculative visibility hardening.
+decision: 2026-09-10 Close as currently non-actionable — No reachable dialog-focus failure has been demonstrated. Preserve the approved D4 navigation-focus ruling; reopen only with a concrete reproducer. No speculative visibility hardening.
 
 ### DW-523: Below 900px with a docked Preview the DOCUMENT scrolls rather than `.wb-canvas`, so DW-416's ref records and restores 0 at that width.
 origin: spec-deferred c3f825a7b28d
