@@ -4090,7 +4090,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/hooks/useDialogA11y.ts (withdrawn)
 severity: medium
 reason: `getClientRects()` is non-empty for a `visibility: hidden` element, and `globals.css`'s `@media (max-width: 899px)` block hides the closed rail exactly that way (`.wb-rail { transform: translateX(-100%); visibility: hidden }`, its own comment saying visibility is what "takes them out of both"). The predicate's docblock claims "only the ELEMENT can answer it ... a node cannot lie about it", which is broader than what it covers. No currently reachable dialog has a rail control as its opener, so this is not a demonstrated failure - but closing it needs a mechanism the node suites can execute (`Element.checkVisibility` is the candidate), and this spec's Never list rules out the computed-style route.
-status: open
+status: done 2026-09-10
+resolution: closed by human decision: No reachable dialog-focus failure has been demonstrated. Preserve the approved D4 navigation-focus ruling; reopen only with a concrete reproducer. No speculative visibility hardening.
+decision: 2026-09-10 Close as currently non-actionable — No reachable dialog-focus failure has been demonstrated. Preserve the approved D4 navigation-focus ruling; reopen only with a concrete reproducer. No speculative visibility hardening.
 
 ### DW-523: Below 900px with a docked Preview the DOCUMENT scrolls rather than `.wb-canvas`, so DW-416's ref records and restores 0 at that width.
 origin: spec-deferred c3f825a7b28d
@@ -6428,6 +6430,7 @@ source_spec: `spec-dw-598-599-vector-drift-window-and-epoch.md`
 severity: medium
 reason: `queryEmbeddings`' pre-slice guarantee is exact only where the provider ranks locally (filesystem, the R2 KV fallback). The Vectorize branch over-fetches to `VECTORIZE_FILTERED_TOPK` (20, the `returnMetadata: "all"` ceiling) and filters that window here, so on a corpus whose nearest 20 vectors are all stale the door returns `matches: []` with `rejected: 20` and burns `drift:<model>` — while perfectly current vectors sit at rank 21. The owner reads "rebuild embeddings" about a corpus that does not need it, and the burn then suppresses the next genuine drift line until a rebuild bumps the epoch. The bundle's own note named a Vectorize metadata filter plus a pre-created metadata index as the fix; that route was found unusable, not merely unbuilt — `modelMatches` is "model equals the active one OR the vector carries no model at all", Vectorize's filter grammar has no existence operator and excludes vectors missing the filtered field, so any expressible filter would drop unlabelled legacy v
 status: open
+decision: 2026-09-10 Report bounded search coverage honestly — Distinguish Vectorize candidate-window exhaustion from corpus-wide model drift. Report the limited coverage without prescribing a rebuild or consuming the drift warning throttle. Preserve matching, ranking and local full-corpus behavior; no index migration or provisioning.
 
 ### DW-759: A traversal that moves the Settings flag no longer rescues a keyboard sitting in a region the same commit withdraws but which is not `#wb-canvas` — a `SettingsNav` pane row most reachably — so Back ou
 origin: spec-deferred 8e6e8b7705b5
@@ -6610,6 +6613,7 @@ source_spec: `spec-dw-396-709-ingest-path-plumbing.md`
 severity: low
 reason: `humanOwnerOf` (`src/lib/agent-handle.ts:91`) returns everything before the first `--` whenever that segment is non-blank. Principal handles come from a Clerk username, an X handle, or a raw Clerk id (`src/lib/auth.ts:136-148`); X handles cannot contain `-` and Clerk ids do not, but nothing in the repo constrains a Clerk username, so a user `jean--luc` reads tenant `jean`'s Purpose and dictionary. A punctuation-only prefix (`.--yoyo`, `/--yoyo`) passes the blank check too and then collapses to the DEFAULT tenant through `ownerToTenant`, handing the default silo's guidance to an unrelated handle. The ambiguity is pre-existing at the labelling level (`isAgentHandle` treats any `--` as an agent) and was introduced for guidance by DW-543 at the merge and ingest doors; DW-709 did not widen the class, only the number of sites where its consequence is reachable. Consequence is a wrong answer, not a leak of stored pages: guidance is prompt text, and every storage/attribution path still uses th
 status: open
+decision: 2026-09-10 Verify the complete agent identity — Resolve guidance ownership using the complete registered agent identity and authoritative owner metadata, never a delimiter or registered prefix alone. Preserve human handles whole; reject invalid or contradictory identities before default-tenant guidance can be read. Keep storage, attribution, runtime identifiers and existing authorization equivalence unchanged.
 
 ### DW-781: `docker build .` cannot produce an image at all: the build stage's `pnpm build` fails with a webpack error pulling `node:timers/promises` into a client bundle.
 origin: spec-deferred 6a280dd6a244
@@ -6627,6 +6631,7 @@ source_spec: `spec-dw-711-workload-routing-at-chat-and-ingest.md`
 severity: low
 reason: `workloadModelSettings` (`src/lib/config.ts`) sets `usesPrimary = provider === undefined && model === undefined`, so a store holding only `chatModel` reports and now routes that saved model while the provider inherits. The sentence under both model pickers (`src/lib/workbench-settings.ts:333-334`) describes both halves as inherited. PRE-EXISTING: the resolver has reported the saved model this way since Story 1.9; DW-711 only made the same store also select the model a call uses, which raises the copy's cost without having caused it.
 status: open
+decision: 2026-09-10 Describe existing routing accurately — Correct provider/model help without changing routing. Ingest uses a saved model even with an inherited provider; an explicit provider with no model uses that provider default. Describe Workbench Chat separately because the sidecar has its own provider and model resolution.
 
 ### DW-783: A crash-resume whose silo object is spelled with a case variant now throws `LifecyclePageConflictError` on every retry instead of completing, so the lifecycle receipt can never be written and the op i
 origin: spec-deferred 3a18deec6a05
