@@ -6392,7 +6392,8 @@ location: src/lib/chat-session-transport.ts:74-75 (with the trailing-block flush
 source_spec: `spec-dw-582-584-sse-frame-hardening.md`
 severity: low
 reason: Pre-existing, and the sibling branch of the DW-583 guard rather than a consequence of it. `DATA_RE` (`chat-session-transport.ts:56`) requires a closing `}`, so a payload cut off mid-write does not match at all — `data` falls through to `{}` and the block is returned as a VALID `done` frame. The unparseable-but-complete shape this bundle fixed now returns `null`; the truncated shape three lines up still returns `{}`. It is reachable in production precisely because `consumeSidecarStream` deliberately flushes the trailing partial block at stream end (`:142-145`), which is exactly where a dropped loopback connection lands. VERIFIED during this run's review: `readSidecarSseBlock('event: done\ndata: {"content":"Roll')` returns `{"event":"done","data":{}}`, and `consumeSidecarStream` over `['event: agent\ndata: {"delta":"Roll"}\n\n', 'event: done\ndata: {"content":"Roll']` RESOLVES with `{}` rather than rejecting. Downstream, `ChatCanvas.driveTurn` (`ChatCanvas.tsx:527`) hands that `{}` to `s
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/chat-session-transport.ts:57,79-80 (commit ed9f5071): DATA_RE now captures the whole payload and a non-object/unparseable parse returns null, so the ledger's own repro `event: done\ndata: {"content":"Roll` yields null instead of {} and consumeSidecarStream:172 throws SIDECAR_TURN_INCOMPLETE_COPY; probe-confirmed against complete frames still parsing.
 
 ### DW-755: An Agent turn that ends in a refusal — a denied shell command, a cancelled Skill form — reaches the owner as the coverage sentence instead of the refusal the sidecar actually sent.
 origin: spec-deferred bfd1a55c01c6
@@ -6400,7 +6401,8 @@ location: src/lib/chat-pending-turn.ts:155 (the `sanitizeCitedAnswer` call), aga
 source_spec: `spec-dw-585-629-chat-settle-citations-and-mcp-pointer.md`
 severity: low
 reason: Pre-existing and untouched by this bundle: it is the FULL-array branch of the same read, and it survives unchanged under both `??` and the new length test. The two copies of `sanitizeCitedAnswer` disagree. The sidecar's takes a fourth `allowUncited` argument (`sidecar/chat-transport.mjs:44-47,76-82`) and `runToolTurn` passes `allowUncited: result.outputs.length > 0 || result.toolCalls.length > 0` (`:376-379`), so an answer with no `[n]` marker survives when the turn ran a tool. The browser's copy (`src/lib/chat-citations.ts:19-56`) has NO such parameter: `used.size === 0` returns `CHAT_COVERAGE_MISSING_COPY` with `citations: []` unconditionally. So the frame the sidecar settles is re-sanitized on arrival under a stricter rule than it was emitted under, and its content is replaced. VERIFIED during this run's review with a throwaway `node`-project probe (since removed) composing the real functions: the sidecar emits `{"content":"Denied. The command did not run.","citations":[{"n":1,…}],"
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/chat-citations.ts:23,53-58 plus src/lib/chat-pending-turn.ts:158-163 (commit ed9f5071): the browser sanitizeCitedAnswer now takes allowUncited and settleTurn derives it from the frame's own toolCalls/outputs, matching sidecar/chat-transport.mjs:376-379; probe-confirmed a denied-command refusal now settles as the sidecar's text, while a no-tool uncited answer still gets the coverage sentence.
 
 ### DW-756: Chat's create, delete and rename call sites report nothing when their door refuses: the failure is an unhandled rejection and the owner sees no sentence.
 origin: spec-deferred 022ce79ad36c
@@ -6408,7 +6410,8 @@ location: src/components/workbench/ChatCanvas.tsx (createConversation, deleteCon
 source_spec: `spec-dw-587-chat-canvas-decomposition.md`
 severity: low
 reason: `void createConversation()`, `void deleteConversation(item.id)` and `void commitRename(item.id)` in `ChatCanvas.tsx` have no `catch`, and `useChatConversations` routes only the mount load and "Conversation not found." through its `onError`. A refused DELETE leaves the row on screen with no explanation; a refused rename silently restores the old label. Pre-existing — the same three call sites are unguarded at `c19a5a29`, and DW-587 moved the doors without changing them — but the split is what introduced the `onError` reporter that would close it.
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/components/workbench/ChatCanvas.tsx:221-264 (commit ef2c4c75): createConversation, deleteConversation and commitRename each wrap their door call in try/catch and setError, rendered at ChatCanvas.tsx:700; useChatConversations.ts:189-193 also catches the fallback loadConversation, so a refused send() reaches the owner as a sentence instead of an unhandled rejection.
 
 ### DW-757: The truncation notice never reaches the owner on `html` and `slides` answers: it is appended after the baked document, and the renderer drops everything past the last `</html>`.
 origin: spec-deferred f7430da626c1
@@ -6581,7 +6584,8 @@ location: src/components/ChatWorkspace.tsx:248
 source_spec: `spec-dw-261-263-752-unpinned-behavior-coverage.md`
 severity: low
 reason: `saveAnswer` (src/components/ChatWorkspace.tsx:246-271) opens with `setSavedMessage(null)` and has no matching `setError(null)`; nothing else on this surface clears `error` except `openConversation`. Both blocks render unconditionally at :296-299, so the owner sees a red "Nothing came back to confirm whether the attempt to save the answer went through" beside a green "Saved as <slug>" for the write that just succeeded. Surfaced by this run's review; not named by DW-263, which covers only the two failure branches themselves. Production behaviour, so out of scope for a tests-only bundle.
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/components/ChatWorkspace.tsx:249 (commit ef2c4c75): saveAnswer now calls setError(null) alongside its existing setSavedMessage(null), so the stale red unconfirmed alert at :297 no longer renders beside the green Saved-as banner at :298 for a save that succeeded after one that failed.
 
 ### DW-778: The PRODUCER half of the `yopedia-tasks` wiring is still unpinned: renaming or deleting `wrangler.jsonc`'s `queues.producers` entry leaves the whole suite green while tasks are never enqueued at all.
 origin: spec-deferred 22d95d827e6b
