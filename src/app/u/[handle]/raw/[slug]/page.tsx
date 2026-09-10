@@ -11,6 +11,7 @@ import { parseSources } from "@/lib/sources";
 import { pagePath, rawPath } from "@/lib/links";
 import { canReadSlug } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
+import { rawSourceAccessAllowed } from "@/lib/raw-source-access";
 import { aliasTargetForMissing } from "@/lib/page-redirect";
 import { RawSourceBrowser, type RawItem } from "@/components/RawSourceBrowser";
 
@@ -27,6 +28,12 @@ export default async function RawSourcePage({ params }: RawSourcePageProps) {
 
   // A private page's raw source is owner-only — 404 (same as missing) otherwise.
   if (!(await canReadSlug(slug, principal))) {
+    notFound();
+  }
+
+  // No source prefetch or canonical navigation until the same additional
+  // gate used by Download admits the caller. Derivation failures fail closed.
+  if (!(await rawSourceAccessAllowed(slug, principal).catch(() => false))) {
     notFound();
   }
 
@@ -59,7 +66,15 @@ export default async function RawSourcePage({ params }: RawSourcePageProps) {
       // redirecting to a URL that also misses. No target → fall through
       // unchanged (everything below already reads `ownerPage` with `?.`).
       const target = await aliasTargetForMissing(slug, principal);
-      if (target) permanentRedirect(rawPath(target.tenant, target.canonical));
+      if (target) {
+        if (
+          !(await canReadSlug(target.canonical, principal)) ||
+          !(await rawSourceAccessAllowed(target.canonical, principal).catch(() => false))
+        ) {
+          notFound();
+        }
+        permanentRedirect(rawPath(target.tenant, target.canonical));
+      }
     }
   }
 

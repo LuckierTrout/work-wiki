@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // GET /api/raw/[slug] — the first GET coverage this door has ever had.
@@ -8,8 +8,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // an AGENT-SCOPED page needs no `visibility: private` to be hidden — the
 // knowledge tree drops it — and the Workbench Files tab withheld
 // `raw/sources/<slug>` while a plain unauthenticated GET returned the document.
-// The fix adds the SAME second gate `/api/assets/[...path]` grew for the same
-// hole (DW-536), derived the same way.
+// DW-771 retains that second gate for non-owners and explicitly admits the
+// deployment owner after the strict frontmatter gate.
 //
 // `workbench-tree` / `workbench-files` are deliberately NOT mocked: the point
 // is that this door derives the same gate the Workbench doors do, so the
@@ -74,6 +74,8 @@ function call(slug: string, source?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("YOPEDIA_OWNER_USER_ID", "user_owner");
+  vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "owner");
   mockedGetPrincipal.mockResolvedValue(null);
   mockedCanReadSlug.mockResolvedValue(true);
   mockedHint.mockResolvedValue({});
@@ -91,7 +93,27 @@ beforeEach(() => {
   } as never);
 });
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("GET /api/raw/[slug]", () => {
+  it.each([undefined, "abc123"])("admits the stable-id owner to either raw shape (%s) without deriving visibility", async (source) => {
+    mockedGetPrincipal.mockResolvedValue({ id: "user_owner", handle: "renamed" });
+    mockedList.mockRejectedValue(new Error("index unavailable"));
+    const res = await call("agent-notes", source);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(SOURCE_TEXT);
+    expect(mockedCanReadSlug).toHaveBeenCalledWith("agent-notes", { id: "user_owner", handle: "renamed" });
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
+  it("does not let the owner exception bypass a failed strict frontmatter gate", async () => {
+    mockedGetPrincipal.mockResolvedValue({ id: "user_owner", handle: "renamed" });
+    mockedCanReadSlug.mockResolvedValue(false);
+    expect((await call("secret")).status).toBe(404);
+    expect(mockedReadRaw).not.toHaveBeenCalled();
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
   it("serves an admitted public page's source as text/plain with NO session", async () => {
     mockedList.mockResolvedValue([entry("concept-a")]);
 
@@ -187,6 +209,7 @@ describe("GET /api/raw/[slug]", () => {
     const res = await call("concept-a");
 
     expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
     expect(mockedReadRaw).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith(
       "raw",
