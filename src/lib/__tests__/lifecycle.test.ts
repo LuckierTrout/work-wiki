@@ -1213,6 +1213,18 @@ describe("deleteWikiPage", () => {
 // ===========================================================================
 
 describe("deleteWikiPage case-variant targets", () => {
+  it("preserves configured filesystem roots outside DATA_DIR when checking ownership scope", async () => {
+    process.env.DATA_DIR = path.join(tmpDir, "data");
+    _resetStorage();
+    await ensureDirectories();
+    await writeWikiPageWithSideEffects({
+      slug: "external-root", title: "External Root", content: "# External Root\n",
+      summary: "", logOp: "ingest", crossRefSource: null,
+    });
+    await deleteWikiPage("external-root");
+    expect(await readWikiPage("external-root", { fresh: true, strict: true })).toBeNull();
+  });
+
   it("removes the variant object the pre-delete read was shown", async () => {
     // The headline data-loss symptom: before DW-741 this delete reported success
     // while `wiki/cased.MD` survived, and the very next read served the body back.
@@ -1307,10 +1319,9 @@ describe("deleteWikiPage case-variant targets", () => {
     expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.Md");
   });
 
-  it("unlinks the canonical key and probes no variant when `<slug>.md` is present", async () => {
-    // The case-INSENSITIVE store's shape: the canonical spelling resolves the
-    // object under both roots, so the ENOENT-gated probe is unreachable and this
-    // delete targets exactly the keys it targeted before DW-741.
+  it("removes a canonical object on a case-folding filesystem", async () => {
+    // Physical-name enumeration must work on a case-folding host too.
+    // Real case-sensitive multi-object coverage lives in case-recovery-workerd.
     const storage = getStorage();
     await writeWikiPageWithSideEffects({
       slug: "plain",
@@ -1343,10 +1354,8 @@ describe("deleteWikiPage case-variant targets", () => {
       await deleteWikiPage("plain");
 
       expect(callsAtUnlink).not.toBeNull();
-      expect(callsAtUnlink!.deletes).toContain(
-        `tenants/${tenantForOwner(undefined)}/wiki/plain.md`,
-      );
-      expect(callsAtUnlink!.reads.filter((key) => /plain\.(MD|Md|mD)$/.test(key))).toEqual([]);
+      expect(callsAtUnlink!.deletes).toContain("wiki/plain.md");
+      expect(callsAtUnlink!.reads).toContain("wiki/plain.md");
     } finally {
       readFile.mockRestore();
       deleteFile.mockRestore();
@@ -1354,11 +1363,9 @@ describe("deleteWikiPage case-variant targets", () => {
     expect(await readWikiPage("plain", { fresh: true })).toBeNull();
   });
 
-  it("still issues the canonical unlink under a root that holds no spelling", async () => {
-    // Resolution NARROWS the target; it never turns the delete into a no-op. The
-    // silo holds nothing here, so the canonical silo unlink goes out exactly as
-    // it does today and its ENOENT is swallowed. Snapshotted at the flat unlink
-    // for the same reason as above: the fail-soft cleanup unlinks that key too.
+  it("deletes the present flat object without unlinking an absent silo", async () => {
+    // Only inventoried copies are primary delete targets. Snapshot before
+    // derived cleanup, which can separately attempt an absent canonical key.
     const storage = getStorage();
     await writeWikiPage("flat-only", "# Flat Only\n\nBody.\n");
     await updateIndex([{ title: "Flat Only", slug: "flat-only", summary: "Flat" }]);
@@ -1373,10 +1380,7 @@ describe("deleteWikiPage case-variant targets", () => {
     });
     try {
       await expect(deleteWikiPage("flat-only")).resolves.toMatchObject({ slug: "flat-only" });
-      expect(deletesAtUnlink).toEqual([
-        `tenants/${tenantForOwner(undefined)}/wiki/flat-only.md`,
-        "wiki/flat-only.md",
-      ]);
+      expect(deletesAtUnlink).toEqual(["wiki/flat-only.md"]);
     } finally {
       deleteFile.mockRestore();
     }
@@ -1394,16 +1398,17 @@ describe("deleteWikiPage case-variant targets", () => {
     await updateIndex([{ title: "Faulty", slug: "faulty", summary: "Variant-held" }]);
     const defaultTenant = tenantForOwner(undefined);
 
-    // The fault is on the SILO variant probe, which only the delete branch's
-    // resolution reaches: with no page-index entry for this slug the pre-delete
-    // read never touches a silo, so the reads that door depends on all succeed.
+    // The strict physical inventory fails in the silo root. The title read
+    // remains available, so the destructive branch must enforce the refusal.
     const realRead = storage.readFile.bind(storage);
     const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
-      if (key === `tenants/${defaultTenant}/wiki/faulty.MD`) {
-        throw new Error("variant store unavailable");
-      }
       if (/(?:^|\/)faulty\.md$/i.test(key) && key !== "wiki/faulty.MD") throw enoent(key);
       return realRead(key);
+    });
+    const realList = storage.listFiles.bind(storage);
+    const listFiles = vi.spyOn(storage, "listFiles").mockImplementation(async (prefix) => {
+      if (prefix.replace(/\/$/, "") === `tenants/${defaultTenant}/wiki`) throw new Error("variant store unavailable");
+      return realList(prefix);
     });
     const deleteFile = vi.spyOn(storage, "deleteFile");
     const deleteDirectory = vi.spyOn(storage, "deleteDirectory");
@@ -1416,6 +1421,7 @@ describe("deleteWikiPage case-variant targets", () => {
       expect(await fs.readdir(path.join(tmpDir, "wiki"))).toContain("faulty.MD");
     } finally {
       readFile.mockRestore();
+      listFiles.mockRestore();
       deleteFile.mockRestore();
       deleteDirectory.mockRestore();
     }

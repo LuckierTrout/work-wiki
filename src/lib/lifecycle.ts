@@ -1,3 +1,5 @@
+import path from "node:path";
+import { getDataDir } from "./paths";
 import type { IndexEntry } from "./types";
 import { upsertEmbedding, removeEmbedding } from "./embeddings";
 import { deleteRevisions } from "./revisions";
@@ -15,6 +17,7 @@ import {
   updateRelatedPages,
   appendToLog,
   findStoredPageKey,
+  readStoredPageCopies,
   wikiRelPath,
   tenantForOwner,
   tenantWikiRelPath,
@@ -50,6 +53,7 @@ import { parseSources, newestSourceType } from "./sources";
 import type { LogOperation } from "./wiki";
 import { appendToLogOnce, withTriggeredBy } from "./wiki-log";
 import { logger } from "./logger";
+import { sourceSha256 } from "./source-sha256";
 
 // ---------------------------------------------------------------------------
 // writeWikiPageWithSideEffects — the unified write pipeline
@@ -474,52 +478,21 @@ async function runPageLifecycleOp(
       // log and version without rewriting the authoritative Page or creating a
       // revision. Repair a compatibility copy that the crash interrupted.
       const tenant = writeTenant ?? tenantForOwner(undefined);
-      const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
-      try {
-        const silo = await getStorage().readFile(siloPath);
-        if (silo !== op.content) throw new LifecyclePageConflictError(slug);
-      } catch (error) {
-        if (!isEnoent(error)) throw error;
-        // DW-740 changed what a `false` here MEANS. `createWikiPage` now refuses
-        // when any case spelling of `<slug>.md` holds the slug, so on a
-        // case-SENSITIVE store whose silo object is variant-spelled this resume
-        // throws a conflict on every retry instead of forking the identity into
-        // a second object. That is the ruling applied consistently — a loud
-        // conflict beats a silent fork — not an oversight. Teaching this branch
-        // to READ the variant (as `readWikiPage` does) is a different door and
-        // is deliberately not in DW-740.
-        const created = await createWikiPage(slug, op.content, tenant);
-        if (!created) throw new LifecyclePageConflictError(slug);
+      const siloCopies = await readStoredPageCopies(slug, tenant);
+      const flatCopies = await readStoredPageCopies(slug, null);
+      if (siloCopies.some((copy) => copy.content !== op.content)
+        || flatCopies.some((copy) => copy.content !== op.content
+          && !(copy.key === wikiRelPath(`${slug}.md`) && copy.content === op.expectedContent))) {
+        throw new LifecyclePageConflictError(slug, "conflicting Page spellings during recovery");
       }
-
-      const flatPath = wikiRelPath(`${slug}.md`);
-      try {
-        const flat = await getStorage().readFile(flatPath);
-        if (flat !== op.content && op.expectedContent !== undefined && flat === op.expectedContent) {
-          await writeWikiPageIfContentMatches(
-            slug,
-            op.content,
-            op.expectedContent,
-            op.author,
-            "conditional lifecycle compatibility repair",
-          );
-        } else if (flat !== op.content) {
-          logger.warn("wiki", `flat compatibility copy changed for "${slug}"; left untouched`);
-        }
-      } catch (error) {
-        if (!isEnoent(error)) throw error;
-        // A `false` no longer means only "the copy appeared underneath us"
-        // (DW-740): the likelier cause on a case-SENSITIVE store is that a case
-        // variant of `<slug>.md` holds the slug, which the canonical read above
-        // reported as ENOENT. Both are "something else already holds this slug
-        // under the flat root", and both leave the copy unwritten.
-        const created = await createWikiPage(slug, op.content);
-        if (!created) {
-          logger.warn(
-            "wiki",
-            `flat compatibility copy not created for "${slug}": another object already holds the slug`,
-          );
-        }
+      if (siloCopies.length === 0) {
+        if (!await createWikiPage(slug, op.content, tenant)) throw new LifecyclePageConflictError(slug);
+      }
+      if (flatCopies.length === 0) {
+        if (!await createWikiPage(slug, op.content)) throw new LifecyclePageConflictError(slug);
+      } else if (flatCopies.some((copy) => copy.content !== op.content)) {
+        if (!await writeWikiPageIfContentMatches(slug, op.content, op.expectedContent ?? "", op.author,
+          "conditional lifecycle compatibility repair")) throw new LifecyclePageConflictError(slug);
       }
     } else if (op.createOnly) {
       const flatPath = wikiRelPath(`${slug}.md`);
@@ -643,85 +616,39 @@ async function runPageLifecycleOp(
       await writeWikiPage(slug, op.content, op.author);
     }
   } else {
-    try {
-      const pre = recovery?.primaryDeleteAlreadyApplied && op.expectedContent !== undefined
-        ? {
-            content: op.expectedContent,
-            frontmatter: parseFrontmatter(op.expectedContent).data,
-          }
-        : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true, owner: op.ownerHint });
-      if (op.expectedContent !== undefined && pre?.content !== op.expectedContent) {
-        throw new LifecyclePageConflictError(slug, "Page changed before delete");
-      }
-      deletedOwner =
-        typeof pre?.frontmatter.owner === "string"
-          ? pre.frontmatter.owner
-          : undefined;
-      deletedContributors = Array.isArray(pre?.frontmatter.contributors)
-        ? (pre.frontmatter.contributors as unknown[]).filter(
-            (c): c is string => typeof c === "string",
-          )
-        : [];
-    } catch (error) {
-      if (error instanceof LifecyclePageConflictError || op.expectedContent !== undefined || op.ownerHint !== undefined) {
-        throw error;
-      }
-      // Owner/contributors unknown → falls back to the default tenant in step 3c.
+    const pre = recovery?.primaryDeleteAlreadyApplied && op.expectedContent !== undefined
+      ? { content: op.expectedContent, frontmatter: parseFrontmatter(op.expectedContent).data }
+      : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true, owner: op.ownerHint });
+    if (!pre || (op.expectedContent !== undefined && pre.content !== op.expectedContent)) {
+      throw new LifecyclePageConflictError(slug, "Page changed before delete");
     }
+    deletedOwner = typeof pre.frontmatter.owner === "string" ? pre.frontmatter.owner : undefined;
+    deletedContributors = Array.isArray(pre.frontmatter.contributors)
+      ? pre.frontmatter.contributors.filter((value): value is string => typeof value === "string")
+      : [];
     const deleteTenant = tenantForOwner(deletedOwner);
-    // A HARD DELETE MUST REMOVE THE OBJECT THE PRE-DELETE READ WAS SHOWN
-    // (DW-741). On a case-SENSITIVE store the Page can be held on `<slug>.MD`,
-    // and unlinking the canonical name there removes nothing while reporting
-    // success — the next read serves the full body back. `findStoredPageKey` is
-    // the same canonical-first, ENOENT-gated election the read and write doors
-    // use, so a case-INSENSITIVE store never reaches the probe and each key
-    // below is the one this branch always built.
-    //
-    // RESOLVED BEFORE THE UNLINK, never on its ENOENT: `deleteFile` is
-    // provider-dependent on a missing key (R2 deletes silently, the filesystem
-    // throws), so a re-election hung off that catch would be dead code on R2 —
-    // which is the deployment the case-sensitive store actually is.
-    //
-    // BOTH KEYS RESOLVE BEFORE ANYTHING IS DESTROYED. These are strict reads,
-    // so a storage fault fails the op; doing them here rather than beside each
-    // unlink means such a fault aborts with the revisions still erasable and
-    // neither root touched, instead of leaving revisions gone (or the silo
-    // object unlinked) under a Page that is still there.
-    //
-    // Resolution only NARROWS the target: when no spelling is present the
-    // canonical unlink is still issued, and behaves exactly as it does today.
-    //
-    // IT ELECTS ONE SPELLING PER ROOT, it does not sweep every spelling. A
-    // DEFEATED case sibling therefore survives this delete and is promoted to
-    // the winner for the slug on the next read — recorded as deferred work on
-    // this spec, because "which spellings a delete is entitled to sweep" is a
-    // wider ruling than the one this change carries.
-    const siloKey =
-      (await findStoredPageKey(slug, deleteTenant)) ??
-      tenantWikiRelPath(deleteTenant, `${slug}.md`);
-    const flatKey = (await findStoredPageKey(slug, null)) ?? wikiRelPath(`${slug}.md`);
-    // Revision bytes are part of the hard-delete contract, not a derived index.
-    // Erase both layouts before removing the authoritative Page so a transient
-    // cleanup failure leaves a visible Page the operator can safely retry.
-    await Promise.all([
-      deleteRevisions(slug),
-      deleteRevisions(slug, deleteTenant),
-    ]);
-    // Delete from silo (primary target).
-    try {
-      await getStorage().deleteFile(siloKey);
-    } catch (err: unknown) {
-      if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
-        throw err;
-      }
+    // Inventory both authorized roots before erasing revisions or Page bytes.
+    // Byte equality also proves that every copy carries the same owner. Never
+    // expand the search to other tenants or delete a differing compatibility copy.
+    const siloCopies = await readStoredPageCopies(slug, deleteTenant);
+    const flatCopies = await readStoredPageCopies(slug, null);
+    const copies = [...flatCopies, ...siloCopies];
+    const selectedKey = "path" in pre && typeof pre.path === "string"
+      ? path.relative(getDataDir(), pre.path).replace(/\.[mM][dD]$/, ".md")
+      : null;
+    if ((!recovery?.primaryDeleteAlreadyApplied && copies.length === 0)
+      || (selectedKey !== null && !copies.some((copy) => copy.key.replace(/\.[mM][dD]$/, ".md") === selectedKey))
+      || copies.some((copy) => copy.content !== pre.content)) {
+      throw new LifecyclePageConflictError(slug, "conflicting Page spellings; resolve before deleting");
     }
-    // Also delete flat copy (transition cleanup — removable after #869).
-    try {
-      await getStorage().deleteFile(flatKey);
-    } catch (err: unknown) {
-      // Flat copy may already be gone — swallow ENOENT.
-      if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
-        throw err;
+    await Promise.all([deleteRevisions(slug), deleteRevisions(slug, deleteTenant)]);
+    // Compatibility first, authority last. On failure, leave index/job evidence
+    // intact and report incomplete; retry inventories the remaining copies.
+    for (const copy of copies) {
+      try {
+        await getStorage().deleteFile(copy.key);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
       }
     }
   }
@@ -1451,6 +1378,42 @@ async function writeWikiPageWithSideEffectsInternal(
 
   const { slug, title, content, summary, logOp, logDetails } = opts;
 
+  validateSlug(slug);
+  let acceptedIdentity = false;
+  if (opts.idempotency) {
+    const intentPath = `${opts.idempotency.receiptPath}.intent-${await sourceSha256(opts.idempotency.key)}.json`;
+    const identity = JSON.stringify({ key: opts.idempotency.key, digest: await sourceSha256(JSON.stringify({
+      slug, title, content, summary, logOp, author: opts.author ?? null,
+      createOnly: opts.createOnly ?? false, expectedContent: opts.expectedContent ?? null,
+      crossRefSource: opts.crossRefSource === undefined ? content : opts.crossRefSource,
+      revisionReason: opts.revisionReason ?? null, validateNewLinkTargets: opts.validateNewLinkTargets ?? false,
+      requiresExistingSlug: opts.requiresExistingSlug ?? null, requiresExistingTenant: opts.requiresExistingTenant ?? null,
+      requiredTargetTenant: opts.requiredTargetTenant ?? null,
+    })) });
+    try {
+      const stored = await getStorage().readFile(intentPath);
+      if (stored !== identity) throw new LifecyclePageConflictError(slug, "operation identity changed");
+      acceptedIdentity = true;
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      const owner = parseFrontmatter(content).data.owner;
+      const tenant = tenantForOwner(typeof owner === "string" ? owner : undefined);
+      for (const scope of [tenant, null]) {
+        const copies = await readStoredPageCopies(slug, scope);
+        const canonical = scope === null ? wikiRelPath(`${slug}.md`) : tenantWikiRelPath(scope, `${slug}.md`);
+        if (copies.length && !copies.some((copy) => copy.key === canonical)) {
+          throw new LifecyclePageConflictError(slug, "case-variant recovery needs the accepted operation identity");
+        }
+      }
+      if (!await getStorage().writeFileIfAbsent(intentPath, identity)) {
+        if (await getStorage().readFile(intentPath) !== identity) {
+          throw new LifecyclePageConflictError(slug, "operation identity changed");
+        }
+        acceptedIdentity = true;
+      }
+    }
+  }
+
   if (opts.idempotency) {
     try {
       const parsed = JSON.parse(await getStorage().readFile(opts.idempotency.receiptPath)) as {
@@ -1478,17 +1441,17 @@ async function writeWikiPageWithSideEffectsInternal(
     } catch {
       // The lifecycle uses the same default-tenant fallback below.
     }
-    try {
-      pageAlreadyWritten = await getStorage().readFile(
-        tenantWikiRelPath(tenant, `${slug}.md`),
-      ) === content;
-    } catch (error) {
-      if (!isEnoent(error)) throw error;
-      try {
-        pageAlreadyWritten = await getStorage().readFile(wikiRelPath(`${slug}.md`)) === content;
-      } catch (flatError) {
-        if (!isEnoent(flatError)) throw flatError;
-      }
+    const siloCopies = await readStoredPageCopies(slug, tenant);
+    const flatCopies = await readStoredPageCopies(slug, null);
+    const variant = (siloCopies.length > 0 && !siloCopies.some((copy) => copy.key === tenantWikiRelPath(tenant, `${slug}.md`)))
+      || (flatCopies.length > 0 && !flatCopies.some((copy) => copy.key === wikiRelPath(`${slug}.md`)));
+    if (variant && !acceptedIdentity) {
+      throw new LifecyclePageConflictError(slug, "case-variant recovery needs the accepted operation identity");
+    }
+    const authoritative = siloCopies.length ? siloCopies : flatCopies;
+    pageAlreadyWritten = authoritative.length > 0 && authoritative.every((copy) => copy.content === content);
+    if (variant && !pageAlreadyWritten) {
+      throw new LifecyclePageConflictError(slug, "conflicting Page spellings during recovery");
     }
   }
 
