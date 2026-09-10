@@ -1,7 +1,7 @@
 ---
 title: 'Case-variant page deletion and receipt-missing recovery'
 status: in-review
-baseline_commit: 12c2912e
+baseline_commit: 20f4f450625a67e183a68baf514b84c3fe71cbd7
 ---
 
 ## Intent
@@ -21,6 +21,8 @@ Use the existing case-sensitive slug and case-insensitive `.md` extension contra
 
 ## Verification
 
-Pending final verification. Real local Miniflare R2/KV tests drive the lifecycle through equivalent/conflicting/foreign-owner copies, interrupted enumeration/deletion, restart, publication and receipt faults, identity mismatch and receipt deduplication. The local runtime alone enables the existing durable-lock readiness flag for synthetic resources; production gates are unchanged.
+Final product code `e862ba6b52df8e50e0f96f1d6f5849f6b0344bcb`: full suite 414 files passed, 10,170 tests passed and one existing skip, 145.32 seconds. Production build with synthetic public identity, standalone TypeScript, full lint and diff checks pass. Lint retains the three existing TSNonNullExpression diagnostics. Earlier exploratory runs do not substitute for this committed-code verification.
+
+Nine real local Miniflare R2/KV cases drive the lifecycle through equivalent/conflicting/foreign-owner copies, interrupted enumeration/deletion, restart, publication and receipt faults, identity mismatch and receipt deduplication. The local runtime alone enables the existing durable-lock readiness flag for synthetic resources; production gates are unchanged.
 
 Public publication, exact-head CI, merge and orchestrator ledger closure require the new-packet publication approval identified during DW-768/770 finalization.
