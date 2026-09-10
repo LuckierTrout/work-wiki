@@ -1,0 +1,337 @@
+{
+  "baseline_commit": "3e786d97090347b012d30b0dee485c3b761c2c2d",
+  "scope": "Selected tracked source/config files only; lexical references are navigation, not transitive coverage or deployed-state evidence. No live values read.",
+  "record_count": 22,
+  "records": [
+    {
+      "path": "src/lib/portable-archive.ts",
+      "sha256": "d6d19ac164ecee94212e9c060a78d39ceec4aaffb53ffc37ab58bf88b07767b0",
+      "line_count": 455,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          71,
+          308,
+          311,
+          312,
+          316,
+          368,
+          409
+        ]
+      }
+    },
+    {
+      "path": "src/lib/storage/r2.ts",
+      "sha256": "c75af2a1f6a992e12d8588f44da7e0071d9393054cc73958a01ce45a9faee504",
+      "line_count": 665,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          132,
+          137,
+          187,
+          218,
+          230,
+          272,
+          288,
+          300,
+          327,
+          330,
+          354,
+          359,
+          442,
+          448,
+          542,
+          561,
+          598
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/storage/types.ts",
+      "sha256": "f1925e7505b9dd2da923c53ccb0c3214cb763f316dfb45b60a94cc3645e03a24",
+      "line_count": 728,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/operation-ledger.ts",
+      "sha256": "fec5e769ae8274b224a7d4859b4a75d9cc2ba1c222e95c02d37caf16962cafe2",
+      "line_count": 107,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          80
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          34,
+          76,
+          82
+        ]
+      }
+    },
+    {
+      "path": "src/lib/owner.ts",
+      "sha256": "7a3b753147fd8169ee062ab23fd654d89ec134238ad6a50f4b28f01cf9da7702",
+      "line_count": 113,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          14,
+          106,
+          109,
+          110,
+          111
+        ]
+      }
+    },
+    {
+      "path": "src/lib/lifecycle.ts",
+      "sha256": "1b8d8c903b7a17ba9f6bcb0cddf26421209523ecabe35ac9de448d2df69d6ff6",
+      "line_count": 1551,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          327,
+          561,
+          710,
+          718,
+          1413,
+          1523
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          511,
+          525,
+          601,
+          672,
+          674,
+          690,
+          975
+        ]
+      }
+    },
+    {
+      "path": "src/lib/ingest-jobs.ts",
+      "sha256": "bc51daed5eff800ad627de634e2542530535f4bd79a952fa7ffd15c08872edee",
+      "line_count": 546,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          272,
+          410,
+          419,
+          429,
+          457,
+          483,
+          500,
+          532
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/ingest-staging.ts",
+      "sha256": "146fc45389c330e1ce24f72aaa5a27dfa0127a58d85100a844f4a62c76fc6f36",
+      "line_count": 98,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          94
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/extract-jobs.ts",
+      "sha256": "c68ba61215fb20b0095abd8c640e780c9dab092c79a87a8b30ab3762e42c5329",
+      "line_count": 454,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          170,
+          421,
+          445
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/email-ingest.ts",
+      "sha256": "1e4c7495ee3641089130401da74c6991957d860eb30e83c2640f1bf440e51032",
+      "line_count": 189,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/vault.ts",
+      "sha256": "781ea11f094229fe10c75b13e089636654f683dd83cb436b17a31d1b11f1b3e5",
+      "line_count": 250,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/monitor-digests.ts",
+      "sha256": "c51990199ed4f5e112b609801b1ebac7f30b7bdee36635fb9ebf5ee6b61322cc",
+      "line_count": 690,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          311,
+          370
+        ],
+        "background_or_delivery": [
+          624
+        ],
+        "capture_or_authority": [
+          442
+        ]
+      }
+    },
+    {
+      "path": "src/lib/integration-outbox.ts",
+      "sha256": "42b90fefbe2852f971e63defe26bdbe98ca04c57a0b1e0afe5eb41eb7f46d296",
+      "line_count": 378,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          88,
+          143
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          52,
+          134
+        ]
+      }
+    },
+    {
+      "path": "src/lib/tasks.ts",
+      "sha256": "7e2994bb490374f14e44c5da2405e2c2cd8e03ff53d2c04da40472904b0c5a5a",
+      "line_count": 824,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [
+          441,
+          470
+        ],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/lib/source-cascade.ts",
+      "sha256": "8e4d0db1453a8ac429757a92b52dd103807cef54c3ac8e28467c656bf80d21d1",
+      "line_count": 327,
+      "lexical_line_matches": {
+        "storage_mutation": [
+          156,
+          161
+        ],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "src/mcp.ts",
+      "sha256": "dd7dd4cefac46b29829d3ca2af038397ff5477da88707c18b301c2397ee38c6f",
+      "line_count": 3446,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          369,
+          1881
+        ]
+      }
+    },
+    {
+      "path": "src/lib/mcp-http.ts",
+      "sha256": "f2e3505a0a659f958a9da5e0fabea4627cca27d5d9a57bb7555468d957149210",
+      "line_count": 1324,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          791
+        ]
+      }
+    },
+    {
+      "path": "sidecar/server.mjs",
+      "sha256": "85c8ea063184c7eb878193b4e69d6a9aa08917eddadff80e1010aebbeec6676b",
+      "line_count": 709,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": [
+          585
+        ]
+      }
+    },
+    {
+      "path": "workers/task-consumer/index.ts",
+      "sha256": "a9fc0cb6863b8e18df61161fe579f0cc8a3cd6f407fe99ef5130c3810f45f764",
+      "line_count": 287,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [
+          108,
+          122,
+          135,
+          150,
+          193,
+          215,
+          232
+        ],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "workers/email-ingest/index.ts",
+      "sha256": "01f7d6f5496190cab87fb7da0cfad430e0615271c4b8abc7ef9d1829d1cf8ac8",
+      "line_count": 1684,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "wrangler.jsonc",
+      "sha256": "44203039332c902a3f0d1699bf3adce92415f419d13114fa39dfa44f296aa45b",
+      "line_count": 129,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    },
+    {
+      "path": "workers/task-consumer/wrangler.jsonc",
+      "sha256": "7402542cdde0add546da32c9bb557c4180873f45a23dad60560c3e9347b5229b",
+      "line_count": 70,
+      "lexical_line_matches": {
+        "storage_mutation": [],
+        "background_or_delivery": [],
+        "capture_or_authority": []
+      }
+    }
+  ],
+  "unresolved": [
+    "dynamic dispatch and indirect callers",
+    "deployed versions and alternate routes",
+    "live key/value/expiry inventory",
+    "accepted inputs and unknown external outcomes",
+    "authoritative source frontier",
+    "complete old-execution terminal accounting"
+  ]
+}
