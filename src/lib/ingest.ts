@@ -37,6 +37,7 @@ import {
 import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { createGuidanceCache, type GuidanceCache } from "./guidance-cache";
 import { humanOwnerOf } from "./agent-handle";
+import { resolveGuidanceOwner } from "./guidance-owner";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -1363,7 +1364,7 @@ export async function reconcilePage(
   existingBody: string,
   newBody: string,
   /** The HUMAN principal whose workspace standards guide the fold — see
-   * {@link humanOwnerOf}. Callers reduce the raw handle BEFORE calling. */
+   * {@link resolveGuidanceOwner}. Callers resolve the identity BEFORE calling. */
   guidanceOwner?: string,
   cache?: GuidanceCache,
   options?: { emptyFallback?: "new" | "throw"; workload?: LlmWorkload },
@@ -1457,7 +1458,7 @@ export async function collectTagVocabulary(
 
 export async function buildIngestSystemPrompt(
   /** The HUMAN principal whose workspace standards guide the prompt — see
-   * {@link humanOwnerOf}. NOT a storage key. */
+   * {@link resolveGuidanceOwner}. NOT a storage key. */
   guidanceOwner?: string,
   cache?: GuidanceCache,
 ): Promise<string> {
@@ -1872,7 +1873,7 @@ async function runTwoStepSynthesis(input: {
    */
   owner: string;
   /**
-   * The HUMAN behind {@link owner} ({@link humanOwnerOf}) — the principal whose
+   * The HUMAN behind {@link owner} ({@link resolveGuidanceOwner}) — the principal whose
    * Workspace Purpose and Names & Terms dictionary govern the prompts. Separate
    * from `owner` precisely so reducing guidance never repoints the lock.
    */
@@ -2086,7 +2087,7 @@ export async function ingest(
   // resolved from it would come back blank while the same-owner guard above
   // already collapses it onto `alice`. Reduce it once, here, and hand the
   // reduced principal to every guidance consumer below.
-  const guidanceOwner = humanOwnerOf(owner);
+  const guidanceOwner = await resolveGuidanceOwner(owner);
   // ONE guidance resolution for this document (DW-141, DW-322). Synthesis, the
   // map/reduce REDUCE step, reconcile-on-merge and the concept canonicalization
   // below all ask for the same active Wiki's Workspace Purpose and the same

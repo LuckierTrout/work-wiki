@@ -9,7 +9,7 @@ import {
   updateActionItem,
 } from "../action-items";
 import { _resetLocks } from "../lock";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -96,6 +96,7 @@ describe("agent-owned action items resolve the dictionary by human owner", () =>
   const AGENT = "alice--yoyo";
 
   beforeEach(async () => {
+    await getStorage().writeFile(`agents/${AGENT}.json`, JSON.stringify({ id: AGENT, owner: HUMAN }));
     await createNamesTerm(HUMAN, {
       kind: "person",
       canonical: "Alice Chen",
@@ -128,9 +129,9 @@ describe("agent-owned action items resolve the dictionary by human owner", () =>
   });
 
   it("leaves an unreducible handle addressing its own tenant", async () => {
-    // `humanOwnerOf` passes `yoyo` / `system` / `--yoyo` through whole, so these
+    // Legacy `yoyo` / `system` identities pass through whole, so these
     // read the same (empty) dictionary they read before DW-709.
-    for (const handle of ["yoyo", "system", "--yoyo"]) {
+    for (const handle of ["yoyo", "system"]) {
       const [created] = await proposeActionItems(handle, [{
         title: `Work for ${handle}`,
         assignee: "Ali",

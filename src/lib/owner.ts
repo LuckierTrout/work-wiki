@@ -111,3 +111,9 @@ export function ownerTenantHandle(
     ? canonical
     : principal?.handle ?? "";
 }
+
+/** Refuse an agent registry id that shadows the configured human's namespace.
+ * This checks an identity collision; it grants no owner permissions. */
+export function assertDistinctAgentHandle(handle: string): void {
+  if (isOwnerHandle(handle)) throw new Error("Ambiguous guidance principal");
+}

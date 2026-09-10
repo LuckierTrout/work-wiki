@@ -123,6 +123,7 @@ afterEach(async () => {
  */
 describe("the default monitor redraft resolves guidance by human owner (DW-709)", () => {
   beforeEach(async () => {
+    await getStorage().writeFile(`agents/${AGENT}.json`, JSON.stringify({ id: AGENT, owner: HUMAN }));
     const wiki = await createWiki(HUMAN, { name: "Ops", scenario: "business" });
     await writeWikiArtifact(HUMAN, wiki.id, "purpose.md", `# Ops\n\n${PURPOSE}\n`);
     await createNamesTerm(HUMAN, {
@@ -171,5 +172,30 @@ describe("the default monitor redraft resolves guidance by human owner (DW-709)"
     expect(system).not.toContain(PURPOSE);
     expect(system).not.toContain("WORKSPACE NAMES & TERMS");
     expect(system).toContain("You revise a private knowledge page");
+  });
+});
+
+
+describe("verified guidance identity (DW-780)", () => {
+  it("keeps a human's complete handle even when its prefix owns an agent", async () => {
+    await getStorage().writeFile("agents/jean--yoyo.json", JSON.stringify({ id: "jean--yoyo", owner: "jean" }));
+    for (const owner of ["jean", "jean--luc"]) {
+      const wiki = await createWiki(owner, { name: "Ops", scenario: "business" });
+      await writeWikiArtifact(owner, wiki.id, "purpose.md", `Guidance belonging to ${owner}.`);
+    }
+    await seedTargetPage("jean--luc");
+    const system = await runThroughRedraft("jean--luc");
+    expect(system).toContain("Guidance belonging to jean--luc.");
+    expect(system).not.toContain("Guidance belonging to jean.");
+  });
+
+  it("uses authoritative raw owner metadata rather than the slugged prefix", async () => {
+    const owner = "Alice_Smith";
+    const agent = "alice-smith--scout";
+    await getStorage().writeFile(`agents/${agent}.json`, JSON.stringify({ id: agent, owner }));
+    const wiki = await createWiki(owner, { name: "Ops", scenario: "business" });
+    await writeWikiArtifact(owner, wiki.id, "purpose.md", "Use the actual registered owner's standards.");
+    await seedTargetPage(agent);
+    expect(await runThroughRedraft(agent)).toContain("Use the actual registered owner's standards.");
   });
 });
