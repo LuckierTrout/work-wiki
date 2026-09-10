@@ -62,6 +62,7 @@ import {
   SETTINGS_LOADING_COPY,
   SETTINGS_LOAD_FAILED_COPY,
   SETTINGS_MODEL_INHERIT_COPY,
+  SETTINGS_CHAT_MODEL_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_BAR_COPY,
@@ -744,8 +745,12 @@ export function SettingsCanvas({
           // beside the control is invisible to a screen reader.
           aria-describedby={describedBy(hintId)}
         >
-          {/* The empty option is the inheritance rung, not a blank provider. */}
-          <option value="">Inherit the primary provider</option>
+          {/* The empty option describes this workload's own selection path. */}
+          <option value="">
+            {key === "chatProvider"
+              ? "Use sidecar provider selection"
+              : "Inherit the primary provider"}
+          </option>
           {PROVIDER_INFO.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
@@ -753,7 +758,9 @@ export function SettingsCanvas({
           ))}
         </select>
         <span className="wb-set-hint" id={hintId}>
-          {SETTINGS_MODEL_INHERIT_COPY}
+          {key === "chatProvider"
+            ? SETTINGS_CHAT_MODEL_COPY
+            : SETTINGS_MODEL_INHERIT_COPY}
         </span>
       </p>
     );
