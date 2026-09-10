@@ -25,5 +25,14 @@
     "key": "approved",
     "label": "Report bounded search coverage honestly",
     "resolution": ""
+  },
+  "DW-780": {
+    "answered_at": "2026-09-10",
+    "bundle_name": "dw-780-guidance-identity",
+    "effect": "build",
+    "intent": "Resolve guidance ownership using the complete registered agent identity and authoritative owner metadata, never a delimiter or registered prefix alone. Preserve human handles whole; reject invalid or contradictory identities before default-tenant guidance can be read. Keep storage, attribution, runtime identifiers and existing authorization equivalence unchanged.",
+    "key": "approved",
+    "label": "Verify the complete agent identity",
+    "resolution": ""
   }
 }
