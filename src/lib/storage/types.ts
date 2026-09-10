@@ -208,6 +208,8 @@ export interface EmbeddingQueryResult {
    * window-scoped — see that provider's note.
    */
   rejected: number;
+  /** Server-ranked subset only; omission means the provider filtered the full corpus. */
+  candidateScope?: "window";
 }
 
 /**
