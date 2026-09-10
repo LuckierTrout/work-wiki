@@ -493,11 +493,12 @@ export class R2StorageProvider implements StorageProvider {
         score: m.score,
         metadata: (m.metadata as Record<string, string>) ?? {},
       }));
-      if (!accept) return { matches: window, rejected: 0 };
+      if (!accept) return { matches: window, rejected: 0, candidateScope: "window" };
       const kept = window.filter((m) => accept(m.metadata));
       return {
         matches: kept.slice(0, topK),
         rejected: window.length - kept.length,
+        candidateScope: "window",
       };
     }
 

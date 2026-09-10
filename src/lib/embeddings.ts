@@ -1383,9 +1383,8 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  *
  * The model filter itself now travels DOWN into the provider as an `accept`
  * predicate, so it is applied before the top-K slice and this door judges the
- * top-K nearest ACCEPTED vectors rather than the accepted subset of the top-K
- * nearest. That is DW-598's half of the fix and it lives at the provider, not
- * here.
+ * top-K nearest ACCEPTED vectors on locally ranked providers. Vectorize
+ * filters a bounded server-ranked window; exhausting it cannot prove drift.
  *
  * The re-arm is subject to this same one-snapshot rule, and for a sharper
  * reason than the warn: it must use the SAME `currentModel` the filter compared
@@ -1409,10 +1408,9 @@ export async function searchByVector(
   try {
     // The model filter goes DOWN to the provider so it narrows the candidate
     // set BEFORE the top-K slice (DW-598). `rejected` is how many stored
-    // vectors it turned away, which is the only thing that tells an EMPTY
-    // STORE (nothing to rank) apart from a FULLY DRIFTED one (everything
-    // ranked, everything refused).
-    const { matches, rejected } = await getStorage().queryEmbeddings(
+    // vectors it turned away. candidateScope distinguishes a server-ranked
+    // subset from a complete corpus; only the latter can establish drift.
+    const { matches, rejected, candidateScope } = await getStorage().queryEmbeddings(
       queryEmbedding,
       topK,
       (metadata) => modelMatches(metadata, currentModel),
@@ -1440,7 +1438,15 @@ export async function searchByVector(
     // perfectly healthy corpus carrying one stale orphan answers a `topK: 0`
     // query with an empty window and a non-zero `rejected`. An empty window the
     // CALLER asked for is not evidence of anything, least of all drift.
-    const drifted = matches.length === 0 && rejected > 0 && topK > 0;
+    const exhausted = matches.length === 0 && rejected > 0 && topK > 0;
+    const drifted = exhausted && candidateScope !== "window";
+    if (exhausted && candidateScope === "window") {
+      warnOnceAbout(
+        `window:${currentModel}`,
+        "searchByVector: no compatible results in the searched candidate window " +
+          `(active="${currentModel}") — compatible vectors may exist outside this window.`,
+      );
+    }
     const burnt = warnedMisconfigurations.has(driftKey);
     if (burnt || drifted) {
       // ONE epoch read, shared by both halves. It is read only in these two
@@ -1537,7 +1543,7 @@ export async function relatedByVector(
     // set BEFORE the top-K slice (DW-598) — the anchor's own vector is the only
     // thing this door still drops locally, and only because the provider
     // predicate sees metadata, not ids.
-    const { matches, rejected } = await getStorage().queryEmbeddings(
+    const { matches, rejected, candidateScope } = await getStorage().queryEmbeddings(
       self.vector,
       topK + 1,
       (metadata) => modelMatches(metadata, currentModel),
@@ -1551,7 +1557,15 @@ export async function relatedByVector(
     // only slot, `others` is empty and `rejected` can be non-zero on a corpus
     // that has not drifted at all. An empty window the caller asked for is not
     // evidence of anything.
-    const drifted = others.length === 0 && rejected > 0 && topK > 0;
+    const exhausted = others.length === 0 && rejected > 0 && topK > 0;
+    const drifted = exhausted && candidateScope !== "window";
+    if (exhausted && candidateScope === "window") {
+      warnOnceAbout(
+        `window:${currentModel}`,
+        "relatedByVector: no compatible results in the searched candidate window " +
+          `(active="${currentModel}") — compatible vectors may exist outside this window.`,
+      );
+    }
     const burnt = warnedMisconfigurations.has(driftKey);
     if (burnt || drifted) {
       // The canonical gate, shaped exactly as `searchByVector`'s (DW-332,

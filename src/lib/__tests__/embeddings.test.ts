@@ -4518,3 +4518,41 @@ describe("the optional `cfg` door resolves against the snapshot it is given", ()
     expect(hasEmbeddingSupport()).toBe(true);
   });
 });
+
+
+describe("bounded Vectorize diagnostics (DW-758)", () => {
+  it.each(["search", "related"])("reports an exhausted %s window without consuming the later full-corpus drift warning", async (door) => {
+    const { R2StorageProvider } = await import("../storage/r2");
+    const corpus = Array.from({ length: 21 }, (_, i) => ({
+      id: `page-${i}`, score: 1 - i / 100,
+      metadata: { model: i === 20 ? DEFAULT_TEST_MODEL : "old-model" },
+    }));
+    const query = vi.fn(async (_vector, options) => ({ matches: corpus.slice(0, options.topK) }));
+    // Real search -> real R2 provider; only the remote ranking response is a fixture.
+    const provider = new R2StorageProvider({
+      YOPEDIA_VECTORIZE: { query },
+    } as unknown as import("../storage/cloudflare-types").CloudflareEnv);
+    const storage = getStorage();
+    if (door === "related") await seedVector("anchor", [1, 0, 0]);
+    const redirect = vi.spyOn(storage, "queryEmbeddings")
+      .mockImplementation(provider.queryEmbeddings.bind(provider));
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        const run = () => door === "search" ? searchByVector("one", 1) : relatedByVector("anchor", 1);
+        expect(await run()).toEqual([]);
+        expect(await run()).toEqual([]);
+        expect(query).toHaveBeenCalledWith([1, 0, 0], { topK: 20, returnMetadata: "all" });
+        redirect.mockRestore();
+        if (door === "related") await removeEmbedding("anchor");
+        await seedVector("stale", [1, 0, 0], "old-model");
+        expect(await searchByVector("three", 1)).toEqual([]);
+      });
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain("candidate window");
+      expect(warnings[0]).not.toMatch(/rebuild|drift/);
+      expect(warnings[1]).toContain("embedding-model drift");
+    } finally { redirect.mockRestore(); }
+  });
+});
