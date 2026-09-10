@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { humanOwnerOf } from "./agent-handle";
+import { resolveGuidanceOwner } from "./guidance-owner";
 import { llmTimeoutOption } from "./config";
 import { contentHash } from "./embeddings";
 import { isEnoent } from "./errors";
@@ -390,7 +390,7 @@ async function defaultDraftUpdate(input: {
   // that shape the redraft belong to the PERSON behind the handle, so a monitor
   // owned by `alice--yoyo` redrafts against alice's standards instead of the
   // agent's own empty tenant.
-  const guidanceOwner = humanOwnerOf(input.monitor.owner);
+  const guidanceOwner = await resolveGuidanceOwner(input.monitor.owner);
   const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
     buildWorkspaceGuidance(guidanceOwner),
     buildNamesTermsGuidance(guidanceOwner),

@@ -1,6 +1,6 @@
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
-import { humanOwnerOf } from "./agent-handle";
+import { resolveGuidanceOwner } from "./guidance-owner";
 import {
   getStructuredKnowledgeModelSettings,
   llmTimeoutOption,
@@ -340,7 +340,7 @@ export async function extractStructuredKnowledge(
   // Workspace Purpose and a Names & Terms dictionary belong to the PERSON, so
   // extracting a page owned by `alice--yoyo` must read alice's standards
   // rather than the agent's empty tenant. Reduce once, for guidance only.
-  const guidanceOwner = humanOwnerOf(owner);
+  const guidanceOwner = await resolveGuidanceOwner(owner);
   const dictionary = await listNamesTerms(guidanceOwner);
   const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
   const workspaceGuidance = await buildWorkspaceGuidance(guidanceOwner);

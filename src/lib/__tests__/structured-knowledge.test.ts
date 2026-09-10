@@ -425,6 +425,7 @@ describe("agent-owned extraction is guided by the human owner (DW-709)", () => {
       structuredKnowledgeProvider: "openai",
       structuredKnowledgeModel: "gpt-4o",
     });
+    await getStorage().writeFile(`agents/${AGENT}.json`, JSON.stringify({ id: AGENT, owner: HUMAN }));
     const wiki = await createWiki(HUMAN, { name: "Ops", scenario: "business" });
     await writeWikiArtifact(HUMAN, wiki.id, "purpose.md", `# Ops\n\n${PURPOSE}\n`);
     await createNamesTerm(HUMAN, {

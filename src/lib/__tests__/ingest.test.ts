@@ -5329,6 +5329,7 @@ describe("ingest resolves workspace guidance once per document", () => {
     // resolving guidance from the raw handle would synthesize with no Purpose
     // and no dictionary. Guidance reduces to the human; addressing does not.
     const AGENT_OWNER = `${OWNER}--yoyo`;
+    await getStorage().writeFile(`agents/${AGENT_OWNER}.json`, JSON.stringify({ id: AGENT_OWNER, owner: OWNER }));
     await createNamesTerm(OWNER, {
       kind: "project",
       canonical: "Project Lighthouse",
@@ -5381,6 +5382,7 @@ describe("ingest resolves workspace guidance once per document", () => {
     // ingest — a single ingest into an empty fixture never reaches that branch
     // and leaves the argument untested.
     const AGENT_OWNER = `${OWNER}--yoyo`;
+    await getStorage().writeFile(`agents/${AGENT_OWNER}.json`, JSON.stringify({ id: AGENT_OWNER, owner: OWNER }));
     await createNamesTerm(OWNER, {
       kind: "project",
       canonical: "Project Lighthouse",

@@ -15,7 +15,7 @@ import {
 } from "../monitor-digests";
 import { recordOperation } from "../operation-ledger";
 import { createSourceMonitor } from "../source-monitors";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -219,6 +219,7 @@ describe("agent-owned digests canonicalize against the human's dictionary", () =
   const AGENT = "alice--yoyo";
 
   it("applies the human's aliases to the entry prose, storing under the agent", async () => {
+    await getStorage().writeFile(`agents/${AGENT}.json`, JSON.stringify({ id: AGENT, owner: HUMAN }));
     await createNamesTerm(HUMAN, {
       kind: "project",
       canonical: "Project Lighthouse",

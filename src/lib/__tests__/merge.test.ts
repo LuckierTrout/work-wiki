@@ -1451,6 +1451,7 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     // agent's page with no Purpose and no dictionary — even though the
     // same-owner guard already treats `alice--yoyo` and `alice` as one owner.
     const AGENT_OWNER = `${SURVIVOR_OWNER}--yoyo`;
+    await getStorage().writeFile(`agents/${AGENT_OWNER}.json`, JSON.stringify({ id: AGENT_OWNER, owner: SURVIVOR_OWNER }));
     await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
     await seedMergePair(AGENT_OWNER, AGENT_OWNER);
 
@@ -1474,7 +1475,8 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
   });
 
   it("reduces the ACTOR to its human too when the survivor names no owner", async () => {
-    // The fallback principal goes through the same reduction as the survivor's.
+    // The fallback principal uses the same registered identity as the survivor.
+    await getStorage().writeFile(`agents/${SURVIVOR_OWNER}--yoyo.json`, JSON.stringify({ id: `${SURVIVOR_OWNER}--yoyo`, owner: SURVIVOR_OWNER }));
     await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
     await seedMergePair(undefined, SURVIVOR_OWNER);
 

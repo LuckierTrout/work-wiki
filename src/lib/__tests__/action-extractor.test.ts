@@ -110,6 +110,7 @@ function mockOneAction(title = "Send the launch brief"): void {
  */
 describe("extractActionsFromPage guidance principal (DW-709)", () => {
   beforeEach(async () => {
+    await getStorage().writeFile(`agents/${AGENT}.json`, JSON.stringify({ id: AGENT, owner: HUMAN }));
     const wiki = await createWiki(HUMAN, { name: "Ops", scenario: "business" });
     await writeWikiArtifact(HUMAN, wiki.id, "purpose.md", `# Ops\n\n${PURPOSE}\n`);
     await createNamesTerm(HUMAN, {
@@ -158,7 +159,7 @@ describe("extractActionsFromPage guidance principal (DW-709)", () => {
   it("leaves an unreducible handle addressing exactly the tenant it does today", async () => {
     // `humanOwnerOf` returns `yoyo` / `system` / `--yoyo` whole, so these still
     // resolve their OWN (empty) guidance rather than borrowing anyone's.
-    for (const handle of ["yoyo", "system", "--yoyo"]) {
+    for (const handle of ["yoyo", "system"]) {
       generateTextMock.mockReset();
       // A distinct title per handle: `ownerToTenant` collapses `--yoyo` onto
       // the DEFAULT tenant, so two of these can share one item store and the

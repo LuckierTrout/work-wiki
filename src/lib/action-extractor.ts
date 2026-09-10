@@ -1,7 +1,7 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { proposeActionItems, type ActionItem } from "./action-items";
-import { humanOwnerOf } from "./agent-handle";
+import { resolveGuidanceOwner } from "./guidance-owner";
 import { llmTimeoutOption } from "./config";
 import { getConfiguredModel, hasLLMKey, retryWithBackoff } from "./llm";
 import {
@@ -47,7 +47,7 @@ export async function extractActionsFromPage(
   // no dictionary. Reduce ONCE, here, and use it for the two guidance reads
   // below; `proposeActionItems` keeps the RAW handle, because that one names a
   // SILO and a reduced handle there would silently repoint the write.
-  const guidanceOwner = humanOwnerOf(owner);
+  const guidanceOwner = await resolveGuidanceOwner(owner);
   const dictionary = await listNamesTerms(guidanceOwner);
   const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
   const workspaceGuidance = await buildWorkspaceGuidance(guidanceOwner);

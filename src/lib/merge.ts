@@ -15,7 +15,7 @@
  *    (`options?.owner?.trim() || actor`, `ingest.ts`), while this door passes
  *    the SURVIVOR's owner, because the merged prose lives on in the survivor's
  *    workspace and not in the actor's. Since DW-543 BOTH doors then reduce
- *    whichever principal they picked to the HUMAN behind it (`humanOwnerOf`),
+ *    whichever principal they picked to the HUMAN behind it (`resolveGuidanceOwner`),
  *    so an agent handle reads its human's standards instead of its own empty
  *    tenant — a guidance-only reduction that leaves storage addressing alone.
  *  - sources / contributors / authors / aliases are UNIONed; `from`'s title AND
@@ -51,7 +51,7 @@ import {
   type PageLifecycleLockHeld,
 } from "./lifecycle";
 import { escapeRegex } from "./links";
-import { humanOwnerOf } from "./agent-handle";
+import { resolveGuidanceOwner } from "./guidance-owner";
 import { createGuidanceCache } from "./guidance-cache";
 import { buildNamesTermsGuidance } from "./names-terms";
 import { getStorage } from "./storage";
@@ -530,7 +530,7 @@ async function mergePagesWhileSourceLocked({
         const guidancePrincipal =
           asString(into.frontmatter.owner) ?? asString(actor);
         let guidanceOwner = guidancePrincipal
-          ? humanOwnerOf(guidancePrincipal)
+          ? await resolveGuidanceOwner(guidancePrincipal)
           : undefined;
         // One handle for THIS merge only — never hoisted, never shared across
         // merges — so a Purpose or dictionary edit saved between two merges is
