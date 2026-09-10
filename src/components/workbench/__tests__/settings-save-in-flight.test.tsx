@@ -6,7 +6,7 @@ import {
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_BAR_COPY,
   SETTINGS_SAVE_COPY,
-  SETTINGS_MODEL_INHERIT_COPY,
+  SETTINGS_CHAT_MODEL_COPY,
   SETTINGS_SAVING_NOTE_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
@@ -271,7 +271,7 @@ describe("the Settings form is inert while a save is in flight (DW-67/DW-626)", 
     // The provider picker: its own hint FIRST, then the reason it refuses —
     // `aria-describedby` is a list, so the freeze appends rather than replaces.
     const announced = announcedFor(chatProvider());
-    expect(announced).toContain(SETTINGS_MODEL_INHERIT_COPY);
+    expect(announced).toContain(SETTINGS_CHAT_MODEL_COPY);
     expect(announced).toContain(SETTINGS_SAVING_NOTE_COPY);
     // The `Remove` button: the refusal and NOTHING else. It has no description
     // of its own and must not borrow the box's — "A key is stored." belongs to

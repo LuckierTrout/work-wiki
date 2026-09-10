@@ -7,6 +7,7 @@ import {
   SETTINGS_KEY_REMOVE_PENDING_COPY,
   SETTINGS_KEY_STORED_COPY,
   SETTINGS_KEY_UNDO_COPY,
+  SETTINGS_CHAT_MODEL_COPY,
   SETTINGS_MODEL_INHERIT_COPY,
   SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
@@ -107,7 +108,7 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
       const select = screen.getByLabelText(label);
       const announced = announcedFor(select);
       expect(announced).toContain(SETTINGS_READ_ONLY_COPY);
-      expect(announced).toContain(SETTINGS_MODEL_INHERIT_COPY);
+      expect(announced).toContain(label === "Chat provider" ? SETTINGS_CHAT_MODEL_COPY : SETTINGS_MODEL_INHERIT_COPY);
     }
   });
 
@@ -153,7 +154,7 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
   it("keeps the description to the control's own hint on a writable deployment", async () => {
     await mount("llm-models", payload({ readOnly: false }));
     const announced = announcedFor(screen.getByLabelText("Chat provider"));
-    expect(announced).toContain(SETTINGS_MODEL_INHERIT_COPY);
+    expect(announced).toContain(SETTINGS_CHAT_MODEL_COPY);
     // The save bar is showing the ordinary standing sentence here, and pointing
     // a control at it would announce "unsaved edits do not apply" as though it
     // were a constraint on the picker.

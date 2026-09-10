@@ -329,9 +329,13 @@ export const SETTINGS_GENERAL_PURPOSE_COPY =
 export const SETTINGS_GENERAL_NO_WIKI_COPY =
   "Create or select a Wiki before opening its Purpose or Schema.";
 
-/** The one workload-inheritance sentence, shown under both model pickers. */
+/** Ingest resolves its provider and model through the kernel workload settings. */
 export const SETTINGS_MODEL_INHERIT_COPY =
-  "Leave the provider unset to inherit the primary provider and model.";
+  "Ingest: an unset provider uses the primary provider. A saved Ingest model overrides the model. With no Ingest model, an explicit provider uses its default model, if available; leaving both unset uses the primary model.";
+
+/** Workbench Chat generates on the local sidecar, whose provider ladder is separate. */
+export const SETTINGS_CHAT_MODEL_COPY =
+  "Chat uses the local sidecar’s saved Chat provider, or detects one from its environment (falling back to Anthropic). Its saved Chat model overrides the model sent by Workbench; if neither is set, it uses claude-sonnet-4-5. The sidecar does not inherit the primary provider.";
 
 /** The Custom provider needs an endpoint before it can be constructed. */
 export const SETTINGS_CUSTOM_ENDPOINT_COPY =
