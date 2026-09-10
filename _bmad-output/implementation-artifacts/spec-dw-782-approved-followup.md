@@ -28,5 +28,4 @@ Mount Settings and verify accessible help and option labels. Exercise the real k
 - Full suite: 411 files, 10,139 tests passed; one existing credential-dependent skip. The final copy qualification and Custom/default assertion passed separately afterward; all 48 mounted Settings cases also passed again.
 - Full lint and TypeScript checks passed; lint retains the three existing TSNonNullExpression diagnostics.
 
-Production build, final lint, post-build TypeScript check and diff check passed. Review is local; publication and GitHub CI remain pending public-sharing permission. Implementation is not deployment evidence.
-
+Production build, final lint, post-build TypeScript check and diff check passed. Review is local; public publication was explicitly approved by the owner on 2026-09-10; GitHub CI remains pending. Implementation is not deployment evidence.
