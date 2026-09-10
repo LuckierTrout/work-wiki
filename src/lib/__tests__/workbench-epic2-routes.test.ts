@@ -344,67 +344,75 @@ describe("POST /api/workbench/activity", () => {
     // at route entry -- which hands the inline run a FULL 17 s after the job
     // read and the stored-Source read may already have spent most of the 20 s
     // client deadline. That is the original defect, with every other assertion
-    // green. So a step that runs BEFORE both call sites is stalled for a
-    // measurable interval and the budget is read off the call: a remainder
+    // green. So a step that runs BEFORE both call sites advances the clock by a
+    // known interval and the budget is read off the call: a remainder
     // shrinks by what the work ahead of it spent, a fresh fixed margin does not.
     //
     // `retryIngestJob` is the stalled step because it is the ONE pre-enqueue
     // await both paths share -- the embed path reaches `enqueueOrInline` with
-    // nothing else in front of it -- so one stall pins both call sites.
+    // nothing else in front of it -- so one controlled advance pins both call sites.
     const STALL_MS = 60;
-    const stalledRetry = (job: Record<string, unknown>) => async () => {
-      await new Promise((resolve) => setTimeout(resolve, STALL_MS));
-      return job as never;
-    };
+    // Advance only the deadline clock: real timers can fire at a wall-clock
+    // millisecond boundary and appear to spend 59 ms for a 60 ms timeout.
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const stalledRetry = (job: Record<string, unknown>) => async () => {
+        now += STALL_MS;
+        return job as never;
+      };
 
-    mockedRetry.mockImplementationOnce(
-      stalledRetry({
-        jobId: "job-1",
-        owner: "alice",
-        status: "queued",
-        kind: "ingest",
-        sourceRel: "raw/sources/meet/abc.md",
-        title: "Meet",
-      }),
-    );
-    await POST_ACTIVITY(
-      jsonRequest("http://localhost/api/workbench/activity", {
-        action: "retry",
-        jobId: "job-1",
-      }) as never,
-    );
-
-    mockedRetry.mockImplementationOnce(
-      stalledRetry({
-        jobId: "embed-1",
-        owner: "alice",
-        status: "queued",
-        kind: "embed",
-        title: "Embed current pages",
-      }),
-    );
-    await POST_ACTIVITY(
-      jsonRequest("http://localhost/api/workbench/activity", {
-        action: "retry",
-        jobId: "embed-1",
-      }) as never,
-    );
-
-    const paths = [
-      ["stored-Source re-ingest", mockedEnqueue.mock.calls[0]],
-      ["embed rebuild", mockedEnqueue.mock.calls[1]],
-    ] as const;
-    for (const [label, call] of paths) {
-      const budget = (call?.[3] as { inlineBudgetMs?: number } | undefined)
-        ?.inlineBudgetMs;
-      // Still positive: the route did not answer with a budget already spent.
-      expect(budget, label).toBeGreaterThan(0);
-      // THE PIN: the stall was actually subtracted. `toBeLessThan` alone passes
-      // at 16_999, which a budget captured one line above the call site would
-      // also produce.
-      expect(budget, label).toBeLessThanOrEqual(
-        ACTIVITY_ANSWER_BUDGET_MS - STALL_MS,
+      mockedRetry.mockImplementationOnce(
+        stalledRetry({
+          jobId: "job-1",
+          owner: "alice",
+          status: "queued",
+          kind: "ingest",
+          sourceRel: "raw/sources/meet/abc.md",
+          title: "Meet",
+        }),
       );
+      await POST_ACTIVITY(
+        jsonRequest("http://localhost/api/workbench/activity", {
+          action: "retry",
+          jobId: "job-1",
+        }) as never,
+      );
+
+      mockedRetry.mockImplementationOnce(
+        stalledRetry({
+          jobId: "embed-1",
+          owner: "alice",
+          status: "queued",
+          kind: "embed",
+          title: "Embed current pages",
+        }),
+      );
+      await POST_ACTIVITY(
+        jsonRequest("http://localhost/api/workbench/activity", {
+          action: "retry",
+          jobId: "embed-1",
+        }) as never,
+      );
+
+      const paths = [
+        ["stored-Source re-ingest", mockedEnqueue.mock.calls[0]],
+        ["embed rebuild", mockedEnqueue.mock.calls[1]],
+      ] as const;
+      for (const [label, call] of paths) {
+        const budget = (call?.[3] as { inlineBudgetMs?: number } | undefined)
+          ?.inlineBudgetMs;
+        // Still positive: the route did not answer with a budget already spent.
+        expect(budget, label).toBeGreaterThan(0);
+        // THE PIN: the stall was actually subtracted. `toBeLessThan` alone passes
+        // at 16_999, which a budget captured one line above the call site would
+        // also produce.
+        expect(budget, label).toBe(
+          ACTIVITY_ANSWER_BUDGET_MS - STALL_MS,
+        );
+      }
+    } finally {
+      clock.mockRestore();
     }
   });
 

@@ -232,3 +232,19 @@ merged or deployed. The deferred-work ledger remains orchestrator-owned.
 
 - Clarifies that the shared Vitest invocation covers both test projects.
   [vitest.config.ts:71](../../vitest.config.ts#L71)
+
+## Combined-head CI repair after PR #16
+
+The authorized merge sequence merged PR #16 first, then updated PR #17 to
+`3e786d97090347b012d30b0dee485c3b761c2c2d`. Application CI run
+[34424333143](https://github.com/LuckierTrout/work-wiki/actions/runs/34424333143)
+failed twice on the existing Activity retry deadline assertion: the real 60 ms
+sleep measured as 59 ms against `Date.now()`. Browser E2E and Sandbox Worker
+passed. No browser retry, tolerance increase or product timeout was introduced.
+
+The test now advances a controlled deadline clock during the shared pre-enqueue
+step and requires exactly the remaining budget for both retry paths. The clock
+is restored in `finally`. This still rejects a fresh full budget captured after
+that step. The focused route suite passes all 15 tests; fresh full CI must pass
+at the resulting commit before merge. The earlier clean-head evidence remains
+historical evidence, not certification of this repair.
