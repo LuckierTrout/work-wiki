@@ -4960,7 +4960,8 @@ location: src/app/api/wikis/route.ts:85
 source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
 severity: medium
 reason: `isOwnerPrincipal` resolves WHO the owner is by the stable Clerk id, but WHICH tenant they address is still derived from `principal.handle`: `POST /api/wikis` calls `createWiki(principal.handle, ...)` (src/app/api/wikis/route.ts) while the Schema that executes is read from `getOwnerHandle()` (`readActiveWikiSchema`, src/lib/wikis.ts:2149), and `PUT /api/workbench/artifact` writes to the caller's tenant. Before this change the owner-by-id whose handle had drifted got a loud 403; now they get a 200 whose bytes land in a silo (named after the raw Clerk id, in the no-username case) that no prompt or reader ever opens. Both routes' own comments describe exactly that "silently inert save" as the thing their gate existed to prevent. DW-486's recorded decision covered owner-ness only; which silo the admitted owner addresses is a separate fact needing its own decision, and the fix has more than one defensible shape (route the owner's tenant through `getOwnerHandle()`; refuse when the id-owner's
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/app/api/wikis/route.ts:87 now calls createWiki(ownerTenantHandle(principal), ...) — canonical-tenant helper landed in commit 90bf8f7b (PR #15).
 decision: 2026-08-31 Canonical tenant for id-owners — Route an owner admitted by stable id through getOwnerHandle() when deriving the tenant, so id-owners always address the canonical silo regardless of their current handle. Audit every write door that derives a tenant from principal.handle for the same substitution and pin that a drifted-handle owner's write lands where the reads look.
 
 ### DW-613: The three client owner gates cannot see the stable id, so client and server owner-ness can now disagree in BOTH directions, and the harness written to catch that never runs with an owner id configured
@@ -4969,7 +4970,8 @@ location: src/components/__tests__/article-actions-delete-gate.test.tsx:211
 source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
 severity: medium
 reason: `NavHeader.tsx:53`, `ArticleActions.tsx:118` and `RevisionHistory.tsx:132` stay on `isOwnerHandle` because `YOPEDIA_OWNER_USER_ID` is server-only and is never inlined into the bundle. With an id configured the client answer is no longer merely NARROWER than the server's: an impostor holding a stale `NEXT_PUBLIC_OWNER_HANDLE` is refused by every server gate yet is still shown the owner affordances, and the id-matching owner whose handle drifted is shown none. `src/components/__tests__/article-actions-delete-gate.test.tsx` is the one harness that compares the client gate against the real `canWritePage`, and it sets only `NEXT_PUBLIC_OWNER_HANDLE` in its `beforeEach` (:211) so both sides resolve from the same fact and agree by construction; running it with `YOPEDIA_OWNER_USER_ID=user_2stable` produces 4 failures, including "offers Delete to nobody the server would refuse". Closing this needs a decision: hand the islands a server-computed `isOwner` prop, or accept the divergence and parame
-status: open
+status: done 2026-09-10
+resolution: already resolved: Commit 90bf8f7b threads a server-computed isSiteOwner into NavHeader (src/components/NavHeader.tsx:45), ArticleActions and RevisionHistory, and the harness now drives divergent identity facts at src/components/__tests__/article-actions-delete-gate.test.tsx:766.
 decision: 2026-08-31 Pass a server-computed flag — Compute isOwner on the server and pass it as a prop down to NavHeader, ArticleActions and RevisionHistory, so the client gate is the server's answer rather than an independent re-derivation, and reparameterize the harness to drive the two sides from different facts so a divergence is visible.
 
 ### DW-614: `src/mcp.ts` mints `service:mcp` principal ids from a raw string literal rather than the shared `SERVICE_PRINCIPAL_ID_PREFIX`.
@@ -6379,7 +6381,8 @@ location: .github/workflows/ci.yml (no test:e2e step); e2e/workbench-layout.spec
 source_spec: `spec-dw-185-287-real-runtime-verification-gaps.md`
 severity: medium
 reason: `.github/workflows/ci.yml` runs `tsc --noEmit`, `pnpm lint`, `pnpm test`, `pnpm build` and `pnpm build:cloudflare`, and no `pnpm test:e2e` step; `AGENTS.md` records the Playwright lane as "Not in CI; run it locally". No assertion was removed by this change — the stylesheet scans still run on every `pnpm test` and still fail when a declaration is deleted — so CI's detection power is unchanged. What is new is that the resolved-cascade claim now exists somewhere, and that somewhere is opt-in. Enrolling the lane needs a CI dev server and browser install, which is the same project-level decision DW-185 was originally waiting on.
-status: open
+status: done 2026-09-10
+resolution: already resolved: .github/workflows/ci.yml:64-99 runs a Playwright e2e job (browser install at :89, pnpm test:e2e at :93, failure-artifact retention at :95); AGENTS.md:117 no longer calls the lane local-only. Commit bf363001.
 decision: 2026-09-04 Add a full e2e CI job — Add a Playwright job to ci.yml that installs browsers, boots a CI dev server with the E2E identity armed, and runs pnpm test:e2e, landing after or with the DW-534 E2E identity fix; update AGENTS.md's 'Not in CI' note.
 decision: 2026-09-04 Enroll test:e2e in CI — Add a CI job that installs Playwright browsers, starts the dev server via playwright.config.ts's webServer, and runs pnpm test:e2e, with the runtime and flake budget recorded. Update AGENTS.md:115 so the lane is no longer described as local-only.
 
@@ -6445,7 +6448,8 @@ location: src/lib/__tests__/brand-copy.test.ts:282
 source_spec: `spec-dw-350-589-brand-scan-coverage.md`
 severity: low
 reason: Both enumerated families carry "keeps every waived ... earning its place" sweeps that fail when a member stops occurring in the shipped tree; the eleven plain IDENTIFIER_ALLOWLIST patterns carry none. A reviewer rewrote .github/workflows/seed-yoyo.yml:93 to drop the host entirely and all 22 tests still passed, leaving /yopedia\.christianlee-flightwall\.workers\.dev/g as a repo-wide licence to write that host as display prose. The sibling /yopedia\.yuanhao-li\.workers\.dev/g has the identical gap and predates this change, so the class is pre-existing; this story adds one instance to it. AGENTS.md states the principle for the families ("a name no scanned file spells any more is a standing licence to write that word as copy") but nothing enforces it for the single-host origins.
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/__tests__/brand-copy.test.ts:1418 "keeps every waived yopedia identifier pattern earning its place" runs unusedWaivers over IDENTIFIER_ALLOWLIST at :1442, with the WORKWIKI sibling sweep at :1451-1466.
 
 ### DW-762: The literal-host rows of IDENTIFIER_ALLOWLIST and both workwiki hyphen/host rows carry no leading boundary at all, so DW-475's lookalike-host hole stays open one row over.
 origin: spec-deferred 959a85bd5266
@@ -6485,7 +6489,8 @@ location: src/lib/wikis.ts (writeWikiArtifact, the purpose.md authority-marker b
 source_spec: `spec-dw-732-736-745-api-door-error-typing.md`
 severity: low
 reason: `purpose.md` is in `EDITABLE_ARTIFACT_FILES`, so `PUT /api/workbench/artifact` reaches it. On a Wiki whose record has no `artifactAuthority` marker yet, the save takes the legacy branch: the bytes land, `writeRegistry(owner, registryToMark)` is attempted, and on failure the artifact is restored and the storage error is rethrown unchanged (`src/lib/wikis.ts`, the marker-write catch below the new `putWikiArtifact` wrap). That raw error passes every arm of the route's ladder -- it is neither read-only, write-conflict, unreadable nor unwritable -- and leaves by the fallthrough `json({ error: getErrorMessage(error) }, 500)`, which `savePreviewBody` renders verbatim. `readRegistry` a few lines above the same branch is unguarded too. Two independent review layers reached this by tracing the branch; no test covers it (`grep artifactAuthority` finds only `wikis.test.ts` and `workspace-purpose-canonicalization.test.ts`, and the one registry-write-failure row there drives `canonicalizeWikiPurpose
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/wikis.ts:1218-1230 wraps readRegistry in ArtifactSaveContextError and the marker-write catch now raises the typed Artifact{SaveUnconfirmed,RecoveryFailed}Error copies instead of rethrowing raw storage errors. Commit 80bf05ab.
 
 ### DW-767: `updateAgent`'s `addPages` bucketing has DW-749's hole in a worse form: an out-of-enum `type` is filed under `socialPages` by the ternary's final `else`, after the page is already written.
 origin: spec-deferred b626dcfb9133
@@ -6493,7 +6498,8 @@ location: src/lib/agents.ts:845
 source_spec: `spec-dw-725-749-typed-error-and-enum-guards.md`
 severity: low
 reason: `src/lib/agents.ts:845-853` buckets with `page.type === "identity" ? … : page.type === "learnings" ? … : existing.socialPages`, AFTER `writeWikiPageWithSideEffects` at :826-842. `UpdateAgentPage` is the same `{slug,title,type,content}` shape as `SeedAgentSection` and lands in the same three `AgentProfile` lists. Two doors reach it unvalidated, not one: the HTTP MCP gate declares the same `enum` at `src/lib/mcp-http.ts:986` but does not judge `enum` members by design (DW-563), `handleUpdateAgent` (`src/mcp.ts:1041-1055`) passes `addPages` through, and `PUT /api/agents/[id]` validates eight other fields then calls `updateAgent(id, body)` with no `addPages` check at all (`src/app/api/agents/[id]/route.ts:156-257`) — weaker than `POST /api/agents/seed`, whose per-index check this bundle's sentence copies. Only the stdio door refuses, at `src/mcp.ts:2482`. Consequence is worse than the seed hole this bundle closed: seedAgent left a written page in NO list, updateAgent files it under a list
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/agents.ts:654-665 validates the whole addPages batch (array shape and the identity/learnings/social enum) before any scalar change or page write. Commit 60d8f0ff.
 
 ### DW-768: A SILO-ONLY orphan the DELETE ladder now admits still cannot be deleted: `deleteWikiPage` re-reads the page without the owner hint the probe used, so the kernel throws and the row lands in `failed[]`
 origin: spec-deferred 0f7206ced055
@@ -6525,7 +6531,8 @@ location: src/app/u/[handle]/raw/[slug]/page.tsx:29
 source_spec: `spec-dw-726-738-742-page-scoped-read-gates.md`
 severity: medium
 reason: `src/app/u/[handle]/raw/[slug]/page.tsx:29` gates on `canReadSlug(slug, principal)` and nothing else, then reads the very bytes this bundle just gated — `readRawSource` / `readRawSourceById` — and hands them to `RawSourceBrowser` as `initialContent`. Middleware admits anonymous GETs on `/u/**`. A review subagent demonstrated it on a tmpdir deployment: for a `visibility: public`, `type: agent-knowledge` page with `getPrincipal -> null`, `GET /api/raw/agent-notes` now answers 404 while `RawSourcePage` passes every gate and reaches its render with the raw text loaded. Pre-existing and not named by the bundle intent, which pointed at `src/app/api/raw/[slug]/route.ts:24`. The same door carries the mirror-image mismatch: `RawSourceBrowser.tsx:62-63` builds its Download link as `/api/raw/<slug>`, and because `hiddenSlugs` is derived from the principal's OWN readable entries, that button now 404s even for the owner of their own agent-scoped page — the intended parity with `/api/assets/[...path
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/app/u/[handle]/raw/[slug]/page.tsx:35-37 now fails closed behind rawSourceAccessAllowed(slug, principal) before any raw read or canonical navigation. Commit b6aabcc3 (PR #16).
 
 ### DW-772: extractXlsx has the same "existence is not identity" defect DW-724 fixed in extractPptx: a workbook sheet rel resolving to any real archive key is accepted as a worksheet and shadows the numbered fall
 origin: spec-deferred 9c01d5533a8d
@@ -6533,7 +6540,8 @@ location: src/lib/document-extract.ts:766
 source_spec: `spec-dw-724-744-archive-and-raw-name-predicates.md`
 severity: low
 reason: src/lib/document-extract.ts:766 pushes a sheet on `if (path && files[path])` with no `^xl/worksheets/sheetN\.xml$` test, and the numbered `xl/worksheets/sheetN.xml` fallback is used only when that list is empty — the identical shadowing shape. Verified during review: a workbook whose `rId1` targets `sharedStrings.xml` alongside a real `xl/worksheets/sheet1.xml` extracts as "## Metrics\n\n[Empty worksheet]", dropping the real sheet's data. Reachable through the same inline ZIP door as DW-724 (`extractDocumentTextAsync`'s zip branch). This bundle's intent named only extractPptx, so the sibling was left untouched.
-status: open
+status: done 2026-09-10
+resolution: already resolved: src/lib/document-extract.ts:770 requires /^xl\/worksheets\/sheet\d+\.xml$/i on the resolved rel target before pushing a sheet, and :755 restricts relationships to worksheet types. Commit f3b753b1.
 
 ### DW-773: A cancelled project whose stored completion is malformed at `phase: "sources"` still cannot finalize — the DW-682 teardown exemption is reachable only from `phase: "page"`.
 origin: spec-deferred 6ab05843e1a5
