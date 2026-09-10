@@ -53,7 +53,8 @@ export const SIDECAR_TURN_INCOMPLETE_COPY = "Chat ended before a complete answer
 // agrees — `formatSse` emits `event:` as the block's first line, and its
 // `JSON.stringify` escapes newlines, so a payload can never forge one.
 const EVENT_RE = /^event:\s*(\w+)/m;
-const DATA_RE = /data:\s*({[\s\S]*})/;
+// Capture the complete payload, including a truncated object at stream end.
+const DATA_RE = /^data:[ \t]*([\s\S]*)/m;
 
 export interface SidecarSseBlock {
   event: SidecarSseEvent;
@@ -75,7 +76,9 @@ export function readSidecarSseBlock(block: string): SidecarSseBlock | null {
   let data: Record<string, unknown> = {};
   if (dataMatch) {
     try {
-      data = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(dataMatch[1]);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      data = parsed as Record<string, unknown>;
     } catch {
       // UNUSABLE IS UNKNOWN, NOT FATAL — the same rule as a sixth event name.
       // An unguarded parse throws a raw `SyntaxError` that escapes the reader
