@@ -8,6 +8,13 @@ import { isOwnerPrincipal, ownerTenantHandle } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { artifactDisplayName, isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import {
+  ARTIFACT_SAVE_CONTEXT_COPY,
+  ARTIFACT_SAVE_UNCONFIRMED_COPY,
+  ARTIFACT_RECOVERY_FAILED_COPY,
+  ArtifactSaveContextError,
+  isArtifactSaveContextError,
+  isArtifactSaveUnconfirmedError,
+  isArtifactRecoveryFailedError,
   ARTIFACT_UNREADABLE_COPY,
   ARTIFACT_UNWRITABLE_COPY,
   getWikiRegistry,
@@ -136,6 +143,18 @@ export async function PUT(request: Request) {
       );
       return json({ error: ARTIFACT_UNWRITABLE_COPY }, 500);
     }
+    // Use constants, never diagnostic messages, for authority/recovery failures.
+    const purposeFailure = isArtifactSaveContextError(error)
+      ? ARTIFACT_SAVE_CONTEXT_COPY
+      : isArtifactRecoveryFailedError(error)
+        ? ARTIFACT_RECOVERY_FAILED_COPY
+        : isArtifactSaveUnconfirmedError(error)
+          ? ARTIFACT_SAVE_UNCONFIRMED_COPY
+          : null;
+    if (purposeFailure !== null) {
+      logger.error("workbench-artifact", "purpose save could not be confirmed", error);
+      return json({ error: purposeFailure }, 500);
+    }
     // A `ClientInputError` is the caller's input — `wikis.ts` throws it for an
     // unparseable owner or Wiki id — and everything else is ours. Without this
     // wrap a throw escapes as a framework 500 whose body is not `{ error }`,
@@ -213,7 +232,15 @@ async function handle(request: Request) {
     return json({ error: PAGE_CONVENTIONS_REQUIRED_COPY }, 400);
   }
 
-  const { currentId } = await getWikiRegistry(ownerTenantHandle(principal));
+  let registry;
+  try {
+    registry = await getWikiRegistry(ownerTenantHandle(principal));
+  } catch (error) {
+    // Purpose authority resolution is part of this save, before draft writes.
+    if (target !== "purpose.md" || isClientInputError(error) || isReadOnlyError(error)) throw error;
+    throw new ArtifactSaveContextError({ cause: error });
+  }
+  const { currentId } = registry;
   if (!currentId) {
     return json({ error: "Wiki not found." }, 404);
   }

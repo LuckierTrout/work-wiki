@@ -1006,6 +1006,47 @@ export function isArtifactUnwritableError(err: unknown): err is Error {
   return err instanceof Error && err.name === "ArtifactUnwritableError";
 }
 
+/** Safe outcomes for purpose saves whose authority metadata cannot be confirmed. */
+export const ARTIFACT_SAVE_CONTEXT_COPY =
+  "The Wiki could not be opened for saving, so your draft was not saved. " +
+  "Copy your unsaved text, then reload and try again.";
+export const ARTIFACT_SAVE_UNCONFIRMED_COPY =
+  "The save could not be confirmed. Copy your unsaved text, then reload " +
+  "and check the stored version before saving again.";
+export const ARTIFACT_RECOVERY_FAILED_COPY =
+  "The save could not be confirmed, and recovery could not be completed. " +
+  "Copy your unsaved text and reload to check the stored version before making another change.";
+
+export class ArtifactSaveContextError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(ARTIFACT_SAVE_CONTEXT_COPY, options);
+    this.name = "ArtifactSaveContextError";
+  }
+}
+export class ArtifactSaveUnconfirmedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(ARTIFACT_SAVE_UNCONFIRMED_COPY, options);
+    this.name = "ArtifactSaveUnconfirmedError";
+  }
+}
+export class ArtifactRecoveryFailedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(ARTIFACT_RECOVERY_FAILED_COPY, options);
+    this.name = "ArtifactRecoveryFailedError";
+  }
+}
+
+// Match names across duplicated module graphs, like the existing artifact errors.
+export function isArtifactSaveContextError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "ArtifactSaveContextError";
+}
+export function isArtifactSaveUnconfirmedError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "ArtifactSaveUnconfirmedError";
+}
+export function isArtifactRecoveryFailedError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "ArtifactRecoveryFailedError";
+}
+
 /**
  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
  *
@@ -1177,7 +1218,13 @@ export async function writeWikiArtifact(
     let registryToMark: WikiRegistry | null = null;
     let wikiToMark: WikiRecord | null = null;
     if (file === "purpose.md") {
-      const registry = await readRegistry(owner);
+      let registry: WikiRegistry;
+      try {
+        registry = await readRegistry(owner);
+      } catch (error) {
+        if (isClientInputError(error) || isReadOnlyError(error)) throw error;
+        throw new ArtifactSaveContextError({ cause: error });
+      }
       const wiki = registry.wikis.find((item) => item.id === wikiId) ?? null;
       if (wiki && wiki.artifactAuthority !== ARTIFACT_AUTHORITY_VERSION) {
         try {
@@ -1282,8 +1329,9 @@ export async function writeWikiArtifact(
         // evidence become permanently non-live.
         await writeRegistry(owner, registryToMark);
       } catch (error) {
-        // The marker did not commit, so put the raw artifact back. Effective
-        // reads then keep serving the legacy projection and a retry is safe.
+        // Keep the existing compensation, but a rejected write may have landed.
+        // Even restored raw bytes do not prove the authority marker stayed old;
+        // require a reload instead of claiming an unchanged effective version.
         try {
           if (existing === null) {
             await getStorage().deleteFile(wikiArtifactPath(owner, wikiId, file));
@@ -1294,13 +1342,11 @@ export async function writeWikiArtifact(
             );
           }
         } catch (restoreError) {
-          logger.warn(
-            "workspace-purpose",
-            `restoring purpose.md after its authority marker failed for wiki "${wikiId}"`,
-            restoreError,
-          );
+          throw new ArtifactRecoveryFailedError({
+            cause: new AggregateError([error, restoreError], "Purpose save and recovery failed"),
+          });
         }
-        throw error;
+        throw new ArtifactSaveUnconfirmedError({ cause: error });
       }
     }
   });
