@@ -201,3 +201,17 @@ describe("ChatWorkspace save outcomes", () => {
     expect(savedBanner()).toBeNull();
   });
 });
+
+
+describe("DW-777 save retry feedback", () => {
+  it("clears a prior unconfirmed error when the next save succeeds", async () => {
+    await openThread();
+    routes["/api/query/save"] = TRANSPORT_FAILURE;
+    await clickSave();
+    expect(screen.getByText(unconfirmedWriteMessage("save the answer"))).toBeTruthy();
+    routes["/api/query/save"] = { slug: "queries/recovered" };
+    await clickSave();
+    expect(savedBanner()).not.toBeNull();
+    expect(screen.queryByText(unconfirmedWriteMessage("save the answer"))).toBeNull();
+  });
+});

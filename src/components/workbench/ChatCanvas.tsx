@@ -218,34 +218,49 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }
 
   async function createConversation() {
-    if (readOnly) return;
-    if (activeId) drafts.current[activeId] = composer;
-    const conversation = await startConversation();
-    if (!conversation) return;
-    setMessages([]);
-    setComposer("");
-    drafts.current[conversation.id] = "";
+    try {
+      if (readOnly) return;
+      if (activeId) drafts.current[activeId] = composer;
+      setError(null);
+      const conversation = await startConversation();
+      if (!conversation) return;
+      setMessages([]);
+      setComposer("");
+      drafts.current[conversation.id] = "";
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not create conversation.");
+    }
   }
 
   async function deleteConversation(id: string) {
-    if (readOnly) return;
-    abortRef.current?.abort();
-    const outcome = await removeConversation(id);
-    delete drafts.current[id];
-    // The composer follows the conversation the removal left the surface on —
-    // its own draft, or empty when nothing is left to be on.
-    if (outcome.switched) {
-      setComposer(
-        outcome.fallbackId ? (drafts.current[outcome.fallbackId] ?? "") : "",
-      );
+    try {
+      if (readOnly) return;
+      abortRef.current?.abort();
+      setError(null);
+      const outcome = await removeConversation(id);
+      delete drafts.current[id];
+      // The composer follows the conversation the removal left the surface on —
+      // its own draft, or empty when nothing is left to be on.
+      if (outcome.switched) {
+        setComposer(
+          outcome.fallbackId ? (drafts.current[outcome.fallbackId] ?? "") : "",
+        );
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not delete conversation.");
     }
   }
 
   async function commitRename(id: string) {
-    const name = renameValue.trim();
-    setRenameId(null);
-    if (!name || readOnly) return;
-    await renameActive(id, name);
+    try {
+      const name = renameValue.trim();
+      setRenameId(null);
+      if (!name || readOnly) return;
+      setError(null);
+      await renameActive(id, name);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not rename conversation.");
+    }
   }
 
   function dockCitation(citation: ChatCitation) {
