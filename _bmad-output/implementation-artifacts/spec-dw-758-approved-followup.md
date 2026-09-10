@@ -28,5 +28,4 @@ Drive search through the real R2 storage implementation with a bounded synthetic
 - Full suite: 410 files, 10,131 tests passed; one existing credential-dependent skip. The related-page regression was added afterward and executed separately without further behavior changes.
 - Full lint and TypeScript checks passed; lint retains the three existing TSNonNullExpression diagnostics.
 
-Production build, final lint, post-build TypeScript check and diff check passed. Review is local; publication and GitHub CI remain pending public-sharing permission. Implementation is not deployment evidence.
-
+Production build, final lint, post-build TypeScript check and diff check passed. Review is local; public publication was explicitly approved by the owner on 2026-09-10; GitHub CI remains pending. Implementation is not deployment evidence.
