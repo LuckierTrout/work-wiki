@@ -20,6 +20,7 @@ export function sanitizeCitedAnswer(
   content: string,
   citations: readonly ChatCitation[] | undefined,
   coverageCopy: string = CHAT_COVERAGE_MISSING_COPY,
+  options: { allowUncited?: boolean } = {},
 ): { content: string; citations: ChatCitation[]; coverage: boolean } {
   const byN = new Map<number, ChatCitation>();
   for (const row of citations ?? []) {
@@ -49,6 +50,12 @@ export function sanitizeCitedAnswer(
   next = next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 
   if (used.size === 0) {
+    // Tool outcomes (including refusals) are not uncited wiki answers.
+    // Callers must opt in from the existing tool/output metadata.
+    if (options.allowUncited === true) {
+      const rows = [...byN.values()];
+      return { content: next, citations: rows, coverage: rows.length > 0 };
+    }
     return {
       content: coverageCopy,
       citations: [],

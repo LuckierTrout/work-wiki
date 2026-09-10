@@ -155,6 +155,11 @@ export function settleTurn(turn: OpenTurn, frame: SidecarDoneFrame): ChatTurnOut
   const sanitized = sanitizeCitedAnswer(
     frame.content ?? "",
     frame.citations?.length ? frame.citations : turn.fallbackCitations,
+    CHAT_COVERAGE_MISSING_COPY,
+    { allowUncited:
+      (Array.isArray(frame.toolCalls) && frame.toolCalls.length > 0) ||
+      (Array.isArray(frame.outputs) && frame.outputs.length > 0),
+    },
   );
   // AN EMPTY ANSWER WITH NO TOOL CALLS is the coverage-missing case the assemble
   // predicted.
