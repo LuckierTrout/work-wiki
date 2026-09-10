@@ -16,32 +16,5 @@
     "key": "1",
     "label": "Per-runtime guard",
     "resolution": ""
-  },
-  "DW-758": {
-    "answered_at": "2026-09-10",
-    "bundle_name": "dw-758-search-diagnostics",
-    "effect": "build",
-    "intent": "Distinguish Vectorize candidate-window exhaustion from corpus-wide model drift. Report the limited coverage without prescribing a rebuild or consuming the drift warning throttle. Preserve matching, ranking and local full-corpus behavior; no index migration or provisioning.",
-    "key": "approved",
-    "label": "Report bounded search coverage honestly",
-    "resolution": ""
-  },
-  "DW-780": {
-    "answered_at": "2026-09-10",
-    "bundle_name": "dw-780-guidance-identity",
-    "effect": "build",
-    "intent": "Resolve guidance ownership using the complete registered agent identity and authoritative owner metadata, never a delimiter or registered prefix alone. Preserve human handles whole; reject invalid or contradictory identities before default-tenant guidance can be read. Keep storage, attribution, runtime identifiers and existing authorization equivalence unchanged.",
-    "key": "approved",
-    "label": "Verify the complete agent identity",
-    "resolution": ""
-  },
-  "DW-782": {
-    "answered_at": "2026-09-10",
-    "bundle_name": "dw-782-model-help",
-    "effect": "build",
-    "intent": "Correct provider/model help without changing routing. Ingest uses a saved model even with an inherited provider; an explicit provider with no model uses that provider default. Describe Workbench Chat separately because the sidecar has its own provider and model resolution.",
-    "key": "approved",
-    "label": "Describe existing routing accurately",
-    "resolution": ""
   }
 }
