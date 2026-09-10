@@ -16,5 +16,14 @@
     "key": "1",
     "label": "Per-runtime guard",
     "resolution": ""
+  },
+  "DW-758": {
+    "answered_at": "2026-09-10",
+    "bundle_name": "dw-758-search-diagnostics",
+    "effect": "build",
+    "intent": "Distinguish Vectorize candidate-window exhaustion from corpus-wide model drift. Report the limited coverage without prescribing a rebuild or consuming the drift warning throttle. Preserve matching, ranking and local full-corpus behavior; no index migration or provisioning.",
+    "key": "approved",
+    "label": "Report bounded search coverage honestly",
+    "resolution": ""
   }
 }
