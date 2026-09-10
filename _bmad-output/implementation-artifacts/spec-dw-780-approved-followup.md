@@ -28,5 +28,4 @@ Drive source-monitor redrafting and action creation with real temporary registry
 - Final identity/owner-module focused suites: 42 passed. Source-monitor composition and identity cases also passed together.
 - A final full run found the repository's owner-module comparison rule; the collision refusal now lives in owner.ts. An unrelated Settings provider-switch case failed once and passed unchanged in isolation (15 cases); the final full rerun uses four workers to reduce contention. The complete final rerun (`pnpm exec vitest run --maxWorkers=4`) passed: 411 files, 10,146 tests; one existing credential-dependent skip.
 
-Production build, final lint, post-build TypeScript check and diff check passed. Review is local; publication and GitHub CI remain pending public-sharing permission. Implementation is not deployment evidence.
-
+Production build, final lint, post-build TypeScript check and diff check passed. Review is local; public publication was explicitly approved by the owner on 2026-09-10; GitHub CI remains pending. Implementation is not deployment evidence.
