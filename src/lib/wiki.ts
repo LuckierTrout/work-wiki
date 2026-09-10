@@ -517,6 +517,30 @@ export async function findStoredPageKey(
   return (await readStoredPageVariant(slug, tenant, true))?.key ?? null;
 }
 
+/** Resolve every physical spelling, strictly, before a logical mutation.
+ * Listing preserves physical names on case-folding filesystems, where four
+ * differently cased reads can otherwise masquerade as four separate objects.
+ * Providers exhaust pagination and throw on failure; no incomplete inventory
+ * is allowed to authorize deletion or recovery.
+ */
+export async function readStoredPageCopies(
+  slug: string,
+  tenant: string | null,
+): Promise<{ key: string; content: string }[]> {
+  validateSlug(slug);
+  const copies: { key: string; content: string }[] = [];
+  const names = new Set(wikiPageNames(slug));
+  const root = tenant === null ? wikiRelPath("") : tenantWikiRelPath(tenant, "");
+  const entries = await getStorage().listFiles(root);
+  for (const entry of entries.filter((entry) => names.has(entry.name)).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory) throw new Error(`Page spelling is a directory: ${entry.name}`);
+    const key = tenant === null ? wikiRelPath(entry.name) : tenantWikiRelPath(tenant, entry.name);
+    // A listed object disappearing is an incomplete snapshot, not an absence.
+    copies.push({ key, content: await getStorage().readFile(key) });
+  }
+  return copies;
+}
+
 /**
  * Read a wiki page by slug. Returns `null` when the file doesn't exist or the
  * slug is invalid.
