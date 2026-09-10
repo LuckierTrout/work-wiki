@@ -649,6 +649,21 @@ export async function updateAgent(
   const existing = await getAgent(id);
   if (!existing) return null;
 
+  // Validate the whole batch before scalar/list changes or the first page write.
+  // HTTP/MCP callers can bypass TypeScript's enum (DW-767).
+  if (options.addPages !== undefined) {
+    if (!Array.isArray(options.addPages)) {
+      throw new ClientInputError("addPages must be an array");
+    }
+    for (const [index, page] of options.addPages.entries()) {
+      if (!page || !["identity", "learnings", "social"].includes(page.type)) {
+        throw new ClientInputError(
+          `Page at index ${index} has invalid 'type' — must be one of: identity, learnings, social`,
+        );
+      }
+    }
+  }
+
   // Apply scalar updates
   if (options.name !== undefined) {
     if (typeof options.name !== "string" || options.name.trim().length === 0) {
