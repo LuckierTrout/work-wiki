@@ -47,6 +47,7 @@ vi.mock("@/lib/workbench-data-version", async () => {
   return { ...actual, requestDataVersionCheck };
 });
 
+import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import { ChatCanvas } from "@/components/workbench/ChatCanvas";
 import {
   useChatConversations,
@@ -312,6 +313,39 @@ describe("/skill is a command, not a question", () => {
 });
 
 describe("Attach reports what Intake did", () => {
+  it("coalesces hidden attachment nudges until return without replaying Intake", async () => {
+    baseSend((url) => {
+      if (url === "/api/chat/conversations") return { conversations: [ALPHA] };
+      if (url === "/api/chat/conversations/c1") return { conversation: ALPHA };
+      return {};
+    });
+    const releases: Array<(body: unknown) => void> = [];
+    submitIntakeFiles.mockImplementation(() => new Promise((resolve) => releases.push(resolve)));
+    const tree = (visible: boolean) => <SurfaceVisibilityProvider visible={visible}><ChatCanvas wikiId="current" readOnly={false} onDockPreview={vi.fn()} /></SurfaceVisibilityProvider>;
+    const view = render(tree(true));
+    await screen.findByText("Alpha answer.");
+    const input = document.querySelector("input[type='file']") as HTMLInputElement;
+    Object.defineProperty(input, "files", { value: [new File(["notes"], "notes.md")], configurable: true });
+    fireEvent.change(input);
+    fireEvent.change(input);
+    view.rerender(tree(false));
+    await act(async () => {
+      for (const release of releases) release([{ name: "notes.md", error: null, unconfirmed: false, disposition: "queued" }]);
+    });
+    expect(submitIntakeFiles).toHaveBeenCalledTimes(2);
+    expect(requestDataVersionCheck).not.toHaveBeenCalled();
+    expect(screen.queryByText(intakeStoredCopy(1))).toBeNull();
+    view.rerender(tree(true));
+    await act(async () => {});
+    expect(screen.getByText(intakeStoredCopy(1))).toBeTruthy();
+    expect(requestDataVersionCheck).toHaveBeenCalledTimes(1);
+    view.rerender(tree(false));
+    view.rerender(tree(true));
+    await act(async () => {});
+    expect(requestDataVersionCheck).toHaveBeenCalledTimes(1);
+    expect(submitIntakeFiles).toHaveBeenCalledTimes(2);
+  });
+
   it("shows the report and asks the trees to re-poll", async () => {
     baseSend((url) => {
       if (url === "/api/chat/conversations") return { conversations: [ALPHA] };
@@ -383,5 +417,132 @@ describe("New Chat writes on both sides of the hook boundary", () => {
     // the last one's draft, is the seam failing.
     expect(screen.queryByText("Alpha answer.")).toBeNull();
     expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("");
+  });
+});
+
+
+describe("returning Chat snapshots cannot undo explicit list mutations (DW-422)", () => {
+  it.each(["list-first", "create-first"])("reconciles New Chat during first load (%s)", async (order) => {
+    let releaseList!: (body: unknown) => void;
+    let releaseCreate!: (body: unknown) => void;
+    const firstList = new Promise((resolve) => { releaseList = resolve; });
+    const creation = new Promise((resolve) => { releaseCreate = resolve; });
+    let listReads = 0;
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/loopback-settings") return { token: "door" };
+      if (url === "/api/chat/conversations" && init?.method === "POST") return creation;
+      if (url === "/api/chat/conversations") {
+        listReads += 1;
+        return listReads === 1 ? firstList : { conversations: [GAMMA, ALPHA, BETA] };
+      }
+      return {};
+    });
+    render(<ChatCanvas wikiId="current" readOnly={false} onDockPreview={vi.fn()} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "New Chat" }));
+    await act(async () => {});
+    if (order === "list-first") {
+      await act(async () => releaseList({ conversations: [ALPHA, BETA] }));
+      expect(listReads).toBe(1);
+    }
+    await act(async () => releaseCreate({ conversation: GAMMA }));
+    const composer = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "Keep the new draft" } });
+    if (order === "create-first") await act(async () => releaseList({ conversations: [ALPHA, BETA] }));
+    expect(screen.getByRole("button", { name: "Alpha" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Beta" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Gamma" })).toHaveLength(1);
+    expect(screen.getByLabelText("Message")).toBe(composer);
+    expect(composer.value).toBe("Keep the new draft");
+    expect(screen.queryByText("Alpha answer.")).toBeNull();
+    expect(listReads).toBe(2);
+    expect(send.mock.calls.filter(([url]) => url === "/api/chat/conversations/c1")).toHaveLength(0);
+  });
+
+  it.each(["create", "rename", "delete"])("preserves %s while a return refresh is pending", async (operation) => {
+    baseSend((url) => {
+      if (url === "/api/chat/conversations") return { conversations: [ALPHA, BETA] };
+      if (url === "/api/chat/conversations/c1") return { conversation: ALPHA };
+      return {};
+    });
+    const tree = (visible: boolean) => <SurfaceVisibilityProvider visible={visible}><HookProbe /></SurfaceVisibilityProvider>;
+    const view = render(tree(true));
+    await act(async () => {});
+    expect(hook!.conversations.map((row) => row.id)).toEqual(["c1", "c2"]);
+    expect(hook!.activeId).toBe("c1");
+    view.rerender(tree(false));
+    let release!: (body: unknown) => void;
+    const staleList = new Promise((resolve) => { release = resolve; });
+    let refreshes = 0;
+    const currentRows = operation === "create" ? [GAMMA, ALPHA, BETA]
+      : operation === "rename" ? [{ ...ALPHA, name: "Renamed Alpha" }, BETA]
+      : [ALPHA];
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/chat/conversations" && init?.method === "GET") {
+        return ++refreshes === 1 ? staleList : { conversations: currentRows };
+      }
+      if (url === "/api/chat/conversations" && init?.method === "POST") return { conversation: GAMMA };
+      if (url === "/api/chat/conversations/c1" && init?.method === "PATCH") return { conversation: { ...ALPHA, name: "Renamed Alpha" } };
+      return {};
+    });
+    view.rerender(tree(true));
+    await act(async () => {});
+    expect(send.mock.calls.filter(([url, init]) => url === "/api/chat/conversations" && init?.method === "GET")).toHaveLength(2);
+    await act(async () => {
+      if (operation === "create") await hook!.startConversation();
+      else if (operation === "rename") await hook!.renameActive("c1", "Renamed Alpha");
+      else await hook!.removeConversation("c2");
+    });
+    const expected = hook!.conversations.map((row) => ({ id: row.id, name: row.name }));
+    await act(async () => release({ conversations: [ALPHA, BETA] }));
+    expect(refreshes).toBe(2);
+    expect(hook!.conversations.map((row) => ({ id: row.id, name: row.name }))).toEqual(expected);
+    if (operation === "create") {
+      expect(hook!.activeId).toBe("c3");
+      expect(hook!.conversations.map((row) => row.id)).toEqual(["c3", "c1", "c2"]);
+    } else if (operation === "rename") {
+      expect(hook!.conversations.find((row) => row.id === "c1")?.name).toBe("Renamed Alpha");
+    } else expect(hook!.conversations.map((row) => row.id)).toEqual(["c1"]);
+  });
+});
+
+describe("initial Chat list reconciliation after New Chat (DW-422)", () => {
+  it.each(["ok", "error", "hidden"])("recovers an invalidated initial list (%s) without replacing the new conversation or draft", async (settlement) => {
+    let release!: (body: unknown) => void;
+    let reject!: (cause: Error) => void;
+    const initialList = new Promise((resolve, fail) => { release = resolve; reject = fail; });
+    let reads = 0;
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/loopback-settings") return { token: "tok-door" };
+      if (url === "/api/chat/conversations" && init?.method === "POST") return { conversation: GAMMA };
+      if (url === "/api/chat/conversations") {
+        return ++reads === 1 ? initialList : { conversations: [GAMMA, ALPHA, BETA] };
+      }
+      return {};
+    });
+    const tree = (visible: boolean) => <SurfaceVisibilityProvider visible={visible}><ChatCanvas wikiId="current" readOnly={false} onDockPreview={vi.fn()} /></SurfaceVisibilityProvider>;
+    const view = render(tree(true));
+    expect(reads).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "New Chat" }));
+    await screen.findByRole("button", { name: "Gamma" });
+    const composer = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    fireEvent.change(composer, { target: { value: "Keep this new draft" } });
+    if (settlement === "hidden") view.rerender(tree(false));
+    await act(async () => {
+      if (settlement === "error") reject(new Error("Obsolete initial-list failure"));
+      else release({ conversations: [ALPHA, BETA] });
+    });
+    if (settlement === "hidden") {
+      expect(reads).toBe(1);
+      view.rerender(tree(true));
+    }
+    await screen.findByRole("button", { name: "Alpha" });
+    expect(screen.getByRole("button", { name: "Beta" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Gamma" }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getByLabelText("Message")).toBe(composer);
+    expect(composer.value).toBe("Keep this new draft");
+    expect(screen.queryByText("Obsolete initial-list failure")).toBeNull();
+    expect(reads).toBe(2);
+    expect(send.mock.calls.filter(([url, init]) => /^\/api\/chat\/conversations\//.test(url) && init?.method === "GET")).toHaveLength(0);
   });
 });

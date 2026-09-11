@@ -19,6 +19,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -31,6 +32,7 @@ import { toolRowLabel } from "@/lib/chat-agent";
 const { send } = vi.hoisted(() => ({ send: vi.fn() }));
 vi.mock("@/lib/workbench-request", () => ({ send }));
 
+import { ModeCanvas } from "@/components/workbench/ModeCanvas";
 import { ChatCanvas } from "@/components/workbench/ChatCanvas";
 import { clearLoopbackDoorToken } from "@/lib/loopback-client";
 
@@ -334,4 +336,28 @@ describe("the owner can end a turn that is still in flight", () => {
     // hold the sidecar's stream open with nowhere for its frames to land.
     expect(signal.aborted).toBe(true);
   });
+});
+
+
+it("keeps an active Chat stream alive while its mode is withdrawn (DW-422)", async () => {
+  const tree = (hidden: boolean) => <ModeCanvas mode="chat" sidecar="up" headingId="chat-mode" hidden={hidden} wikiId="current"><p>Wiki</p></ModeCanvas>;
+  const view = render(tree(false));
+  await screen.findByLabelText("Message");
+  fireEvent.change(screen.getByLabelText("Message"), { target: { value: "How is revenue?" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Rolling revenue is up.");
+  const signal = chatSignal;
+  const region = document.querySelector(".wb-chat-log");
+  const before = region?.textContent;
+  view.rerender(tree(true));
+  expect(signal?.aborted).toBe(false);
+  await act(async () => releaseDone());
+  expect(region?.textContent).toBe(before);
+  expect(send.mock.calls.filter(([url]) => url.includes("/conversations/c1/messages"))).toHaveLength(1);
+  view.rerender(tree(false));
+  await screen.findByText("Settled answer.");
+  expect(document.querySelector(".wb-chat-log")).toBe(region);
+  expect(signal?.aborted).toBe(false);
+  expect(send.mock.calls.filter(([url]) => url.endsWith("/retrieve"))).toHaveLength(1);
+  expect(send.mock.calls.filter(([url]) => url === "/api/chat/conversations/c1")).toHaveLength(1);
 });

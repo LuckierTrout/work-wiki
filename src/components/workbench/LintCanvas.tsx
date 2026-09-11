@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { SurfacePresentation } from "@/hooks/useSurfaceVisibility";
+
+import { useCallback, useEffect, useRef, useState } from "react";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
@@ -34,7 +36,17 @@ export function LintCanvas({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const wikiScope = useRef(_wikiId);
+  wikiScope.current = _wikiId;
+  useEffect(() => {
+    setIssues([]);
+    setError(null);
+    setRan(false);
+    setBusy(false);
+  }, [_wikiId]);
+
   const run = useCallback(async () => {
+    if (wikiScope.current !== _wikiId) return;
     setBusy(true);
     setError(null);
     try {
@@ -42,14 +54,16 @@ export function LintCanvas({
         method: "POST",
         body: JSON.stringify({ semantic }),
       });
+      if (wikiScope.current !== _wikiId) return;
       setIssues(body.issues ?? []);
       setRan(true);
     } catch (cause) {
+      if (wikiScope.current !== _wikiId) return;
       setError(cause instanceof Error ? cause.message : "Couldn’t run lint.");
     } finally {
-      setBusy(false);
+      if (wikiScope.current === _wikiId) setBusy(false);
     }
-  }, [semantic]);
+  }, [semantic, _wikiId]);
 
   async function fix(issue: WorkbenchLintIssue) {
     if (readOnly || !workbenchCanAutoFix(issue, readOnly)) return;
@@ -66,13 +80,14 @@ export function LintCanvas({
       });
       await run();
     } catch (cause) {
-      setError(writeFailure(cause, "auto-fix the issue").message);
+      if (wikiScope.current === _wikiId) setError(writeFailure(cause, "auto-fix the issue").message);
     } finally {
-      setBusy(false);
+      if (wikiScope.current === _wikiId) setBusy(false);
     }
   }
 
   return (
+    <SurfacePresentation active={_active}>
     <div className="wb-lint">
       <div className="wb-todos-bar">
         <label className="wb-lint-semantic">
@@ -129,5 +144,6 @@ export function LintCanvas({
         </ul>
       )}
     </div>
+    </SurfacePresentation>
   );
 }

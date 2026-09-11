@@ -1,0 +1,14 @@
+[
+  {
+    "location": "src/components/workbench/useChatConversations.ts:154-155",
+    "trigger_condition": "New Chat succeeds before the first conversation-list request settles.",
+    "guard_snippet": "if (current && mutationSeq !== listMutationSeq.current) { scheduleListReconciliation(); return; }",
+    "potential_consequence": "Existing conversations remain absent until Chat is hidden and shown again."
+  },
+  {
+    "location": "src/components/workbench/PreviewColumn.tsx:1336-1337",
+    "trigger_condition": "A revision view is pending when a revert succeeds while Preview is hidden.",
+    "guard_snippet": "// On successful revert: deferredView.current = null; viewInFlight.current = null; viewRequestRef.current += 1;",
+    "potential_consequence": "Returning reopens the historical revision that the successful revert closed."
+  }
+]

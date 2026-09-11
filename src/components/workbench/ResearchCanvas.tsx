@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { readStoredResearchFill } from "@/lib/workbench-state";
@@ -76,6 +77,9 @@ export function ResearchCanvas({
   filledId = null,
   readOnly = false,
 }: ResearchCanvasProps) {
+  const visible = useSurfaceVisible(active);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const empty = workbenchMode("research").emptyState ?? "";
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +126,7 @@ export function ResearchCanvas({
   }, [wikiId]);
 
   const load = useCallback(async () => {
+    if (!visibleRef.current) return;
     const seq = ++loadSeq.current;
     try {
       const wiki = researchWikiId(wikiId);
@@ -129,7 +134,7 @@ export function ResearchCanvas({
         ? `/api/research?wikiId=${encodeURIComponent(wiki)}`
         : "/api/research";
       const body = await send<ResearchResponse>(path, { method: "GET" });
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setProjects(body.projects ?? []);
       setError(null);
       // The repair notice is about THIS read's predecessor. Any later read —
@@ -139,16 +144,17 @@ export function ResearchCanvas({
       // before the notice goes up rather than after.
       setRepaired(false);
     } catch (cause) {
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setError(cause instanceof Error ? cause.message : "Couldn’t load Deep Research.");
       setRepaired(false);
     }
   }, [wikiId]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!visible) return;
     void load();
-  }, [active, load, filledId]);
+    return () => { loadSeq.current += 1; };
+  }, [visible, load, filledId]);
 
   // Poll only while something is moving. A finished board is static, and an
   // interval against it would be a request every few seconds for the life of
@@ -156,12 +162,12 @@ export function ResearchCanvas({
   // is precisely a transition this panel cannot otherwise learn about.
   const streaming = error !== null || projects.some(researchIsPolling);
   useEffect(() => {
-    if (!active || !streaming) return;
+    if (!visible || !streaming) return;
     const timer = setInterval(() => {
       void load();
     }, RESEARCH_POLL_MS);
     return () => clearInterval(timer);
-  }, [active, streaming, load]);
+  }, [visible, streaming, load]);
 
   const queries = parseResearchQueries(queryText);
   const canStart = !readOnly && topic.trim().length > 0 && queries.length > 0 && !starting;
@@ -328,6 +334,7 @@ export function ResearchCanvas({
   const repairable = error !== null && researchRegistryRepairable(error);
 
   return (
+    <SurfacePresentation active={active}>
     <div className="wb-research">
       {error && <p className="wb-todos-error">{error}</p>}
       {/* THE STATEMENT A DESTRUCTIVE OPERATION OWES. This canvas has no
@@ -467,6 +474,7 @@ export function ResearchCanvas({
         </p>
       ) : null}
     </div>
+    </SurfacePresentation>
   );
 }
 

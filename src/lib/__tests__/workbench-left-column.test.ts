@@ -863,7 +863,7 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // DW-54 adds a fourth dependency: the `Retry` control bumps a nonce rather
     // than calling a reader of its own, so a retry goes through the SAME plan
     // as every other read — including the rule that an open editor defers it.
-    expect(source).toMatch(/\}, \[selection, dataVersion, editing, retryNonce\]\)/);
+    expect(source).toMatch(/\}, \[selection, selectionKey, dataVersion, editing, retryNonce, visible\]\)/);
     // No second copy of the decision: the component must not re-derive it.
     expect(source).not.toContain("response.ok");
   });
@@ -1116,7 +1116,10 @@ describe("the two scroll restores beat the paint", () => {
     // TWO layout effects, and the ORDER is load-bearing: the row reset is
     // declared first so a commit that changes both the pick and `hidden` clears
     // the offsets before the restore could assign the previous row's.
-    expect(code.match(/useLayoutEffect\(/g) ?? []).toHaveLength(2);
+    // Lifecycle invalidation also uses layout effects; count only the scroll
+    // reset/restore region, whose ordering this assertion protects.
+    const scrollEffects = code.slice(code.indexOf("useLayoutEffect(() => {"), code.indexOf("}, [hidden]);") + "}, [hidden]);".length);
+    expect(scrollEffects.match(/useLayoutEffect\(/g) ?? []).toHaveLength(2);
     expect(code.indexOf("}, [selectionKey]);")).toBeLessThan(
       code.indexOf("}, [hidden]);"),
     );

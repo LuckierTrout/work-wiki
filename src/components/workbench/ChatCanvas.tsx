@@ -1,5 +1,7 @@
 "use client";
 
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
+
 import {
   useEffect,
   useMemo,
@@ -85,6 +87,10 @@ function thinkingLines(text: string): string[] {
 }
 
 export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps) {
+  const visible = useSurfaceVisible();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const deferredAttachmentNudge = useRef(false);
   const [error, setError] = useState<string | null>(null);
   // The conversation half — the list, the open one, its messages and its
   // settings — lives in `useChatConversations`, over the doors in
@@ -140,6 +146,12 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   const empty = messages.length === 0 && !streaming;
 
   useEffect(() => {
+    if (!visible || !deferredAttachmentNudge.current) return;
+    deferredAttachmentNudge.current = false;
+    requestDataVersionCheck();
+  }, [visible]);
+
+  useEffect(() => {
     return () => {
       abortRef.current?.abort();
     };
@@ -160,7 +172,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
    * command underneath it.
    */
   useEffect(() => {
-    if (!pending && skillPicker === null) return;
+    if (!visible || (!pending && skillPicker === null)) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -174,7 +186,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     return () => document.removeEventListener("keydown", onKey);
     // `answerPending` closes over `pending` and `formValues`, both in the deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, skillPicker, formValues]);
+  }, [visible, pending, skillPicker, formValues]);
 
   /**
    * Skills on disk, read once on mount through `scanSkills`.
@@ -187,13 +199,14 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
    * `@/lib/chat-composer`.
    */
   useEffect(() => {
+    if (!visible) return;
     const controller = new AbortController();
     void (async () => {
       const scanned = await scanSkills(controller.signal);
-      if (scanned) setSkills(scanned);
+      if (!controller.signal.aborted && scanned) setSkills(scanned);
     })();
     return () => controller.abort();
-  }, []);
+  }, [visible]);
 
   function stopTurn() {
     abortRef.current?.abort();
@@ -436,7 +449,10 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     try {
       const outcome = await attachThroughIntake(files);
       if (outcome.note) setSkillNote(outcome.note);
-      if (outcome.refresh) requestDataVersionCheck();
+      if (outcome.refresh) {
+        if (visibleRef.current) requestDataVersionCheck();
+        else deferredAttachmentNudge.current = true;
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Attach failed.");
     } finally {
@@ -555,6 +571,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   );
 
   return (
+    <SurfacePresentation>
     <div className={`wb-chat${retrievalMode === "sources" ? " wb-chat--sources" : ""}`}>
       <aside className="wb-chat-sidebar" aria-label="Conversations">
         <button
@@ -1037,5 +1054,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         </div>
       </div>
     </div>
+    </SurfacePresentation>
   );
 }

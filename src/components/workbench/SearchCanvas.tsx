@@ -1,6 +1,8 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { SurfacePresentation } from "@/hooks/useSurfaceVisibility";
+
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { send } from "@/lib/workbench-request";
 import {
   CHAT_VECTOR_FALLBACK_COPY,
@@ -32,6 +34,15 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
   const [vectorNote, setVectorNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const searchSeq = useRef(0);
+  const wikiScope = useRef(wikiId);
+  wikiScope.current = wikiId;
+  useEffect(() => {
+    searchSeq.current += 1;
+    setHits(null);
+    setError(null);
+    setVectorNote(null);
+    setBusy(false);
+  }, [wikiId]);
   // The two halves of one list. Recomputed per render rather than stored, so
   // there is no second copy of the results to fall out of step with `hits`.
   const { images, rest } = partitionSearchImages(hits ?? []);
@@ -48,7 +59,7 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
         `/api/v1/projects/${encodeURIComponent(wikiId)}/search`,
         { method: "POST", body: JSON.stringify({ query: trimmed, topK: 10 }) },
       );
-      if (seq !== searchSeq.current) return;
+      if (wikiScope.current !== wikiId || seq !== searchSeq.current) return;
       if (body.error) {
         setError(body.error);
         setHits(null);
@@ -59,11 +70,11 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
         setVectorNote(body.vectorPhase.message || CHAT_VECTOR_FALLBACK_COPY);
       }
     } catch (cause) {
-      if (seq !== searchSeq.current) return;
+      if (wikiScope.current !== wikiId || seq !== searchSeq.current) return;
       setError(cause instanceof Error ? cause.message : "Search failed.");
       setHits(null);
     } finally {
-      if (seq === searchSeq.current) setBusy(false);
+      if (wikiScope.current === wikiId && seq === searchSeq.current) setBusy(false);
     }
   }
 
@@ -80,6 +91,7 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
   }
 
   return (
+    <SurfacePresentation>
     <div className="wb-search">
       <form className="wb-search-form" onSubmit={onSubmit}>
         <label className="wb-sr-only" htmlFor="wb-search-q">
@@ -146,5 +158,6 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
         </ul>
       ) : null}
     </div>
+    </SurfacePresentation>
   );
 }

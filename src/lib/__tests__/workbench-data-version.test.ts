@@ -951,6 +951,15 @@ describe("dataVersionRefreshPlan", () => {
 });
 
 describe("previewFetchPlan", () => {
+  it("defers even a new target before recording or resetting it when hidden", () => {
+    const shown = { kind: "page" as const, slug: "alpha" };
+    const next = { kind: "page" as const, slug: "beta" };
+    for (const editing of [false, true]) {
+      expect(previewFetchPlan({ shown, next, editing, visible: false })).toEqual({ fetch: false, reset: false, shown });
+      expect(previewFetchPlan({ shown: null, next, editing, visible: false })).toEqual({ fetch: false, reset: false, shown: null });
+    }
+  });
+
   const ALPHA: TreeSelection = { kind: "page", slug: "alpha" };
   const BETA: TreeSelection = { kind: "page", slug: "beta" };
   const FILE: TreeSelection = { kind: "file", path: "wiki/alpha.md" };
@@ -1475,7 +1484,7 @@ describe("the Preview column re-reads its bytes without disturbing an editor", (
     // component used to hold by hand — compare, then record — is now inside
     // `previewFetchPlan`, where the suite executes it.
     expect(source).toMatch(
-      /previewFetchPlan\(\{\s*shown:\s*shownSelectionRef\.current,\s*next:\s*selection,\s*editing,\s*\}\)/,
+      /previewFetchPlan\(\{\s*shown:\s*shownSelectionRef\.current,\s*next:\s*selection,\s*editing,\s*visible,\s*\}\)/,
     );
     expect(source).toContain("shownSelectionRef.current = plan.shown;");
     // …and the component records nothing of its own, so there is no assignment
@@ -1487,7 +1496,7 @@ describe("the Preview column re-reads its bytes without disturbing an editor", (
     // imperative re-read for the reason the plan exists at all: a second
     // request path would carry its own reset semantics, and a retry pressed
     // while the editor is open would then take the owner's draft.
-    expect(source).toMatch(/\}, \[selection, dataVersion, editing, retryNonce\]\)/);
+    expect(source).toMatch(/\}, \[selection, selectionKey, dataVersion, editing, retryNonce, visible\]\)/);
     // The reset block — the one that abandons an open editor — is now BEHIND the
     // plan, and still inside the effect.
     const effect = source.slice(

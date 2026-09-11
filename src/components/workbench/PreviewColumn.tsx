@@ -11,7 +11,7 @@ import {
   type Ref,
 } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
+import { SurfacePresentation, SurfaceVisibilityProvider, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import {
   previewFetchPlan,
   requestDataVersionCheck,
@@ -276,6 +276,35 @@ function PreviewPane({
   hidden = false,
   ref,
 }: PreviewColumnProps & { selection: KernelSelection }) {
+  const visible = useSurfaceVisible();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const selectionKey =
+    selection.kind === "page" ? `page:${selection.slug}` : `file:${selection.path}`;
+  const selectionKeyRef = useRef(selectionKey);
+  selectionKeyRef.current = selectionKey;
+  const dataVersionRef = useRef(dataVersion);
+  dataVersionRef.current = dataVersion;
+  const deferredNudge = useRef<{ key: string; version: number } | null>(null);
+  const deferredAnnouncement = useRef<{ key: string; sentence: string } | null>(null);
+  const deferredHistory = useRef(false);
+  const deferredHistoryError = useRef<{ key: string; message: string } | null>(null);
+  const resumeBarrier = useRef<{ key: string; version: number } | null>(null);
+  const historyVersion = useRef<number | null>(null);
+  const deferredView = useRef<{ file: EditableArtifactFile; timestamp: number } | null>(null);
+  const listInFlight = useRef(false);
+  const viewInFlight = useRef<{ file: EditableArtifactFile; timestamp: number } | null>(null);
+
+  function nudgeVersion(version: number) {
+    if (visibleRef.current) requestDataVersionCheck();
+    else deferredNudge.current = { key: selectionKeyRef.current, version };
+  }
+
+  function announce(sentence: string) {
+    if (visibleRef.current) setRefreshAnnouncement((current) => nextAnnouncement(current, sentence));
+    else deferredAnnouncement.current = { key: selectionKeyRef.current, sentence };
+  }
+
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   // What is on screen RIGHT NOW, readable from an async callback that closed
   // over an older render. Assigned during render, the `useDialogA11y` idiom.
@@ -525,8 +554,6 @@ function PreviewPane({
   // Keyed on a PRIMITIVE derived from the pick, never on the object: the shell
   // rebuilds that object freely across renders, and an identity key would clear
   // the offsets the owner is still looking at.
-  const selectionKey =
-    selection.kind === "page" ? `page:${selection.slug}` : `file:${selection.path}`;
   // Declared BEFORE the restore, so on the rare commit that changes both the row
   // and `hidden` React runs them in that order: cleared, then restored from
   // nothing.
@@ -592,7 +619,44 @@ function PreviewPane({
     };
   }, [hidden]);
 
+  // A hidden mutation owes one version check. Wait for its served version
+  // before re-reading, otherwise the check's own refresh repeats the return read.
+  // The deadline also works for a standalone pane without a watcher, or a failed
+  // version check: last-good data is retained until bounded revalidation resumes.
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const pending = deferredNudge.current;
+    deferredNudge.current = null;
+    if (pending?.key === selectionKey && pending.version === dataVersion) {
+      resumeBarrier.current = pending;
+      requestDataVersionCheck();
+    }
+    const barrier = resumeBarrier.current;
+    if (!barrier) return;
+    if (barrier.key !== selectionKey || barrier.version !== dataVersion) {
+      resumeBarrier.current = null;
+      return;
+    }
+    const timer = setTimeout(() => {
+      resumeBarrier.current = null;
+      setRetryNonce((current) => current + 1);
+    }, REQUEST_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [visible, selectionKey, dataVersion]);
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      if (listInFlight.current) deferredHistory.current = true;
+      if (viewInFlight.current) deferredView.current = viewInFlight.current;
+    }
+    return () => {
+      listRequestRef.current += 1;
+      viewRequestRef.current += 1;
+    };
+  }, [visible, selectionKey]);
+
   useEffect(() => {
+    if (resumeBarrier.current) return;
     // WHY this effect is running, and therefore what it may touch — decided by
     // an executed function, never by conditions typed here. A bump that lands
     // while the owner is mid-edit must not take their draft, and a bump that
@@ -602,6 +666,7 @@ function PreviewPane({
       shown: shownSelectionRef.current,
       next: selection,
       editing,
+      visible,
     });
     // The row this run leaves recorded is the PLAN's answer, not an assignment
     // sequenced against the comparison above: `shownSelectionRef.current =
@@ -612,6 +677,7 @@ function PreviewPane({
     // The open editor is never disturbed. `editing` is in the deps below, so
     // closing it lets the deferred read happen instead of losing it.
     if (!plan.fetch) return;
+    let current = true;
     const controller = new AbortController();
     // The deadline is armed here rather than through `AbortSignal.timeout` so
     // one controller carries both reasons to stop: the owner picking another
@@ -624,6 +690,12 @@ function PreviewPane({
       REQUEST_TIMEOUT_MS,
     );
     if (plan.reset) {
+      deferredHistoryError.current = null;
+      deferredHistory.current = false;
+      deferredView.current = null;
+      historyVersion.current = null;
+      listInFlight.current = false;
+      viewInFlight.current = null;
       setLoading(true);
       setGone(false);
       setUnreachable(false);
@@ -684,7 +756,11 @@ function PreviewPane({
     // unreachable is decided by `fetchPreview`, which the node suite executes
     // with a stubbed fetch. Left inline here it could only ever be grepped for.
     void fetchPreview(previewRequestUrl(selection), controller.signal).then((result) => {
+      if (!current || !visibleRef.current || selectionKeyRef.current !== selectionKey) return;
       if (result.status === "stale") return;
+      const pending = deferredAnnouncement.current;
+      deferredAnnouncement.current = null;
+      const mutationSentence = pending?.key === selectionKey ? pending.sentence : null;
       // Both flags are cleared EXPLICITLY, not only via the reset block above: a
       // silent refresh starts from whatever the last read left behind, so a row
       // that failed once would keep saying so after it began answering again —
@@ -710,7 +786,8 @@ function PreviewPane({
             shown: payloadRef.current,
             next: result.payload,
           }) ?? "";
-        setRefreshAnnouncement((current) => nextAnnouncement(current, sentence));
+        const announcement = mutationSentence ?? sentence;
+        setRefreshAnnouncement((current) => nextAnnouncement(current, announcement));
         setPayload(result.payload);
         setGone(false);
         setUnreachable(false);
@@ -722,6 +799,7 @@ function PreviewPane({
         // replacement that is not stale.
         setGone(true);
         setUnreachable(false);
+        if (mutationSentence) setRefreshAnnouncement((current) => nextAnnouncement(current, mutationSentence));
         // A 404 takes the WHOLE edit path with it, dialog included (DW-181).
         // `Edit` unmounts on this render because `previewEditTarget` now
         // answers `null`, but a confirm the owner opened a moment ago would
@@ -763,8 +841,9 @@ function PreviewPane({
         // `null` LEAVES the region as it is rather than clearing it: silence is
         // what is being asked for, and this branch has no opinion about the
         // sentence some other branch put there.
-        if (staleSentence !== null) {
-          setRefreshAnnouncement((current) => nextAnnouncement(current, staleSentence));
+        const announcement = mutationSentence ?? staleSentence;
+        if (announcement !== null) {
+          setRefreshAnnouncement((current) => nextAnnouncement(current, announcement));
         }
       }
       setLoading(false);
@@ -776,16 +855,18 @@ function PreviewPane({
     });
 
     return () => {
+      current = false;
       clearTimeout(deadline);
       controller.abort();
     };
-  }, [selection, dataVersion, editing, retryNonce]);
+  }, [selection, selectionKey, dataVersion, editing, retryNonce, visible]);
 
   // Confirming the dialog unmounts the `Edit` button that opened it, so
   // `useDialogA11y`'s restore has nothing to return focus to. The caret belongs
   // in the editor anyway; leaving is the mirror image. Parent effects run after
   // the dialog's own cleanup, so this is the last word on focus either way.
   useEffect(() => {
+    if (!visible) return;
     if (editing) {
       editorRef.current?.focus();
       return;
@@ -794,7 +875,7 @@ function PreviewPane({
       restoreEditFocus.current = false;
       editRef.current?.focus();
     }
-  }, [editing]);
+  }, [editing, visible]);
 
   // Where focus goes when the revert confirm closes into a running write
   // (DW-214). `useDialogA11y` restores to the OPENER when it is still
@@ -808,8 +889,8 @@ function PreviewPane({
   // Only on the LEADING edge — a revert starting — so the effect cannot pull
   // focus back when the write settles and the owner has moved on.
   useEffect(() => {
-    if (revertingTimestamp !== null) historyToggleRef.current?.focus();
-  }, [revertingTimestamp]);
+    if (visible && revertingTimestamp !== null) historyToggleRef.current?.focus();
+  }, [revertingTimestamp, visible]);
 
   // WHETHER there is unsaved text is one executed function (`previewDraftDirty`),
   // never a comparison typed here: this is the whole of what stands between a
@@ -876,6 +957,8 @@ function PreviewPane({
   }, [gone, payload]);
 
   const save = useCallback(async () => {
+    const originKey = selectionKeyRef.current;
+    const originVersion = dataVersionRef.current;
     const target = editingTargetRef.current;
     if (!target || saving) return;
     // The column must still be showing the thing this draft came from, compared
@@ -914,6 +997,7 @@ function PreviewPane({
     });
     // Busy flag first, on every exit path including the superseded one below.
     setSaving(false);
+    if (selectionKeyRef.current !== originKey) return;
     // The owner may have picked another row while this was in flight. The
     // column is showing that row now, so stamping this draft onto its payload
     // would put file A's text under file B's header — and the focus restore
@@ -952,7 +1036,7 @@ function PreviewPane({
       // write in the system, so the owner's own save is not a special case: it
       // just asks the watcher to look NOW instead of on the next tick, and the
       // answer still comes from the server's integer.
-      requestDataVersionCheck();
+      nudgeVersion(originVersion);
       // A landed save CREATED a revision: `writeWikiArtifact` snapshots the
       // bytes it replaces before it writes (DW-59). The panel's cached list is
       // therefore missing the entry the owner is most likely to want back — and
@@ -982,7 +1066,7 @@ function PreviewPane({
         // find out. The same signal a landed save fires, for the same reason:
         // the answer still comes from the server's integer, not from this
         // column's guess about what happened.
-        requestDataVersionCheck();
+        nudgeVersion(originVersion);
         // THE CACHED REVISION LIST IS NOW WRONG IN THE SAME WAY IT IS AFTER A
         // LANDED SAVE, and this is the one statement of why — the unconfirmed
         // revert below points here rather than restating it.
@@ -1033,15 +1117,22 @@ function PreviewPane({
    * then keep the new row from ever fetching its own.
    */
   async function loadRevisions(file: EditableArtifactFile) {
+    if (!visibleRef.current) { deferredHistory.current = true; return; }
+    deferredHistory.current = false;
+    historyVersion.current = dataVersionRef.current;
+    listInFlight.current = true;
+    const originKey = selectionKeyRef.current;
     const token = ++listRequestRef.current;
     setHistoryLoading(true);
-    setHistoryError(null);
+    const heldError = deferredHistoryError.current;
+    if (heldError?.key !== originKey) setHistoryError(null);
     const result = await fetchArtifactRevisions(file, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     // Superseded: another listing started, or the owner left this row. Not an
     // error and not an empty history — simply not this panel's answer any more.
-    if (listRequestRef.current !== token) return;
+    if (!visibleRef.current || selectionKeyRef.current !== originKey || listRequestRef.current !== token) return;
+    listInFlight.current = false;
     setHistoryLoading(false);
     if (result.status === "ok") {
       // The whole landed listing — rows AND the bound that shaped them — in one
@@ -1051,7 +1142,11 @@ function PreviewPane({
         truncated: result.truncated,
         limit: result.limit,
       });
-    } else setHistoryError(result.message);
+    } else if (heldError?.key !== originKey) setHistoryError(result.message);
+    if (heldError?.key === originKey) {
+      setHistoryError(heldError.message);
+      deferredHistoryError.current = null;
+    }
   }
 
   /**
@@ -1070,6 +1165,7 @@ function PreviewPane({
   function refreshHistory() {
     const file = payloadRef.current?.artifact;
     if (!file) return;
+    if (!visibleRef.current) { deferredHistory.current = true; return; }
     if (historyOpenRef.current) void loadRevisions(file);
     else setListing(null);
   }
@@ -1093,17 +1189,26 @@ function PreviewPane({
       setViewContent(null);
       return;
     }
+    await readRevision(historyTarget, timestamp);
+  }
+
+  async function readRevision(file: EditableArtifactFile, timestamp: number) {
+    if (!visibleRef.current) { deferredView.current = { file, timestamp }; return; }
+    deferredView.current = null;
+    viewInFlight.current = { file, timestamp };
+    const originKey = selectionKeyRef.current;
     const token = ++viewRequestRef.current;
     setViewLoading(true);
     setViewingTimestamp(timestamp);
     setViewContent(null);
     setHistoryError(null);
-    const result = await fetchArtifactRevision(historyTarget, timestamp, {
+    const result = await fetchArtifactRevision(file, timestamp, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     // Superseded by a newer view, or by a pick. Dropping it here is what keeps
     // one entry's bytes from appearing under another entry's control.
-    if (viewRequestRef.current !== token) return;
+    if (!visibleRef.current || selectionKeyRef.current !== originKey || viewRequestRef.current !== token) return;
+    viewInFlight.current = null;
     setViewLoading(false);
     if (result.status === "ok") {
       setViewContent(result.content);
@@ -1140,6 +1245,8 @@ function PreviewPane({
       setPendingRevert(null);
       return;
     }
+    const originKey = selectionKeyRef.current;
+    const originVersion = dataVersionRef.current;
     const token = ++revertRequestRef.current;
     setPendingRevert(null);
     setRevertingTimestamp(timestamp);
@@ -1156,7 +1263,7 @@ function PreviewPane({
     // done either way and the shell will notice it through `dataVersion`; what
     // must not happen is this result reaching a panel that is now about another
     // file — the same rule `save()` keeps for its own superseded case.
-    if (revertRequestRef.current !== token) return;
+    if (selectionKeyRef.current !== originKey || revertRequestRef.current !== token) return;
     setRevertingTimestamp(null);
     if (result.status === "error") {
       if (result.unconfirmed) {
@@ -1182,7 +1289,8 @@ function PreviewPane({
         //
         // No announcement: `PREVIEW_HISTORY_REVERTED_COPY` says a revert
         // HAPPENED, which is exactly what nobody knows.
-        requestDataVersionCheck();
+        nudgeVersion(originVersion);
+        deferredHistoryError.current = { key: originKey, message: result.message };
         await loadRevisions(file);
         // The re-list is an AWAIT, so the token has to be read again on the far
         // side of it: the owner can pick another row while it is in flight, and
@@ -1190,7 +1298,7 @@ function PreviewPane({
         // straggler cannot write into a panel that has been re-pointed. Without
         // this, the previous row's revert message would be waiting inside the
         // new row's History the next time it was expanded.
-        if (revertRequestRef.current !== token) return;
+        if (selectionKeyRef.current !== originKey || revertRequestRef.current !== token) return;
         setHistoryError(result.message);
         return;
       }
@@ -1200,6 +1308,12 @@ function PreviewPane({
       setHistoryError(result.message);
       return;
     }
+    // Success closes the historical view, including work queued on withdrawal.
+    // Neither a resumed read nor a late response may reopen it after the revert.
+    deferredView.current = null;
+    viewInFlight.current = null;
+    viewRequestRef.current += 1;
+    setViewLoading(false);
     setViewingTimestamp(null);
     setViewContent(null);
     // A landed revert was SILENT for a reader (DW-214): the dialog vanished, the
@@ -1207,18 +1321,27 @@ function PreviewPane({
     // the one destructive success announced nothing. Polite, in the column's own
     // region beside `Preview updated`, and through `nextAnnouncement` so a
     // second revert is heard as a second revert (DW-182).
-    setRefreshAnnouncement((current) =>
-      nextAnnouncement(current, historyCopy.reverted),
-    );
+    announce(historyCopy.reverted);
     // The SAME signal a landed save fires. The revert bumped `dataVersion` at
     // the kernel's one tail, so this asks the watcher to look NOW and the new
     // bytes arrive through the column's single fetch effect — never through a
     // second read path belonging to this panel.
-    requestDataVersionCheck();
+    nudgeVersion(originVersion);
     // …and the list has one more entry than it did: the bytes this revert
     // replaced were snapshotted by `writeWikiArtifact` behind the route.
     await loadRevisions(file);
   }
+
+  useEffect(() => {
+    if (!visible) return;
+    if (deferredAnnouncement.current?.key !== selectionKey) deferredAnnouncement.current = null;
+    if (resumeBarrier.current || !historyTarget || !historyOpen) return;
+    if (deferredHistory.current || (historyVersion.current !== null && historyVersion.current !== dataVersion)) {
+      void loadRevisions(historyTarget);
+    }
+    const view = deferredView.current;
+    if (view && view.file === historyTarget) void readRevision(view.file, view.timestamp);
+  }, [visible, selectionKey, historyTarget, historyOpen, dataVersion, retryNonce]);
 
   const page = selection.kind === "page" ? findKnowledgePage(knowledge, selection.slug) : null;
   // WHAT to call this pick is `selectionName`, in `workbench-tree` where the
@@ -1392,6 +1515,7 @@ function PreviewPane({
 
   return (
     <aside id={id} className="wb-preview" hidden={hidden} aria-label="Preview" ref={mergeAsideRef}>
+      <SurfacePresentation>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>
@@ -1797,6 +1921,7 @@ function PreviewPane({
           onJumpToSource={canJumpToSource ? jumpToSource : undefined}
         />
       )}
+      </SurfacePresentation>
     </aside>
   );
 }

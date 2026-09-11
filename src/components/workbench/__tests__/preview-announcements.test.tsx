@@ -1326,3 +1326,33 @@ describe("Retry reports that it is working (DW-184)", () => {
     expect(back.disabled).toBe(false);
   });
 });
+
+
+describe("hidden Preview lifecycle (DW-422)", () => {
+  it("coalesces hidden version bumps and ignores a cancellation-ignoring late response", async () => {
+    const view = await renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    await act(async () => {});
+    let settle!: (value: unknown) => void;
+    answer = () => new Promise((resolve) => { settle = resolve; });
+    await refresh(view, { ...DATA, dataVersion: 1 });
+    expect(reads).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+    const before = columnAnnouncedRaw();
+    await refresh(view, { ...DATA, dataVersion: 2 });
+    await refresh(view, { ...DATA, dataVersion: 3 });
+    await act(async () => { settle({ ok: true, status: 200, json: async () => payload("Alpha", "obsolete hidden bytes") }); });
+    expect(reads).toHaveLength(2);
+    expect(columnAnnouncedRaw()).toBe(before);
+    expect(document.querySelector(".wb-preview")?.textContent).not.toContain("obsolete hidden bytes");
+    answer = () => ({ ok: true, status: 200, json: async () => payload("Alpha", "latest returned bytes") });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+    expect(reads).toHaveLength(3);
+    expect(screen.getByText("latest returned bytes")).toBeTruthy();
+    expect(announcementSentence(columnAnnouncedRaw())).toBe(PREVIEW_UPDATED_COPY);
+    await refresh(view, { ...DATA, dataVersion: 4 });
+    expect(reads).toHaveLength(4);
+  });
+});

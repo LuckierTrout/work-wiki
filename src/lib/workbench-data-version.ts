@@ -363,7 +363,9 @@ export function previewFetchPlan(input: {
   shown: TreeSelection | null;
   next: TreeSelection;
   editing: boolean;
+  visible?: boolean;
 }): PreviewFetchPlan {
+  if (input.visible === false) return { fetch: false, reset: false, shown: input.shown };
   if (!isSameSelection(input.shown, input.next)) {
     return { fetch: true, reset: true, shown: input.next };
   }

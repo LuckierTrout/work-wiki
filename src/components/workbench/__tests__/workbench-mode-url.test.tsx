@@ -324,7 +324,8 @@ describe("Workbench mode ↔ URL", () => {
     expect(current()).toBe("Wiki");
     const rail = screen.getByRole("navigation", { name: "Modes" });
     const before = window.history.length;
-    const probes = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    const probeCalls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) => String(url).endsWith("/health"));
+    const probes = probeCalls().length;
 
     fireEvent.click(railItem("Chat"));
 
@@ -335,7 +336,8 @@ describe("Workbench mode ↔ URL", () => {
     // segment is never re-rendered, so nothing above the mode panel unmounts.
     // Same rail node, and the sidecar probe did not run a second time.
     expect(screen.getByRole("navigation", { name: "Modes" })).toBe(rail);
-    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(probes);
+    // Chat initializes on first presentation, so its reads are expected here.
+    expect(probeCalls()).toHaveLength(probes);
     expect(announced()).toBe("Chat");
     // The URL is layered ON the storage restore, never a replacement for it: a
     // reload with no param at all must still land on Chat.

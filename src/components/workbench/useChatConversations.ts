@@ -8,6 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import { useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import {
   CHAT_HISTORY_DEPTH_DEFAULT,
   CHAT_TOKEN_BUDGET_DEFAULT,
@@ -91,6 +92,9 @@ export function useChatConversations({
   readOnly,
   onError,
 }: UseChatConversationsOptions): ChatConversations {
+  const visible = useSurfaceVisible();
+  const initialized = useRef(false);
+  const [listRefreshNonce, setListRefreshNonce] = useState(0);
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CanvasMessage[]>([]);
@@ -103,6 +107,25 @@ export function useChatConversations({
   // switching conversations quickly leaves the surface showing the slower one.
   const loadSeq = useRef(0);
   const persistSeq = useRef(0);
+  // Passive snapshots must not undo an explicit list change. Invalidate at
+  // both edges so a refresh started during a write cannot outlive its result.
+  const listMutationSeq = useRef(0);
+  const listWritesInFlight = useRef(0);
+  const listNeedsRefresh = useRef(false);
+  const mutateList = useCallback(async <T,>(write: () => Promise<T>): Promise<T> => {
+    listMutationSeq.current += 1;
+    listWritesInFlight.current += 1;
+    try {
+      return await write();
+    } finally {
+      listMutationSeq.current += 1;
+      listWritesInFlight.current -= 1;
+      if (listWritesInFlight.current === 0 && listNeedsRefresh.current) {
+        listNeedsRefresh.current = false;
+        setListRefreshNonce((nonce) => nonce + 1);
+      }
+    }
+  }, []);
   // SERIALIZED, not concurrent: two setting patches racing would let the loser's
   // answer be merged last and put the toolbar back to the value the owner just
   // left. The rejection is swallowed so one failed patch cannot break the next.
@@ -112,13 +135,8 @@ export function useChatConversations({
   const errorRef = useRef(onError);
   errorRef.current = onError;
 
-  const loadList = useCallback(async () => {
-    const rows = await listConversations();
-    setConversations(rows);
-    return rows;
-  }, []);
-
   const loadConversation = useCallback(async (id: string) => {
+    initialized.current = true;
     const seq = ++loadSeq.current;
     const conversation = await readConversation(id);
     if (seq !== loadSeq.current) return;
@@ -137,22 +155,51 @@ export function useChatConversations({
   }, []);
 
   useEffect(() => {
-    void loadList()
-      .then((rows) => {
-        const wanted =
-          typeof window !== "undefined"
-            ? new URLSearchParams(window.location.search).get("conversation")
-            : null;
-        const next = rows.find((row) => row.id === wanted) ?? rows[0];
-        if (next) {
-          setActiveId(next.id);
-          return loadConversation(next.id);
-        }
-      })
-      .catch((cause) => {
-        errorRef.current(cause instanceof Error ? cause.message : "Chat failed.");
-      });
-  }, [loadList, loadConversation]);
+    if (!visible) return;
+    let current = true;
+    const selectionSeq = loadSeq.current;
+    const mutationSeq = listMutationSeq.current;
+    function acceptSnapshot() {
+      if (!current) return false;
+      if (mutationSeq !== listMutationSeq.current || listWritesInFlight.current > 0) {
+        // Rejecting the first list must not strand every existing conversation.
+        // Reconcile through this same visibility-gated effect, without loading
+        // the active conversation again or replacing the owner's draft.
+        // If the write is still pending, its settlement releases one refresh.
+        // Reading sooner could only produce another pre-write snapshot.
+        if (listWritesInFlight.current > 0) listNeedsRefresh.current = true;
+        else setListRefreshNonce((nonce) => nonce + 1);
+        return false;
+      }
+      return true;
+    }
+    void (async () => {
+      const rows = await listConversations();
+      if (!acceptSnapshot()) return;
+      setConversations(rows);
+      // A return reconciles the list only. Reloading the active conversation
+      // would overwrite a draft or a turn still streaming in the mounted pane.
+      if (initialized.current || selectionSeq !== loadSeq.current) return;
+      const wanted = new URLSearchParams(window.location.search).get("conversation");
+      const next = rows.find((row) => row.id === wanted) ?? rows[0];
+      if (!next) { initialized.current = true; return; }
+      const conversation = await readConversation(next.id);
+      if (!acceptSnapshot() || selectionSeq !== loadSeq.current) return;
+      initialized.current = true;
+      setActiveId(next.id);
+      if (!conversation) { errorRef.current("Conversation not found."); return; }
+      const settings = conversationSettings(conversation);
+      setMessages(conversation.messages ?? []);
+      setRetrievalMode(settings.retrievalMode);
+      setTokenBudget(settings.tokenBudget);
+      setHistoryDepth(settings.historyDepth);
+      setSelectedSkill(settings.selectedSkill);
+      setConversations((items) => mergeConversationRow(items, next.id, conversation));
+    })().catch((cause) => {
+      if (acceptSnapshot()) errorRef.current(cause instanceof Error ? cause.message : "Chat failed.");
+    });
+    return () => { current = false; };
+  }, [visible, listRefreshNonce]);
 
   /**
    * Open a new conversation and make it the active one.
@@ -163,23 +210,25 @@ export function useChatConversations({
    */
   const startConversation = useCallback(async (): Promise<ConversationRow | null> => {
     if (readOnly) return null;
+    initialized.current = true;
+    loadSeq.current += 1;
     // The three fields the door accepts, and no fourth: `selectedSkill` is not
     // among them, so it is not read here and not in the deps either.
-    const conversation = await createConversation({
+    const conversation = await mutateList(() => createConversation({
       retrievalMode,
       tokenBudget,
       historyDepth,
-    });
+    }));
     if (!conversation) return null;
-    setConversations((current) => [conversation, ...current]);
+    setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
     setActiveId(conversation.id);
     return conversation;
-  }, [readOnly, retrievalMode, tokenBudget, historyDepth]);
+  }, [readOnly, retrievalMode, tokenBudget, historyDepth, mutateList]);
 
   const removeConversation = useCallback(
     async (id: string): Promise<RemoveConversationOutcome> => {
       if (readOnly) return { switched: false, fallbackId: null };
-      await deleteConversation(id);
+      await mutateList(() => deleteConversation(id));
       const next = conversations.filter((item) => item.id !== id);
       setConversations(next);
       if (activeId !== id) return { switched: false, fallbackId: null };
@@ -193,17 +242,17 @@ export function useChatConversations({
       }
       return { switched: true, fallbackId: fallback?.id ?? null };
     },
-    [readOnly, conversations, activeId, loadConversation],
+    [readOnly, conversations, activeId, loadConversation, mutateList],
   );
 
   const renameActive = useCallback(
     async (id: string, name: string) => {
       if (readOnly) return;
-      const conversation = await renameConversation(id, name);
+      const conversation = await mutateList(() => renameConversation(id, name));
       if (!conversation) return;
       setConversations((current) => mergeConversationRow(current, id, conversation));
     },
-    [readOnly],
+    [readOnly, mutateList],
   );
 
   const patchActive = useCallback(
@@ -212,7 +261,7 @@ export function useChatConversations({
       const id = activeId;
       patchChain.current = patchChain.current
         .then(async () => {
-          const conversation = await patchConversation(id, patch);
+          const conversation = await mutateList(() => patchConversation(id, patch));
           if (conversation) {
             setConversations((current) =>
               mergeConversationRow(current, id, conversation),
@@ -221,7 +270,7 @@ export function useChatConversations({
         })
         .catch(() => undefined);
     },
-    [activeId, readOnly],
+    [activeId, readOnly, mutateList],
   );
 
   const persistFrames = useCallback(
@@ -231,12 +280,12 @@ export function useChatConversations({
       options?: PersistOptions,
     ) => {
       const seq = ++persistSeq.current;
-      const conversation = await persistConversationMessages(id, frames, options);
+      const conversation = await mutateList(() => persistConversationMessages(id, frames, options));
       if (seq !== persistSeq.current) return;
       setMessages(conversation.messages ?? []);
       setConversations((current) => mergeConversationRow(current, id, conversation));
     },
-    [],
+    [mutateList],
   );
 
   const clearOptimistic = useCallback(() => {
