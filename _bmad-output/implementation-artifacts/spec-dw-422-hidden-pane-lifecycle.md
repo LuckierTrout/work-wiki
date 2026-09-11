@@ -189,3 +189,12 @@ Verification of these changes:
 The user authorized committing and shipping DW-422 after DW-759, followed by orchestrated ledger reconciliation. This supersedes the implementation packet's publication/merge boundary for release work; deployment is not included. All in-scope findings are fixed and the 1052-file verification manifest still matches the source/config bytes before this commit. The final passing verification and four-layer review recorded above are the authoritative local evidence; earlier partial records describe superseded runs.
 
 Implementation status is `done`. The pre-existing Skills uncertain-toggle explanation finding is a separate nonblocking follow-up, remains explicitly documented, and is not silently claimed fixed. The ledger stays unchanged for the orchestrator. Release validation against merged DW-759 will be recorded separately before this branch is merged.
+
+### Combined release verification — 2026-09-11
+
+DW-759 merged through PR #34 at `afcebfcac26b47a440e4877e49c2e69c49e1dd41`, after all three exact-head CI jobs passed. This branch incorporates that merge at `548dfc17f85b5550d8c3e68261474ae2385f95bf`; bringing in the merge changed ancestry only, not the already-tested combined file tree.
+
+- Combined full suite: 417 files; 10,231 passed, one existing credential-dependent skip (130.68 seconds). Log: `/private/tmp/dw422-release-full-test.log`.
+- Combined focus browser suite: 19/20 passed initially; all focus assertions completed, but the back-opening WorkspacePreview case captured an initial SiteChrome hydration mismatch in the pageerror guard. Three unchanged repeats of that case passed, including its pageerror guard. The failure is retained in `/private/tmp/dw422-release-browser.log`, with repeats in `/private/tmp/dw422-release-browser-repeat.log`; no expectation was suppressed. Full browser CI on the PR remains required before merge.
+- Combined production build, separate TypeScript check, lint, and diff check passed. Logs: `/private/tmp/dw422-release-build.log`, `dw422-release-tsc.log`, `dw422-release-lint.log` in `/private/tmp`. Existing nonfatal lint diagnostics remain.
+- The recorded pre-existing Skills follow-up is not fixed by this release. Ledger and production deployment remain untouched at publication time.
