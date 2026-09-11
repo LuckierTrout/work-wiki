@@ -11,6 +11,7 @@ import {
   writeStoredSelection,
 } from "@/lib/workbench-state";
 import { announcementSentence } from "@/lib/live-region";
+import { setElementRect } from "@/test/dom-helpers";
 import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
 import {
   DEFAULT_SETTINGS_CATEGORY,
@@ -112,11 +113,13 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      async () =>
+      async (input: RequestInfo | URL) =>
         ({
           ok: true,
           status: 200,
-          json: async () => ({}),
+          json: async () => String(input).includes("/api/workbench/preview")
+            ? { name: "Alpha", path: "wiki/alpha.md", slug: "alpha", format: "markdown", body: "# Alpha", truncated: false, editable: true }
+            : {},
           text: async () => "",
         }) as unknown as Response,
     ),
@@ -613,6 +616,110 @@ describe("Workbench mode ↔ URL", () => {
     expect(landingSite()?.querySelector(".wb-set-pad")).toBeNull();
   });
 
+  describe("departing and persistent regions on Settings history edges (DW-759)", () => {
+    const departures = [
+      ["tree", "wiki", ".wb-tree-panel button"],
+      ["Sources", "sources", ".wb-left-surface button"],
+      ["Activity", "wiki", ".wb-activity button"],
+      ["Preview", "wiki", "#wb-preview-column button"],
+      ["Preview separator", "wiki", ".wb-split-handle--preview"],
+      ["canvas", "wiki", "#wb-canvas"],
+    ] as const;
+
+    for (const direction of ["back", "forward"] as const) {
+      it.each(departures)(`rescues %s when ${direction} opens Settings`, async (_name, mode, selector) => {
+        setElementRect(".wb-shell", { width: 1400 });
+        window.history.replaceState(null, "", `/?mode=${mode}`);
+        await renderShell(LOADED);
+        fireEvent.click(railItem(SETTINGS_LABEL));
+        if (direction === "back") {
+          fireEvent.click(railItem(SETTINGS_LABEL));
+        } else {
+          await traverse(() => window.history.back());
+        }
+        // Dock after establishing the history so the mode traversal cannot
+        // clear the selection before this control is exercised.
+        if (selector.includes("preview")) {
+          fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+          await act(async () => {});
+        }
+        const control = document.querySelector<HTMLElement>(selector);
+        expect(control).not.toBeNull();
+        control!.focus();
+        expect(document.activeElement).toBe(control);
+        await traverse(() => window.history[direction]());
+        expect(settingsShowing()).toBe(true);
+        expect(document.activeElement).toBe(landingSite());
+      });
+    }
+
+    it.each(["back", "forward"] as const)("rescues WorkspacePreview when %s opens Settings", async (direction) => {
+      const conversation = {
+        id: "output-chat", title: "Output chat",
+        messages: [{ id: "answer", role: "assistant", content: "Report ready.",
+          outputs: [{ path: "report.md", name: "report.md", bytes: 64 }] }],
+      };
+      const fallback = vi.mocked(fetch).getMockImplementation()!;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const body = url.endsWith("/api/chat/conversations") ? { conversations: [conversation] }
+          : url.endsWith("/api/chat/conversations/output-chat") ? { conversation }
+          : url.includes("/api/v1/workspace/file?") ? { content: "[Report link](https://example.com/report)" }
+          : null;
+        return body ? new Response(JSON.stringify(body), { status: 200 }) : fallback(input, init);
+      });
+      window.history.replaceState(null, "", "/?mode=chat");
+      await renderShell(LOADED);
+      fireEvent.click(railItem(SETTINGS_LABEL));
+      if (direction === "back") fireEvent.click(railItem(SETTINGS_LABEL));
+      else await traverse(() => window.history.back());
+      fireEvent.click(await screen.findByRole("button", { name: "report.md · 64 B" }));
+      const link = await screen.findByRole("link", { name: "Report link" });
+      expect(link.closest("#wb-preview-column")).not.toBeNull();
+      link.focus();
+      expect(document.activeElement).toBe(link);
+      await traverse(() => window.history[direction]());
+      expect(settingsShowing()).toBe(true);
+      expect(document.activeElement).toBe(landingSite());
+    });
+
+    it.each([
+      ["rail", "nav.wb-rail button"],
+      ["WikiSwitcher", ".wb-wiki-switch-new"],
+      ["tree separator", ".wb-split-handle--tree"],
+    ])("preserves %s on closing and reopening", async (_name, selector) => {
+      setElementRect(".wb-shell", { width: 1400 });
+      await renderShell(LOADED);
+      fireEvent.click(railItem(SETTINGS_LABEL));
+      const control = document.querySelector<HTMLElement>(selector);
+      expect(control).not.toBeNull();
+      control!.focus();
+      expect(document.activeElement).toBe(control);
+      await traverse(() => window.history.back());
+      expect(settingsShowing()).toBe(false);
+      expect(document.activeElement).toBe(control);
+      await traverse(() => window.history.forward());
+      expect(settingsShowing()).toBe(true);
+      expect(document.activeElement).toBe(control);
+    });
+
+    it("ignores matching regions outside this Workbench", async () => {
+      const foreign = document.createElement("button");
+      foreign.className = "wb-set-nav";
+      document.body.append(foreign);
+      try {
+        await renderShell();
+        fireEvent.click(railItem(SETTINGS_LABEL));
+        foreign.focus();
+        await traverse(() => window.history.back());
+        expect(settingsShowing()).toBe(false);
+        expect(document.activeElement).toBe(foreign);
+      } finally {
+        foreign.remove();
+      }
+    });
+  });
+
   it("adds no entry when the surface already showing is clicked again", async () => {
     // Nothing about the URL moved, so there is nothing to undo: an entry here
     // would be one Back has to swallow before it can reach the mode the owner
@@ -756,6 +863,12 @@ describe("Workbench mode ↔ URL", () => {
     expect(window.location.search).toBe("?mode=wiki&settings=1");
     // …and the keyboard did not move: the surface did not swap, only the pane.
     expect(document.activeElement).toBe(pane);
+
+    // DW-759: the next Back withdraws SettingsNav itself, so the canvas must
+    // catch the keyboard before the focused row disappears.
+    await traverse(() => window.history.back());
+    expect(settingsShowing()).toBe(false);
+    expect(document.activeElement).toBe(landingSite());
   });
 
   it("drops the pane param when the DEFAULT pane is picked, keeping the surface open", async () => {
