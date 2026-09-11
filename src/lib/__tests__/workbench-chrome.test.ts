@@ -192,8 +192,8 @@ describe("Workbench shell", () => {
     expect(source).toContain("window.history.replaceState(");
     expect(source).toContain('window.addEventListener("popstate", onPopState)');
     // …and the traversal's focus bump is NARROWED by a sample taken BEFORE the
-    // surface is applied (DW-513): it fires only when the keyboard was really in
-    // the canvas about to be swapped, so Back pressed on a rail button leaves
+    // surface is applied (DW-759): it fires only when the keyboard was really in
+    // a region about to be withdrawn, so Back pressed on a rail button leaves
     // that button focused.
     //
     // The ORDER is the pin, not merely the presence of the call. Moved below
@@ -202,16 +202,18 @@ describe("Workbench shell", () => {
     // that has ALREADY been swapped, and every mounted case in this repo still
     // passes: jsdom does not blur through an ancestor `hidden`, so the withdrawn
     // section still `contains` the stale `activeElement` and the wrong reading
-    // agrees with the right one on exactly the cases the suites cover. Only a
-    // positional scan can tell the two apart.
+    // agrees with the right one on exactly those mounted cases. Keep this order
+    // pin alongside e2e/workbench-settings-focus.spec.ts, which observes actual
+    // browser withdrawal and the resulting focus.
     const shellCode = stripComments(source);
     const sampledAt = shellCode.indexOf(
-      "document.getElementById(CANVAS_ID)?.contains(document.activeElement)",
+      "const activeElement = document.activeElement;",
     );
+    const membershipAt = shellCode.indexOf(".some((region) => region.contains(activeElement))");
     const appliedAt = shellCode.indexOf("applySurface(next, settings, category);");
     expect(sampledAt).toBeGreaterThan(-1);
-    expect(appliedAt).toBeGreaterThan(-1);
-    expect(sampledAt).toBeLessThan(appliedAt);
+    expect(membershipAt).toBeGreaterThan(sampledAt);
+    expect(appliedAt).toBeGreaterThan(membershipAt);
     // And the bump really is gated on the sample rather than on the flag alone.
     expect(shellCode).not.toContain("if (movedSettings) bumpCanvasFocus();");
     // The other half of the ban. `useSearchParams()` would read the same value

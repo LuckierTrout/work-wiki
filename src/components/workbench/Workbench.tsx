@@ -789,8 +789,8 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * from both directions — while the paths that must NOT move focus (the rail
    * control closing Settings, a traversal that only changes the mode, a pane
    * pick) simply do not bump it. A traversal that MOVES the flag is the one
-   * conditional caller: it bumps only when the keyboard was inside the canvas
-   * being swapped (DW-513), which the handler samples before applying the
+   * conditional caller: it bumps only when the keyboard was inside a region
+   * being withdrawn (DW-759), which the handler samples before applying the
    * surface — the decision cannot be made from here.
    *
    * `#wb-canvas` is the right target in both directions because `ModeCanvas` and
@@ -957,46 +957,24 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       ) {
         return;
       }
-      // Both read BEFORE `applySurface`, which is what moves the ref and swaps
-      // the canvas on the next render.
-      //
-      // The SURFACE swap is what can strand the keyboard: the section the owner
-      // was standing in goes `display: none` in the same commit, so the landing
-      // site has to catch it (DW-423). A traversal that only changes the MODE
-      // moves nothing — the canvas is still the canvas on screen — and neither
-      // does one that moved the PANE alone: the detail column re-renders under
-      // whatever control the owner is standing in, so a bump would take them
-      // off it.
+      // Sample BEFORE applying the surface: the commit withdraws these regions
+      // and a real browser can blur their focused control to <body> (DW-759).
+      // Category-only and mode-only traversals do not request canvas focus.
       const movedSettings = settings !== settingsOpenRef.current;
-      // …but only when the keyboard was actually IN the canvas about to be
-      // swapped (DW-513). Back pressed with focus on the rail is a press the
-      // owner made on a control that outlives the swap, and yanking them to
-      // `#wb-canvas` for it is the same mistake `toggleSettings` deliberately
-      // avoids on the rail-close path — this is the traversal path being made
-      // symmetric with it. `contains` answers true for the node ITSELF, which is
-      // what keeps the common route green: `toggleSettings` and `g s` both land
-      // the keyboard on `#wb-canvas` on the way in, so a Back straight back out
-      // still bumps.
-      //
-      // The narrowing has a REAL COST, and it is deliberate rather than
-      // overlooked: focus sitting in a region this same commit withdraws, but
-      // which is not the canvas, is no longer rescued. `selectSettingsCategory`
-      // does not bump, so after a pane pick the keyboard is on a `SettingsNav`
-      // row — that nav renders in the LEFT COLUMN, outside `#wb-canvas`, and is
-      // unmounted by the commit that closes the surface — and a Back out of
-      // Settings from there now drops to `<body>`. The trees, `ActivityDock` and
-      // the Preview column have the same shape on a traversal that OPENS
-      // Settings. The guard is fixed at `#wb-canvas` by the recorded decision;
-      // widening it to "any region about to be withdrawn" is a separate change,
-      // and the surfaces beyond the canvas are explicitly out of scope here.
-      //
-      // Sampled in THIS handler rather than in `bumpCanvasFocus` or the nonce
-      // effect, both of which run after the swap — and that effect's own comment
-      // explains why it must not read `activeElement` at all.
-      const hadCanvas =
-        document.getElementById(CANVAS_ID)?.contains(document.activeElement) ?? false;
+      // The canvas departs on either Settings edge. SettingsNav departs on
+      // closing; the tree, Sources, Activity and both Preview implementations
+      // depart on opening. Their common Preview id also covers the column itself.
+      // Scope to this shell, and exclude the persistent left header, rail and
+      // tree separator: focus on those controls must stay where the owner put it.
+      const departingSelector = settings
+        ? `#${CANVAS_ID}, .wb-tree-panel, .wb-left-surface, .wb-activity, #${PREVIEW_ID}, .wb-split-handle--preview`
+        : `#${CANVAS_ID}, .wb-set-nav`;
+      const activeElement = document.activeElement;
+      const hadDepartingFocus = movedSettings && Array.from(
+        shellRef.current?.querySelectorAll(departingSelector) ?? [],
+      ).some((region) => region.contains(activeElement));
       applySurface(next, settings, category);
-      if (movedSettings && hadCanvas) bumpCanvasFocus();
+      if (hadDepartingFocus) bumpCanvasFocus();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1688,8 +1666,8 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * and moved nothing (DW-425) and a Back that took the surface away moved
    * nothing either (DW-423). The bump SITES are the whole policy — both openers
    * unconditionally, and a traversal that MOVES the flag only when the keyboard
-   * was inside the canvas being swapped (DW-513) — and the paths that must leave
-   * the keyboard alone (the rail control closing Settings, a traversal that only
+   * was inside a region that transition withdraws (DW-759). The paths that must
+   * leave the keyboard alone (the rail control closing Settings, a traversal that only
    * changes the mode, a pane pick) are exactly the ones that do not bump. This
    * effect asks none of that: by the time it runs the canvas has already been
    * swapped, so the condition is sampled in the `popstate` handler instead.
