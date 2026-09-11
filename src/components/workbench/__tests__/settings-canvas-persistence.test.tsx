@@ -397,13 +397,10 @@ async function seedSettingsEntry() {
  *
  * It also bumps `canvasFocusNonce`, sending the keyboard to `#wb-canvas`
  * (DW-423) — but that is now CONDITIONAL, not a consequence of the flag having
- * moved on its own. Since DW-513 the handler bumps only when the keyboard was
- * inside the canvas about to be swapped, and here it is: the Create Wiki dialog
- * holding focus at sample time renders inside the visible mode canvas. A caller
- * that arranged focus somewhere outside it — a `SettingsNav` row, the trees, the
- * Preview column — would traverse into the same surface with the keyboard left
- * where it was. Same surface and same withdrawal either in-shell control
- * produces, by the one route this state leaves open.
+ * moved on its own. DW-759 samples the regions the transition withdraws;
+ * here the Create Wiki dialog holding focus renders inside the mode canvas.
+ * Persistent controls keep their focus. Same surface and same withdrawal either
+ * in-shell control produces, by the one route this state leaves open.
  */
 async function openFromHistory() {
   await traverse(() => window.history.back());
@@ -1292,6 +1289,12 @@ describe("a dialog-holding canvas survives Settings, reached by BACK (DW-373)", 
     expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
 
     // Out again the same way, which is what this case is named for: the second
+    // DW-759: SettingsNav is outside the canvas and disappears on Back too.
+    const categoryRow = document.querySelector<HTMLButtonElement>(".wb-set-nav button");
+    expect(categoryRow).not.toBeNull();
+    categoryRow!.focus();
+    expect(document.activeElement).toBe(categoryRow);
+
     // Back lands on the mount-seeded `?mode=wiki` entry, closing Settings and
     // un-hiding the canvas in one commit.
     await traverse(() => window.history.back());
