@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { workbenchSourcePath } from "@/lib/source-delete";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { TODOS_NON_MEETING_COPY } from "@/lib/workbench-modes";
@@ -44,55 +45,71 @@ interface MeetingResponse {
 }
 
 export function MarkMeetingControl({ path, readOnly = false }: MarkMeetingControlProps) {
+  const visible = useSurfaceVisible();
   const canonical = workbenchSourcePath(path);
+  const canonicalRef = useRef(canonical);
+  canonicalRef.current = canonical;
+  const mutationSeq = useRef(0);
   const [meeting, setMeeting] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Above the `!canonical` early return: a hook cannot be conditional.
   const noteId = useId();
 
   useEffect(() => {
-    if (!canonical) return;
-    let cancelled = false;
+    setMeeting(null);
     setError(null);
+    setReadError(null);
+  }, [canonical]);
+
+  useEffect(() => {
+    if (!canonical || !visible) return;
+    let cancelled = false;
+    const seq = mutationSeq.current;
+    setReadError(null);
     send<MeetingResponse>(
       `/api/sources/meeting?path=${encodeURIComponent(canonical)}`,
       { method: "GET" },
     )
       .then((body) => {
-        if (!cancelled) setMeeting(body.meeting);
+        if (!cancelled && seq === mutationSeq.current) setMeeting(body.meeting);
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!cancelled && seq === mutationSeq.current) {
           setMeeting(null);
-          setError("Couldn’t load whether this Source is a meeting.");
+          setReadError("Couldn’t load whether this Source is a meeting.");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [canonical]);
+  }, [canonical, visible]);
 
   if (!canonical) return null;
 
   async function mark() {
     if (readOnly || busy || !canonical) return;
+    mutationSeq.current += 1;
     setBusy(true);
     setError(null);
+    setReadError(null);
     try {
       const body = await send<MeetingResponse>("/api/sources/meeting", {
         method: "POST",
         body: JSON.stringify({ path: canonical, meeting: true }),
       });
-      setMeeting(body.meeting);
+      if (canonicalRef.current === canonical) setMeeting(body.meeting);
     } catch (cause) {
-      setError(writeFailure(cause, "mark this Source as a meeting").message);
+      if (canonicalRef.current === canonical) setError(writeFailure(cause, "mark this Source as a meeting").message);
     } finally {
+      mutationSeq.current += 1;
       setBusy(false);
     }
   }
 
   return (
+    <SurfacePresentation>
     <div className="wb-mark-meeting">
       {meeting === false && <p className="wb-mark-meeting-copy">{TODOS_NON_MEETING_COPY}</p>}
       {meeting === false && (
@@ -122,7 +139,8 @@ export function MarkMeetingControl({ path, readOnly = false }: MarkMeetingContro
           {SOURCE_MEETING_READ_ONLY_COPY}
         </p>
       )}
-      {error && <p className="wb-mark-meeting-error">{error}</p>}
+      {(error || readError) && <p className="wb-mark-meeting-error">{error || readError}</p>}
     </div>
+    </SurfacePresentation>
   );
 }

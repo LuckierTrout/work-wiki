@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { loopbackFetch } from "@/lib/loopback-client";
 import { workbenchMode } from "@/lib/workbench-modes";
 import {
@@ -46,6 +47,10 @@ export interface SkillsCanvasProps {
 }
 
 export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
+  const visible = useSurfaceVisible(active);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const scanSeq = useRef(0);
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -73,12 +78,15 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
    */
   const scan = useCallback(
     async (options: { signal?: AbortSignal; quiet?: boolean } = {}) => {
+      if (!visibleRef.current) return;
+      const seq = ++scanSeq.current;
       const { signal, quiet = false } = options;
       try {
         const read = await loopbackFetch(SKILL_SCAN_URL, {
           cache: "no-store",
           ...(signal ? { signal } : {}),
         });
+        if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
         if (!read.ok) {
           if (quiet) return;
           setError(SKILLS_SCAN_FAILED_COPY);
@@ -86,6 +94,7 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
           return;
         }
         const body = (await read.json()) as { skills?: SkillSummary[] };
+        if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
         const listed = Array.isArray(body.skills) ? body.skills : null;
         if (quiet) {
           // Replaced only when a list was actually READ — reading it is the
@@ -96,7 +105,7 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
         setError(null);
         setSkills(listed ?? []);
       } catch {
-        if (signal?.aborted) return;
+        if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
         if (quiet) return;
         // Sidecar down or API off. Named, unlike in Chat: this surface exists to
         // answer "which Skills do I have", and a silent empty list would read as
@@ -109,11 +118,11 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
   );
 
   useEffect(() => {
-    if (!active) return;
+    if (!visible) return;
     const controller = new AbortController();
     void scan({ signal: controller.signal });
-    return () => controller.abort();
-  }, [active, scan]);
+    return () => { scanSeq.current += 1; controller.abort(); };
+  }, [visible, scan]);
 
   /**
    * Flip one Skill.
@@ -178,6 +187,7 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
   }
 
   return (
+    <SurfacePresentation active={active}>
     <div className="wb-skills">
       <p className="wb-skills-hint">{SKILLS_SCAN_HINT_COPY}</p>
       {error ? (
@@ -219,5 +229,6 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
         </ul>
       ) : null}
     </div>
+    </SurfacePresentation>
   );
 }

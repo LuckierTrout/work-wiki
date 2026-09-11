@@ -307,6 +307,7 @@ export function ModeCanvas({
       </SurfaceVisibilityProvider>
 
       {sidecar === "up" ? (
+        <SurfaceVisibilityProvider visible={mode === "chat" && !hidden}>
         <div className="wb-canvas-pad" hidden={mode !== "chat" || hidden}>
           {mode === "chat" && !hidden ? (
             <h2 id={headingId} className="wb-surface-title">
@@ -319,6 +320,7 @@ export function ModeCanvas({
             onDockPreview={onDockPreview ?? (() => {})}
           />
         </div>
+      </SurfaceVisibilityProvider>
       ) : mode === "chat" && !hidden ? (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
@@ -328,7 +330,8 @@ export function ModeCanvas({
         </div>
       ) : null}
 
-      <div className="wb-canvas-pad" hidden={mode !== "search" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "search" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "search" || hidden}>
         {mode === "search" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("search").label}
@@ -339,8 +342,10 @@ export function ModeCanvas({
           onDockPreview={onDockPreview ?? (() => {})}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
-      <div className="wb-canvas-pad" hidden={mode !== "todos" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "todos" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "todos" || hidden}>
         {mode === "todos" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("todos").label}
@@ -354,8 +359,10 @@ export function ModeCanvas({
           onPendingCountChange={onTodoCountChange}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
-      <div className="wb-canvas-pad" hidden={mode !== "graph" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "graph" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "graph" || hidden}>
         {mode === "graph" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("graph").label}
@@ -370,8 +377,10 @@ export function ModeCanvas({
           onOpenResearch={onOpenResearch}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
-      <div className="wb-canvas-pad" hidden={mode !== "lint" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "lint" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "lint" || hidden}>
         {mode === "lint" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("lint").label}
@@ -384,8 +393,10 @@ export function ModeCanvas({
           onDockPreview={onDockPreview ?? (() => {})}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
-      <div className="wb-canvas-pad" hidden={mode !== "review" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "review" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "review" || hidden}>
         {mode === "review" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("review").label}
@@ -401,8 +412,10 @@ export function ModeCanvas({
           onOpenResearch={onOpenResearch}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
-      <div className="wb-canvas-pad" hidden={mode !== "research" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "research" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "research" || hidden}>
         {mode === "research" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("research").label}
@@ -418,10 +431,12 @@ export function ModeCanvas({
           readOnly={readOnly}
         />
       </div>
+      </SurfaceVisibilityProvider>
 
       {/* The Skills rail lists what the sidecar scanned, and owns the switch
           that hides a pack from `/skill` and from the Agent (Story 8.6). */}
-      <div className="wb-canvas-pad" hidden={mode !== "skills" || hidden}>
+      <SurfaceVisibilityProvider visible={mode === "skills" && !hidden}>
+        <div className="wb-canvas-pad" hidden={mode !== "skills" || hidden}>
         {mode === "skills" && !hidden ? (
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("skills").label}
@@ -429,6 +444,7 @@ export function ModeCanvas({
         ) : null}
         <SkillsCanvas active={mode === "skills" && !hidden} readOnly={readOnly} />
       </div>
+      </SurfaceVisibilityProvider>
 
       {!wikiActive &&
         !hidden &&

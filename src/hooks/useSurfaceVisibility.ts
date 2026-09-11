@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, createElement, useContext, type ReactNode } from "react";
+import { createContext, createElement, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 
 /**
  * Whether the surface a subtree renders into is ON SCREEN.
@@ -42,10 +42,23 @@ export function SurfaceVisibilityProvider({
   visible: boolean;
   children: ReactNode;
 }) {
-  return createElement(SurfaceVisibilityContext.Provider, { value: visible }, children);
+  const ancestorVisible = useContext(SurfaceVisibilityContext);
+  return createElement(SurfaceVisibilityContext.Provider, { value: ancestorVisible && visible }, children);
 }
 
 /** `true` unless an enclosing surface says it is currently off screen. */
-export function useSurfaceVisible(): boolean {
-  return useContext(SurfaceVisibilityContext);
+export function useSurfaceVisible(active = true): boolean {
+  return useContext(SurfaceVisibilityContext) && active;
+}
+
+/** Keep the last visible presentation while owner operations settle off screen.
+ * This retains the mounted subtree; it neither cancels nor replays its work.
+ */
+export function SurfacePresentation({ children, active = true }: { children: ReactNode; active?: boolean }) {
+  const visible = useSurfaceVisible(active);
+  const presented = useRef(children);
+  useLayoutEffect(() => {
+    if (visible) presented.current = children;
+  }, [visible, children]);
+  return visible ? children : presented.current;
 }

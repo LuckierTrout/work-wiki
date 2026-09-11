@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { PreviewColumn } from "../PreviewColumn";
 import { Workbench } from "@/components/workbench/Workbench";
 import {
   WorkbenchDataProvider,
@@ -1242,5 +1243,243 @@ describe("the gate names the version, and the panel is reachable by keyboard", (
     expect(pre.tagName).toBe("PRE");
     expect(pre.getAttribute("tabindex")).toBe("0");
     expect(pre.getAttribute("aria-label")).toBe(artifactRevisionDate(NEWER));
+  });
+});
+
+describe("hidden mutation reconciliation (DW-422)", () => {
+  async function settings() {
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+  }
+  async function serve(view: ReturnType<typeof render>, dataVersion: number) {
+    view.rerender(<WorkbenchDataProvider value={{ ...DATA, dataVersion }}><Workbench><p>canvas</p></Workbench></WorkbenchDataProvider>);
+    await act(async () => {});
+  }
+  it.each(["ok", "unreachable"])("holds a hidden revert's reads for its version answer, then refreshes each resource once (%s)", async (readOutcome) => {
+    let previews = 0;
+    previewAnswer = () => { previews += 1; return ok(schemaPayload()); };
+    const pending = deferred<unknown>();
+    revertAnswer = () => pending.promise;
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    const nudge = vi.fn();
+    const unsubscribe = subscribeDataVersionCheck(nudge);
+    try {
+      fireEvent.click(revertButtons()[0]);
+      fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+      await settings();
+      const before = columnAnnounced();
+      await act(async () => pending.resolve(ok({ ok: true, version: "w1s:2-new" })));
+      expect(nudge).not.toHaveBeenCalled();
+      expect(listings()).toBe(1);
+      expect(previews).toBe(1);
+      expect(columnAnnounced()).toBe(before);
+      await settings();
+      expect(nudge).toHaveBeenCalledTimes(1);
+      expect(previews).toBe(1);
+      expect(listings()).toBe(1);
+      if (readOutcome === "unreachable") previewAnswer = () => { previews += 1; return refusal(503, "Temporarily unavailable"); };
+      await serve(view, 1);
+      expect(previews).toBe(2);
+      expect(listings()).toBe(2);
+      expect(columnAnnounced()).toBe(PREVIEW_HISTORY_REVERTED_COPY);
+      await serve(view, 2);
+      expect(previews).toBe(3);
+      expect(listings()).toBe(3);
+    } finally { unsubscribe(); }
+  });
+
+
+  it.each(["hidden", "returned"])("does not reopen a pending revision view after a hidden revert succeeds (view settles %s)", async (settlement) => {
+    const pendingView = deferred<unknown>();
+    const pendingRevert = deferred<unknown>();
+    viewAnswer = () => pendingView.promise;
+    revertAnswer = () => pendingRevert.promise;
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(screen.getAllByRole("button", { name: PREVIEW_HISTORY_VIEW_COPY })[0]);
+    await act(async () => {});
+    expect(revisionCalls.filter((call) => call.url.includes("timestamp="))).toHaveLength(1);
+    expect((revertButtons()[0] as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(revertButtons()[0]);
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    await settings();
+    await act(async () => pendingRevert.resolve(ok({ ok: true, version: "next" })));
+    if (settlement === "hidden") await act(async () => pendingView.resolve(ok({ content: "Old historic bytes" })));
+    viewAnswer = () => ok({ content: "Unexpected reopened historic bytes" });
+    await serve(view, 1);
+    await settings();
+    if (settlement === "returned") await act(async () => pendingView.resolve(ok({ content: "Old historic bytes" })));
+    expect(screen.queryByText("Unexpected reopened historic bytes")).toBeNull();
+    expect(screen.queryByText("Old historic bytes")).toBeNull();
+    expect(revisionCalls.filter((call) => call.url.includes("timestamp="))).toHaveLength(1);
+    expect(columnAnnounced()).toBe(PREVIEW_HISTORY_REVERTED_COPY);
+    expect(screen.getAllByRole("button", { name: PREVIEW_HISTORY_VIEW_COPY }).every((button) => !button.hasAttribute("disabled"))).toBe(true);
+  });
+
+  it("uses a version already served while the hidden write was in flight", async () => {
+    const pending = deferred<unknown>();
+    revertAnswer = () => pending.promise;
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(revertButtons()[0]);
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    await settings();
+    await serve(view, 1);
+    await act(async () => pending.resolve(ok({ ok: true, version: "next" })));
+    const nudge = vi.fn();
+    const unsubscribe = subscribeDataVersionCheck(nudge);
+    try {
+      await settings();
+      expect(nudge).not.toHaveBeenCalled();
+      expect(listings()).toBe(2);
+      expect(columnAnnounced()).toBe(PREVIEW_HISTORY_REVERTED_COPY);
+    } finally { unsubscribe(); }
+  });
+
+  it("keeps an unconfirmed hidden revert's failure through the resumed history read", async () => {
+    const pending = deferred<unknown>();
+    revertAnswer = () => pending.promise;
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(revertButtons()[0]);
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    await settings();
+    await act(async () => pending.resolve(Promise.reject(new TypeError("Network lost"))));
+    expect(listings()).toBe(1);
+    await settings();
+    await serve(view, 1);
+    expect(listings()).toBe(2);
+    expect(screen.getByRole("alert").textContent).toContain("the outcome is unknown");
+  });
+
+
+  it.each(["ok", "refused"])("settles a hidden save (%s) without losing the owner's result", async (outcome) => {
+    let previews = 0;
+    previewAnswer = () => { previews += 1; return ok(schemaPayload()); };
+    const pending = deferred<unknown>();
+    writeAnswer = () => pending.promise;
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }));
+    await act(async () => {});
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Saved owner's bytes" } });
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }));
+    await settings();
+    const nudge = vi.fn();
+    const unsubscribe = subscribeDataVersionCheck(nudge);
+    try {
+      await act(async () => pending.resolve(outcome === "ok" ? ok({ ok: true, version: "next" }) : refusal(412, "This version changed. Keep your draft.")));
+      expect(nudge).not.toHaveBeenCalled();
+      expect(listings()).toBe(1);
+      expect(previews).toBe(1);
+      await settings();
+      if (outcome === "ok") {
+        expect(nudge).toHaveBeenCalledTimes(1);
+        await serve(view, 1);
+        expect(previews).toBe(2);
+        expect(listings()).toBe(2);
+        expect(screen.queryByRole("textbox")).toBeNull();
+      } else {
+        expect(nudge).not.toHaveBeenCalled();
+        expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Saved owner's bytes");
+        expect(screen.getByRole("alert").textContent).toBe("This version changed. Keep your draft.");
+        expect(screen.getByRole("button", { name: PREVIEW_SAVE_COPY }).hasAttribute("disabled")).toBe(false);
+      }
+    } finally { unsubscribe(); }
+  });
+
+
+  it("releases one return reconciliation when the local version barrier times out", async () => {
+    // Preview retains its existing 15-second request deadline.
+    const previewTimeout = 15_000;
+    const pending = deferred<unknown>();
+    revertAnswer = () => pending.promise;
+    let previews = 0;
+    previewAnswer = () => { previews += 1; return ok(schemaPayload()); };
+    const view = await renderShell();
+    await dock();
+    await expandHistory();
+    fireEvent.click(revertButtons()[0]);
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    await settings();
+    await act(async () => pending.resolve(ok({ ok: true, version: "next" })));
+    vi.useFakeTimers();
+    try {
+      await settings();
+      expect(previews).toBe(1);
+      expect(listings()).toBe(1);
+      await act(async () => vi.advanceTimersByTimeAsync(previewTimeout - 1));
+      expect(previews).toBe(1);
+      expect(listings()).toBe(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(previews).toBe(2);
+      expect(listings()).toBe(2);
+      expect(columnAnnounced()).toBe(PREVIEW_HISTORY_REVERTED_COPY);
+      await act(async () => vi.advanceTimersByTimeAsync(previewTimeout));
+      expect(previews).toBe(2);
+      expect(listings()).toBe(2);
+      await serve(view, 1);
+      expect(previews).toBe(3);
+      expect(listings()).toBe(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rejects a late history listing and resumes it once", async () => {
+    const pending = deferred<unknown>();
+    listAnswer = () => pending.promise;
+    await renderShell();
+    await dock();
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_COPY }));
+    await settings();
+    await act(async () => pending.resolve(ok({ revisions: [{ ...NEWER, reason: "obsolete hidden revision" }] })));
+    expect(document.body.textContent).not.toContain("obsolete hidden revision");
+    listAnswer = () => ok({ revisions: [OLDER] });
+    await settings();
+    expect(listings()).toBe(2);
+    expect(document.body.textContent).not.toContain("obsolete hidden revision");
+    expect(rowLabels()).toHaveLength(1);
+  });
+});
+
+
+describe("Preview target scope while withdrawn (DW-422)", () => {
+  const dirty = () => {};
+  const select = () => {};
+  const pane = (slug: string, hidden: boolean) => <PreviewColumn id="scoped-preview" selection={{ kind: "page", slug }} knowledge={KNOWLEDGE_TWO} files={FILES} onOpenPage={select} onOpenFile={select} dataVersion={0} onDirtyChange={dirty} hidden={hidden} />;
+  it("delays a first hidden mount and drops an old row's deferred mutation outcome", async () => {
+    let previews = 0;
+    previewAnswer = () => { previews += 1; return ok(schemaPayload()); };
+    const view = render(pane("alpha", true));
+    await act(async () => {});
+    expect(previews).toBe(0);
+    view.rerender(pane("alpha", false));
+    await act(async () => {});
+    await expandHistory();
+    const pending = deferred<unknown>();
+    revertAnswer = () => pending.promise;
+    fireEvent.click(revertButtons()[0]);
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_HISTORY_REVERT_CONFIRM_LABEL }));
+    view.rerender(pane("alpha", true));
+    view.rerender(pane("beta", true));
+    const nudge = vi.fn();
+    const unsubscribe = subscribeDataVersionCheck(nudge);
+    try {
+      await act(async () => pending.resolve(ok({ ok: true, version: "new" })));
+      expect(previews).toBe(1);
+      view.rerender(pane("beta", false));
+      await act(async () => {});
+      expect(previews).toBe(2);
+      expect(listings()).toBe(1);
+      expect(nudge).not.toHaveBeenCalled();
+      expect(columnAnnounced()).toBe("");
+      expect(historyToggle()?.getAttribute("aria-expanded")).toBe("false");
+    } finally { unsubscribe(); }
   });
 });

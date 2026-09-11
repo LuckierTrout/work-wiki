@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { RESEARCH_CREATE_READ_ONLY_COPY, researchWikiId } from "@/lib/research-panel";
 import { normalizeReviewCount } from "@/lib/review-count";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
@@ -52,6 +53,9 @@ export function ReviewCanvas({
   onOpenResearch,
 }: ReviewCanvasProps) {
   const empty = workbenchMode("review").emptyState ?? "No pending cards.";
+  const visible = useSurfaceVisible(active);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [itemsWikiId, setItemsWikiId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +93,7 @@ export function ReviewCanvas({
   }, [wikiId]);
 
   const load = useCallback(async () => {
+    if (!visibleRef.current) return;
     const seq = ++loadSeq.current;
     if (!wikiId) {
       setItems([]);
@@ -100,14 +105,14 @@ export function ReviewCanvas({
     try {
       const query = `?wikiId=${encodeURIComponent(wikiId)}`;
       const body = await send<ReviewResponse>(`/api/review-queue${query}`, { method: "GET" });
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setItems(body.items ?? []);
       setItemsWikiId(wikiId);
       const next = normalizeReviewCount(body.pendingCount);
       if (next !== null) onPendingCountChange?.(next);
       setError(null);
     } catch (cause) {
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setItems([]);
       setItemsWikiId(wikiId);
       setError(cause instanceof Error ? cause.message : "Couldn’t load Review.");
@@ -115,9 +120,10 @@ export function ReviewCanvas({
   }, [onPendingCountChange, wikiId]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!visible) return;
     void load();
-  }, [active, load, dataVersion]);
+    return () => { loadSeq.current += 1; };
+  }, [visible, load, dataVersion]);
 
   async function act(id: string, action: "skip" | "create-page") {
     if (readOnly || !wikiId) return;
@@ -228,6 +234,7 @@ export function ReviewCanvas({
   const shown = itemsWikiId === wikiId ? items : [];
 
   return (
+    <SurfacePresentation active={active}>
     <div className="wb-review">
       {error && <p className="wb-todos-error">{error}</p>}
       {shown.length === 0 ? (
@@ -348,5 +355,6 @@ export function ReviewCanvas({
         onConfirm={(values) => void confirmResearch(values)}
       />
     </div>
+    </SurfacePresentation>
   );
 }

@@ -9,6 +9,7 @@ import {
 } from "@/components/workbench/WorkbenchData";
 import {
   PREVIEW_CLOSED_COPY,
+  PREVIEW_CANCEL_COPY,
   PREVIEW_DISCARD_CONFIRM_LABEL,
   PREVIEW_DISCARD_CONFIRM_TITLE,
   PREVIEW_EDIT_CONFIRM_LABEL,
@@ -929,4 +930,33 @@ describe("a save the write precondition refuses (DW-38, DW-51)", () => {
     expect(writes[0].url).toContain("/api/wiki/alpha");
     expect(writes[0].headers["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
   });
+});
+
+
+it("defers hidden bumps through a dirty editor until the owner leaves it (DW-422)", async () => {
+  window.history.replaceState(null, "", "/");
+  let reads = 0;
+  answer = () => { reads += 1; return { ok: true, status: 200, json: async () => payload("Alpha", reads === 1 ? "# Alpha" : "Current server bytes") }; };
+  const view = await renderShell();
+  fireEvent.click(row("Alpha"));
+  await act(async () => {});
+  await typeIntoEditor("Owner draft survives");
+  const original = editor();
+  fireEvent.click(row("Settings"));
+  for (const dataVersion of [1, 2, 3]) {
+    view.rerender(<WorkbenchDataProvider value={{ ...DATA, dataVersion }}><Workbench><p>canvas</p></Workbench></WorkbenchDataProvider>);
+    await act(async () => {});
+  }
+  fireEvent.click(row("Settings"));
+  await act(async () => {});
+  expect(editor()).toBe(original);
+  expect(editor()?.value).toBe("Owner draft survives");
+  expect(reads).toBe(1);
+  fireEvent.click(row(PREVIEW_CANCEL_COPY));
+  await act(async () => {});
+  const discard = screen.queryByRole("button", { name: PREVIEW_DISCARD_CONFIRM_LABEL });
+  if (discard) fireEvent.click(discard);
+  await act(async () => {});
+  expect(reads).toBe(2);
+  expect(screen.getByText("Current server bytes")).toBeTruthy();
 });

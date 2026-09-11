@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { GRAPH_NARROW_COPY, workbenchMode } from "@/lib/workbench-modes";
 import { STRONG_EDGE_WEIGHT } from "@/lib/graph-relevance";
@@ -78,6 +79,9 @@ export function GraphCanvas({
   onDockPreview,
   onOpenResearch,
 }: GraphCanvasProps) {
+  const visible = useSurfaceVisible(active);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const empty = workbenchMode("graph").emptyState ?? "No graph yet. Ingest sources to build one.";
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<{
@@ -137,10 +141,11 @@ export function GraphCanvas({
   }, [wikiId]);
 
   const load = useCallback(async () => {
+    if (!visibleRef.current) return;
     const seq = ++loadSeq.current;
     try {
       const body = await send<GraphResponse>("/api/graph/workbench", { method: "GET" });
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setNodes(body.nodes ?? []);
       setEdges(body.edges ?? []);
       setCommunities(body.communities ?? []);
@@ -150,7 +155,7 @@ export function GraphCanvas({
       setPrefill(body.prefill);
       setError(null);
     } catch (cause) {
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setNodes([]);
       setEdges([]);
       setCommunities([]);
@@ -163,9 +168,10 @@ export function GraphCanvas({
   }, []);
 
   useEffect(() => {
-    if (!active) return;
+    if (!visible) return;
     void load();
-  }, [active, load, dataVersion]);
+    return () => { loadSeq.current += 1; };
+  }, [visible, load, dataVersion, wikiId]);
 
   const selected = insights.find((insight) => insight.id === selectedInsight) ?? null;
   selectedRef.current = selected;
@@ -476,6 +482,7 @@ export function GraphCanvas({
   }
 
   return (
+    <SurfacePresentation active={active}>
     <div className="wb-graph">
       <p className="wb-empty wb-empty--narrow">{GRAPH_NARROW_COPY}</p>
       <div className="wb-graph-job wb-empty--wide">
@@ -659,5 +666,6 @@ export function GraphCanvas({
         onConfirm={(values) => void confirmResearch(values)}
       />
     </div>
+    </SurfacePresentation>
   );
 }

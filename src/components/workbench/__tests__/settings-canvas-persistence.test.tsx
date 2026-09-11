@@ -628,11 +628,13 @@ describe.each(OPENERS)(
       // !settingsOpen` and gated the MOUNT, so a Settings visit unmounted the
       // column and took the draft with it — no confirm, no announcement, no way
       // back. The dock rule alone decides the mount now.
-      await renderShell(TREE_DATA);
+      const view = await renderShell(TREE_DATA);
       const editor = await openPreviewEditorWith("# Alpha, half rewritten");
 
       await open();
       expect(settingsShowing()).toBe(true);
+      await refreshShell(view, { ...TREE_DATA, dataVersion: 1 });
+      await refreshShell(view, { ...TREE_DATA, dataVersion: 2 });
       // Withdrawn, not unmounted: out of the accessibility tree while the node
       // and its text are still in the document.
       expect(previewColumn()?.hasAttribute("hidden")).toBe(true);

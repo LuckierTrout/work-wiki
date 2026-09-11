@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
@@ -64,6 +65,9 @@ export function TodosCanvas({
   onDockPreview,
   onPendingCountChange,
 }: TodosCanvasProps) {
+  const surfaceVisible = useSurfaceVisible(active);
+  const visibleRef = useRef(surfaceVisible);
+  visibleRef.current = surfaceVisible;
   const empty = workbenchMode("todos").emptyState ?? "No candidates. Meeting ingest will propose them.";
   const [tab, setTab] = useState<TodoTab>("candidates");
   const [items, setItems] = useState<TodoItem[]>([]);
@@ -96,16 +100,17 @@ export function TodosCanvas({
   const todosNoteId = useId();
 
   const load = useCallback(async () => {
+    if (!visibleRef.current) return;
     const seq = ++loadSeq.current;
     try {
       const body = await send<TodosResponse>(`/api/todos?tab=${tab}`, { method: "GET" });
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setItems(body.items ?? []);
       setExtractError(body.extractError ?? null);
       if (typeof body.pendingCount === "number") onPendingCountChange?.(body.pendingCount);
       setError(null);
     } catch (cause) {
-      if (seq !== loadSeq.current) return;
+      if (!visibleRef.current || seq !== loadSeq.current) return;
       setItems([]);
       setExtractError(null);
       setError(cause instanceof Error ? cause.message : "Couldn’t load Todos.");
@@ -113,9 +118,10 @@ export function TodosCanvas({
   }, [tab, onPendingCountChange]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!surfaceVisible) return;
     void load();
-  }, [active, load]);
+    return () => { loadSeq.current += 1; };
+  }, [surfaceVisible, load]);
 
   const visible = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -226,6 +232,7 @@ export function TodosCanvas({
   const bulkIds = [...selected];
 
   return (
+    <SurfacePresentation active={active}>
     <div className="wb-todos">
       <div className="wb-todos-bar">
         <div className="wb-todos-seg" role="tablist" aria-label="Todo lists">
@@ -547,5 +554,6 @@ export function TodosCanvas({
         </p>
       ) : null}
     </div>
+    </SurfacePresentation>
   );
 }
