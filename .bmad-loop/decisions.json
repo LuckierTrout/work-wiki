@@ -1,13 +1,4 @@
 {
-  "DW-422": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Gate PreviewColumn's fetch effect, dataVersion checks and live-region writes on surface visibility (extending the existing SurfaceVisibilityProvider), resuming with one refresh on return; apply the same shape to ModeCanvas.",
-    "key": "1",
-    "label": "Pause while withdrawn",
-    "resolution": ""
-  },
   "DW-443": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
