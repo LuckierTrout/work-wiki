@@ -1326,3 +1326,38 @@ describe("Retry reports that it is working (DW-184)", () => {
     expect(back.disabled).toBe(false);
   });
 });
+
+describe("a Sources-mode pick says nothing about a Preview", () => {
+  // `shouldDockPreview("sources", …)` is false: picking a Source row there
+  // reveals the meeting controls and puts `aria-current` on the row, and no
+  // column docks. The dock announcement must follow the dock rule, or a
+  // screen-reader user hears "Preview, <file>" for a panel that never
+  // appears — and "Preview closed" for one that was never open.
+  it("neither announces a dock on pick nor a close on re-pick", async () => {
+    const files = buildFileTree([
+      "wiki/alpha.md",
+      "raw/",
+      "raw/sources/",
+      "raw/sources/q3/",
+      "raw/sources/q3/ab12.md",
+    ]);
+    await renderShell({ ...DATA, files });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await act(async () => {});
+    const afterSwitch = announcedRaw();
+    expect(announced()).toBe("Sources");
+
+    fireEvent.click(row("ab12.md"));
+    await act(async () => {});
+    expect(preview()).toBeNull();
+    expect(announcedRaw()).toBe(afterSwitch);
+    expect(announced()).not.toBe(previewDockAnnouncement("ab12.md"));
+
+    fireEvent.click(row("ab12.md"));
+    await act(async () => {});
+    expect(preview()).toBeNull();
+    expect(announcedRaw()).toBe(afterSwitch);
+    expect(announced()).not.toBe(PREVIEW_CLOSED_COPY);
+  });
+});

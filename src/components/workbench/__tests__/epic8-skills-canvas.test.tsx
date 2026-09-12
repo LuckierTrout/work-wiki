@@ -11,8 +11,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
+  SKILLS_SCAN_DISABLED_COPY,
   SKILLS_SCAN_FAILED_COPY,
   SKILLS_SCAN_HINT_COPY,
+  SKILLS_SCAN_UNAUTHORIZED_COPY,
   SKILL_DISABLED_NOTE_COPY,
 } from "@/lib/chat-agent";
 import {
@@ -381,5 +383,35 @@ describe("the switch writes one decision to the kernel", () => {
     expect(toggle.disabled).toBe(true);
     fireEvent.click(toggle);
     expect(settingsPut).not.toHaveBeenCalled();
+  });
+});
+
+describe("a refused scan names the switch, not a process to start", () => {
+  // A 503 `disabled` and a 401 `unauthorized` are ANSWERS — the sidecar is up
+  // and said no. Telling that owner to `pnpm sidecar` sends them to start a
+  // process that is already running; the fix is a switch or a token in
+  // Settings → API + MCP, and Chat already says so through
+  // `chatDoorRefusalCopy`. Only a thrown read means nothing answered.
+  it("says the API is off when the door answers 503 disabled", async () => {
+    scanned = () =>
+      new Response(JSON.stringify({ error: "disabled" }), { status: 503 });
+    render(<SkillsCanvas active />);
+    expect(await screen.findByText(SKILLS_SCAN_DISABLED_COPY)).toBeTruthy();
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+    expect(document.body.textContent).not.toContain("pnpm sidecar");
+  });
+
+  it("says the token was refused when the door answers 401 unauthorized", async () => {
+    scanned = () =>
+      new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+    render(<SkillsCanvas active />);
+    expect(await screen.findByText(SKILLS_SCAN_UNAUTHORIZED_COPY)).toBeTruthy();
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+  });
+
+  it("keeps the did-not-answer sentence for a non-ok answer it cannot read", async () => {
+    scanned = () => new Response("<html>proxy</html>", { status: 502 });
+    render(<SkillsCanvas active />);
+    expect(await screen.findByText(SKILLS_SCAN_FAILED_COPY)).toBeTruthy();
   });
 });

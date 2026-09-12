@@ -10,6 +10,7 @@ import {
   SKILL_SCAN_URL,
   skillScopeLabel,
   skillToggleLabel,
+  skillsScanRefusalCopy,
   type SkillSummary,
 } from "@/lib/chat-agent";
 import {
@@ -19,6 +20,16 @@ import {
   SETTINGS_SAVE_FAILED_COPY,
   verdictClearsHeldVersion,
 } from "@/lib/workbench-settings";
+
+/** The door's one-word `error`, or undefined when the body is not its JSON. */
+async function doorError(read: Response): Promise<string | undefined> {
+  try {
+    const body = (await read.json()) as { error?: unknown };
+    return typeof body.error === "string" ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The Skills rail: every `SKILL.md` on disk, and the switch that hides one
@@ -81,7 +92,11 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
         });
         if (!read.ok) {
           if (quiet) return;
-          setError(SKILLS_SCAN_FAILED_COPY);
+          // A refusal is an ANSWER: the door said `disabled` or `unauthorized`,
+          // and the sentence has to name that switch rather than a process to
+          // start. Only a body that is not the door's JSON keeps the
+          // did-not-answer sentence.
+          setError(skillsScanRefusalCopy(await doorError(read)));
           setSkills([]);
           return;
         }

@@ -9,7 +9,7 @@ import {
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
 import type { SidecarStatus } from "@/lib/sidecar";
-import type { TreeSelection } from "@/lib/workbench-tree";
+import { sourcesCanvasCopy, type TreeSelection } from "@/lib/workbench-tree";
 import { ChatCanvas } from "./ChatCanvas";
 import { GraphCanvas } from "./GraphCanvas";
 import { LintCanvas } from "./LintCanvas";
@@ -18,6 +18,7 @@ import { ReviewCanvas } from "./ReviewCanvas";
 import { SearchCanvas } from "./SearchCanvas";
 import { SkillsCanvas } from "./SkillsCanvas";
 import { TodosCanvas } from "./TodosCanvas";
+import { useWorkbenchData } from "./WorkbenchData";
 
 /**
  * The active mode's canvas.
@@ -162,6 +163,10 @@ export function ModeCanvas({
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
+  // The Sources stub's sentence is decided by the tree the column renders from
+  // — see the render below. Read from context like `TreePanel` does, so the
+  // canvas and the column can never disagree about whether a Source exists.
+  const { files, filesUnavailable } = useWorkbenchData();
 
   // This page's own origin, which decides which fail-closed Chat sentence the
   // owner is owed (DW-607). The probe cannot say WHY it failed, so the origin
@@ -444,7 +449,14 @@ export function ModeCanvas({
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}
           </h2>
-          <p className="wb-empty">{surface.emptyState}</p>
+          {/* Sources is the one stub whose sentence is a claim about state:
+              "No sources yet" under a tree listing one was a contradiction, so
+              it asks the same tree the column renders from. */}
+          <p className="wb-empty">
+            {mode === "sources"
+              ? sourcesCanvasCopy(files, filesUnavailable)
+              : surface.emptyState}
+          </p>
         </div>
       )}
     </section>

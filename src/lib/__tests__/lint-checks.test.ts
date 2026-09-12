@@ -1213,3 +1213,21 @@ describe("ALL_CHECK_TYPES roster", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// checkBrokenLinks — the Sources link every ingested summary carries
+// ---------------------------------------------------------------------------
+
+describe("checkBrokenLinks and the Sources link Ingest writes", () => {
+  it("does not flag the ../raw/sources/ link on a source summary", async () => {
+    // Ingest bookkeeping ends every source summary with a relative link to
+    // the stored bytes. That link points OUT of wiki/, so it is not a Page
+    // link and must not read as a broken one.
+    await writeWikiPage(
+      "src-summary-q3-planning",
+      "# q3-planning — source summary\n\nEnough body to count as a real page.\n\n## Sources\n\n- [q3-planning](../raw/sources/q3-planning/c91cbc56c74ca6e4.md)\n",
+    );
+    const issues = await checkBrokenLinks(["src-summary-q3-planning"]);
+    expect(issues).toEqual([]);
+  });
+});

@@ -28,11 +28,13 @@ import {
   selectionName,
   selectionRefreshAction,
   shouldDockPreview,
+  sourcesCanvasCopy,
   workbenchSlugGate,
   type FileNode,
   type KnowledgeGroup,
   type TreeSelection,
 } from "../workbench-tree";
+import { SOURCES_LISTED_COPY, workbenchMode } from "../workbench-modes";
 import {
   WORKBENCH_FILE_LIMIT,
   WORKBENCH_FILE_MAX_DEPTH,
@@ -1845,5 +1847,30 @@ describe("nextSourceWindowLimit", () => {
     expect(nextSourceWindowLimit(80, 200, true)).toBe(80);
     expect(nextSourceWindowLimit(200, 200, false)).toBe(200);
     expect(nextSourceWindowLimit(160, 200, false)).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Sources canvas sentence follows the tree beside it
+// ---------------------------------------------------------------------------
+
+describe("sourcesCanvasCopy", () => {
+  it("says no sources only when the tree was read and is empty", () => {
+    const files = buildFileTree(["wiki/alpha.md", "raw/", "raw/sources/"]);
+    expect(sourcesCanvasCopy(files, false)).toBe(workbenchMode("sources").emptyState);
+  });
+
+  it("stops claiming no sources once the tree lists one", () => {
+    // The canvas under a tree that shows `q3-planning/…` said "No sources
+    // yet" — the stub sentence never asked the tree. The listed sentence names
+    // what a pick does instead, since no Preview docks in this mode.
+    const files = buildFileTree(["raw/", "raw/sources/", "raw/sources/q3/", "raw/sources/q3/ab12.md"]);
+    expect(sourcesCanvasCopy(files, false)).toBe(SOURCES_LISTED_COPY);
+    expect(sourcesCanvasCopy(files, false)).not.toContain("No sources yet");
+  });
+
+  it("never claims no sources when the tree could not be read", () => {
+    const files = buildFileTree([]);
+    expect(sourcesCanvasCopy(files, true)).toBe(SOURCES_LISTED_COPY);
   });
 });

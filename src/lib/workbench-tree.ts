@@ -26,7 +26,11 @@
 
 import { isAgentScopedType } from "./page-types";
 import type { IndexEntry } from "./types";
-import type { WorkbenchModeId } from "./workbench-modes";
+import {
+  SOURCES_LISTED_COPY,
+  workbenchMode,
+  type WorkbenchModeId,
+} from "./workbench-modes";
 
 // ---------------------------------------------------------------------------
 // Walk limits
@@ -909,4 +913,25 @@ export function findKnowledgePage(
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * The one sentence the Sources canvas shows, decided by the tree beside it.
+ *
+ * "No sources yet" is a claim about the tree, so it is made only when the tree
+ * was READ and holds nothing under `raw/sources/`. A tree that lists a Source,
+ * and a tree the shell could not read (`filesUnavailable`), both get
+ * {@link SOURCES_LISTED_COPY} — the second because "nothing" is not what the
+ * shell knows there, and the tree already says why. Built on
+ * {@link sourcesTreeFromFiles}, the same derivation `SourcesTree` renders from,
+ * so the canvas and the column cannot disagree about whether a Source exists.
+ */
+export function sourcesCanvasCopy(
+  files: readonly FileNode[],
+  filesUnavailable: boolean,
+): string {
+  if (!filesUnavailable && sourcesTreeFromFiles(files).length === 0) {
+    return workbenchMode("sources").emptyState ?? SOURCES_LISTED_COPY;
+  }
+  return SOURCES_LISTED_COPY;
 }

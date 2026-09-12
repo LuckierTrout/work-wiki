@@ -533,3 +533,26 @@ export function chatDoorRefusalCopy(error: string | undefined): string | null {
   if (error === "unauthorized") return CHAT_API_UNAUTHORIZED_COPY;
   return null;
 }
+
+/**
+ * The scan was ANSWERED, and the answer was no.
+ *
+ * A 503 `disabled` and a 401 `unauthorized` mean the sidecar is up and refused
+ * the read — the two doors `authorizeLoopback` closes. {@link SKILLS_SCAN_FAILED_COPY}
+ * told that owner to start a process that was already running; the fix is the
+ * switch or the token in Settings, exactly as {@link chatDoorRefusalCopy} says
+ * for Chat. Anything else non-ok (a proxy page, an unreadable body) still gets
+ * the did-not-answer sentence, because nothing readable did.
+ */
+export const SKILLS_SCAN_DISABLED_COPY =
+  `Skills are scanned by the local sidecar, and its API is off. Turn it on in ${API_MCP_POINTER}.`;
+
+export const SKILLS_SCAN_UNAUTHORIZED_COPY =
+  `Skills are scanned by the local sidecar, and it refused this page’s token. Generate one in ${API_MCP_POINTER}.`;
+
+/** Turn the door's one-word refusal into the Skills sentence that names the fix. */
+export function skillsScanRefusalCopy(error: string | undefined): string {
+  if (error === "disabled") return SKILLS_SCAN_DISABLED_COPY;
+  if (error === "unauthorized") return SKILLS_SCAN_UNAUTHORIZED_COPY;
+  return SKILLS_SCAN_FAILED_COPY;
+}

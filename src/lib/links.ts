@@ -51,9 +51,20 @@ export function extractWikiLinks(content: string): WikiLink[] {
   let match;
   while ((match = re.exec(content)) !== null) {
     if (isExternalLinkTarget(`${match[2]}.md`)) continue;
+    // A destination that climbs OUT of the wiki directory names a stored file,
+    // never a Page — `../raw/sources/<slug>/<id>.md` is what Ingest bookkeeping
+    // writes under `## Sources` so a markdown viewer can follow a summary to
+    // its bytes. Read as a slug it cannot exist, so Lint called every ingested
+    // summary broken and the graph counted an edge to nothing.
+    if (leavesWikiDirectory(match[2])) continue;
     results.push({ text: match[1], targetSlug: match[2] });
   }
   return results;
+}
+
+/** Whether a relative markdown destination steps above the wiki directory. */
+function leavesWikiDirectory(target: string): boolean {
+  return target.split("/").includes("..");
 }
 
 /**
