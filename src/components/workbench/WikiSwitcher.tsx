@@ -40,6 +40,8 @@ import type { WikiRecord } from "@/lib/wikis";
  */
 
 export interface WikiSwitcherProps {
+  /** Hold navigation while the shell's Preview contains unsaved markdown. */
+  requestNavigation?: (navigate: () => void) => void;
   wikis: readonly WikiRecord[];
   currentWikiId: string | null;
   /**
@@ -79,6 +81,7 @@ export function WikiSwitcher({
   currentWikiId,
   unavailable = false,
   readOnly = false,
+  requestNavigation = (navigate) => navigate(),
 }: WikiSwitcherProps) {
   const router = useRouter();
   const selectId = useId();
@@ -677,7 +680,8 @@ export function WikiSwitcher({
                     // hand. The sentence beneath the control is what explains
                     // it, and `aria-disabled` above is what makes the refusal
                     // audible rather than a value that silently snaps back.
-                    void switchWiki(event.target.value);
+                    const id = event.target.value;
+                    if (id !== currentWikiId) requestNavigation(() => void switchWiki(id));
                   }}
                 >
                   {/* Name alone is not unique, so the label carries the
@@ -708,8 +712,10 @@ export function WikiSwitcher({
                 // hand the owner back a dead Create with nothing on screen
                 // saying why. The release effect drops both together, because a
                 // server render is what makes both stale at once.
-                if (!latched) setCreateError(null);
-                setCreateOpen(true);
+                requestNavigation(() => {
+                  if (!latched) setCreateError(null);
+                  setCreateOpen(true);
+                });
               }}
             >
               New Wiki

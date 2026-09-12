@@ -146,3 +146,21 @@ describe("citation and Search Preview docks", () => {
     expect(screen.getByText(/I looked at alpha/)).toBeTruthy();
   });
 });
+
+
+it("shows save progress and success after the answer reaches the save route", async () => {
+  render(<ChatCanvas wikiId="current" readOnly={false} onDockPreview={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Evidence review" }));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Save to Wiki" }) as HTMLButtonElement).disabled).toBe(false));
+  let finish!: (value: unknown) => void;
+  send.mockImplementation((url: string) => {
+    if (url.endsWith("/save")) return new Promise((resolve) => { finish = resolve; });
+    return Promise.resolve({});
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save to Wiki" }));
+  expect((screen.getByRole("button", { name: "Saving to Wiki…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByText("Answer saved to Wiki.")).toBeNull();
+  finish({ path: "wiki/queries/answer.md" });
+  expect(await screen.findByText("Answer saved to Wiki.")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Save to Wiki" }) as HTMLButtonElement).disabled).toBe(false);
+});

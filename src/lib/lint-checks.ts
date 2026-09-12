@@ -69,13 +69,19 @@ export async function getOnDiskSlugs(): Promise<string[]> {
   let entries: FileEntry[];
   try {
     entries = await getStorage().listFiles(wikiRelPath(""));
+    // queries/ is the one supported nested Page namespace. A root-only scan
+    // called saved Chat answers missing and offered to remove their index rows.
+    const queries = await getStorage().listFiles(wikiRelPath("queries/"));
+    entries.push(...queries.filter((entry) => !entry.isDirectory).map((entry) => ({
+      ...entry, name: `queries/${entry.name}`,
+    })));
   } catch (err) {
     logger.warn("lint", "listFiles wiki directory failed:", err);
     return [];
   }
 
   return entries
-    .filter((e) => e.name.endsWith(".md") && !INFRASTRUCTURE_FILES.has(e.name))
+    .filter((e) => !e.isDirectory && e.name.endsWith(".md") && !INFRASTRUCTURE_FILES.has(e.name))
     .map((e) => e.name.replace(/\.md$/, ""));
 }
 

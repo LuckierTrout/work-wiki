@@ -1361,6 +1361,13 @@ describe("readWorkbenchFile", () => {
     await fs.writeFile(abs, body, "utf-8");
   }
 
+  it("opens a saved answer through the same readable-slug gate as root pages", async () => {
+    await writeSilo("wiki", "queries/answer.md", "# Saved answer");
+    expect(await readWorkbenchFile(OWNER, null, "wiki/queries/answer.md", gate("queries/answer")))
+      .toEqual({ content: "# Saved answer" });
+    expect(await readWorkbenchFile(OWNER, null, "wiki/queries/answer.md", gate())).toBeNull();
+  });
+
   it("returns the bytes of a gated page under the flat root", async () => {
     await fs.writeFile(path.join(tmpDir, "wiki", "alpha.md"), "# Alpha\n", "utf-8");
     await expect(
@@ -3658,4 +3665,12 @@ describe("the History panel's copy", () => {
     expect(PREVIEW_HISTORY_REVERTED_COPY).not.toMatch(/\.$/);
     expect(PREVIEW_HISTORY_REVERTED_COPY).not.toBe(PREVIEW_UPDATED_COPY);
   });
+});
+
+
+it("keeps saved-answer links and their conversation return path usable", () => {
+  expect(resolveWikilink("queries/saved-answer", new Set(["queries/saved-answer"])))
+    .toEqual({ slug: "queries/saved-answer", exists: true });
+  expect(previewLinkKind("/?mode=chat&conversation=conv-123")).toBe("conversation");
+  expect(previewLinkKind("/?mode=chat&conversation=conv-123&redirect=evil")).toBe("inert");
 });

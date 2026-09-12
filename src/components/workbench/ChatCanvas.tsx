@@ -141,6 +141,8 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   const abortRef = useRef<AbortController | null>(null);
   const sendInFlight = useRef(false);
   const saveInFlight = useRef(false);
+  const [savingAnswer, setSavingAnswer] = useState(false);
+  const [savedAnswer, setSavedAnswer] = useState<{ conversationId: string; messageId: string } | null>(null);
   const turnRef = useRef<OpenTurn | null>(null);
   const attachRef = useRef<HTMLInputElement>(null);
 
@@ -547,12 +549,17 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     const assistant = lastAssistantMessage(messages);
     if (!assistant) return;
     saveInFlight.current = true;
+    setSavingAnswer(true);
+    setSavedAnswer(null);
+    setError(null);
     try {
       await saveAnswerToWiki(activeId, assistant.id);
+      setSavedAnswer({ conversationId: activeId, messageId: assistant.id });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Save failed.");
     } finally {
       saveInFlight.current = false;
+      setSavingAnswer(false);
     }
   }
 
@@ -688,12 +695,15 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
           <button
             type="button"
             onClick={() => void saveToWiki()}
-            disabled={readOnly || !messages.some((item) => item.role === "assistant")}
+            disabled={readOnly || streaming || savingAnswer || !messages.some((item) => item.role === "assistant")}
           >
-            Save to Wiki
+            {savingAnswer ? "Saving to Wiki…" : "Save to Wiki"}
           </button>
         </div>
 
+        {savedAnswer?.conversationId === activeId && savedAnswer.messageId === lastAssistantMessage(messages)?.id && (
+          <p role="status">Answer saved to Wiki.</p>
+        )}
         {retrievalMode === "sources" ? (
           <p className="wb-chat-sources-banner">Sources-only — citations point at Sources.</p>
         ) : null}

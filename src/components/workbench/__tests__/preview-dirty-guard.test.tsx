@@ -512,6 +512,8 @@ describe("a pick made while the editor is dirty is held (DW-36)", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Files" }));
     await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_DISCARD_CONFIRM_LABEL }));
+    await act(async () => {});
     expect(preview()).toBeNull();
 
     answer = () => ({

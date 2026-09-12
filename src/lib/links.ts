@@ -15,6 +15,9 @@ export function isExternalLinkTarget(raw: string): boolean {
 
 export function normalizeWikilinkTarget(raw: string): string {
   const trimmed = raw.trim().replace(/\.md$/i, "");
+  // Preserve the stored Chat-answer namespace instead of linking to a
+  // nonexistent top-level page with the same leaf name.
+  if (/^queries\/[^/]+$/.test(trimmed)) return `queries/${slugify(trimmed.slice(8))}`;
   const last =
     trimmed
       .split("/")

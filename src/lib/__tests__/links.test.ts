@@ -327,3 +327,9 @@ describe("extractWikiLinks ignores links that leave the wiki directory", () => {
     ]);
   });
 });
+
+
+it("preserves the queries namespace in saved-answer wiki links", () => {
+  expect(extractAllInternalTargets("[[queries/saved-answer]] and [[queries/saved-answer.md|Answer]]"))
+    .toEqual(["queries/saved-answer"]);
+});

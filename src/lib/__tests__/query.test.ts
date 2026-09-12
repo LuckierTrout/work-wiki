@@ -1182,6 +1182,22 @@ describe("saveAnswerToWiki", () => {
     expect(page!.content).not.toContain("<thinking>");
   });
 
+  it("keeps a Chat answer in its owner's silo when saving again after ingest", async () => {
+    await ensureDirectories();
+    const save = (body: string) => saveAnswerToWiki("Repeat answer", body, undefined,
+      undefined, "markdown", "alice", "alice", { underQueries: true, conversationId: "conv-1" });
+    const { slug } = await save("Original answer");
+    const stored = await getStorage().readFile(`tenants/alice/wiki/${slug}.md`);
+    expect(stored).toContain("owner: alice");
+    await expect(getStorage().readFile(`tenants/yopedia/wiki/${slug}.md`)).rejects.toThrow();
+    // The automatic ingest has changed the authoritative copy since the save.
+    const compiled = stored.replace("Original answer", "Compiled answer");
+    await writeWikiPage(slug, compiled, "alice", "ingest", "alice");
+    await writeWikiPage(slug, compiled);
+    await save("Updated answer");
+    expect(await getStorage().readFile(`tenants/alice/wiki/${slug}.md`)).toContain("Updated answer");
+  });
+
   it("saves an HTML answer verbatim as a typed, owner-attributed artifact", async () => {
     await ensureDirectories();
     const html =

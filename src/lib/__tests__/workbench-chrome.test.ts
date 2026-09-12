@@ -210,7 +210,7 @@ describe("Workbench shell", () => {
       "const activeElement = document.activeElement;",
     );
     const membershipAt = shellCode.indexOf(".some((region) => region.contains(activeElement))");
-    const appliedAt = shellCode.indexOf("applySurface(next, settings, category);");
+    const appliedAt = shellCode.indexOf("applySurface(next, settings, category);", membershipAt);
     expect(sampledAt).toBeGreaterThan(-1);
     expect(membershipAt).toBeGreaterThan(sampledAt);
     expect(appliedAt).toBeGreaterThan(membershipAt);

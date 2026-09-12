@@ -165,6 +165,9 @@ interface Listing {
  */
 export function wikiLeafName(displayPath: string): string | null {
   const segments = displayPath.split("/");
+  if (segments.length === 3 && segments[0] === "wiki" && segments[1] === "queries" && segments[2]) {
+    return `queries/${segments[2]}`;
+  }
   if (segments.length !== 2 || segments[0] !== "wiki") return null;
   return segments[1].length > 0 ? segments[1] : null;
 }
@@ -537,6 +540,20 @@ async function walkRoot(
   }
 }
 
+/** Include the supported saved-answer namespace in the same election as root pages. */
+async function wikiElectionEntries(prefix: string, entries: readonly Listing[]): Promise<{ entries: Listing[]; failed: boolean }> {
+  if (!entries.some((entry) => entry.isDirectory && entry.name === "queries")) {
+    return { entries: [...entries], failed: false };
+  }
+  const nested = await listSafely(`${prefix}/queries`);
+  return {
+    entries: [...entries, ...nested.entries.filter((entry) => !entry.isDirectory).map((entry) => ({
+      ...entry, name: `queries/${entry.name}`,
+    }))],
+    failed: nested.failed,
+  };
+}
+
 /**
  * The FILE names among a root's depth-1 entries — the election's input, spelled
  * once because {@link wikiLeafFilter} and {@link resolveWorkbenchFile} must feed
@@ -753,12 +770,13 @@ export async function listWorkbenchFilePaths(
   // depth-1 entries the walk is seeded with: the canonical-row rule is decided
   // from names already in hand, never from a second listing (DW-202/203).
   const wikiRoot = await resolveRoot("wiki", siloWiki, wikiRelPath(""));
+  const election = await wikiElectionEntries(wikiRoot.prefix, wikiRoot.entries);
   await walkRoot(
     wikiRoot,
     "wiki",
     paths,
     budget,
-    wikiLeafFilter(options.readableSlugs, wikiRoot.entries),
+    wikiLeafFilter(options.readableSlugs, election.entries),
     allowEveryDir,
   );
 
@@ -1124,8 +1142,9 @@ async function resolveWorkbenchFile(
   // On a case-INSENSITIVE store this changes nothing: `listFiles` returns ONE
   // name for the Page, so that name wins its own slug and still reads.
   if (wikiLeaf !== null && !failed) {
-    const listable = new Set(electWikiLeafNames(wikiLeafNamesIn(entries)).values());
-    if (!listable.has(wikiLeaf)) return null;
+    const election = await wikiElectionEntries(prefix, entries);
+    const listable = new Set(electWikiLeafNames(wikiLeafNamesIn(election.entries)).values());
+    if ((!election.failed || !wikiLeaf.startsWith("queries/")) && !listable.has(wikiLeaf)) return null;
   }
 
   return { kind: "key", key: `${prefix}/${rest.join("/")}` };

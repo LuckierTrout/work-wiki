@@ -391,6 +391,14 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // same split `sheetOpenRef` and `liveRef` already make. Written only by the
   // column's own report, which an unmounting column ends with `false`.
   const previewDirtyRef = useRef(false);
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
+  const requestPreviewNavigation = useCallback((navigate: () => void) => {
+    if (previewDirtyRef.current) {
+      setPendingNavigation(() => navigate);
+    } else {
+      navigate();
+    }
+  }, []);
 
   const surface = workbenchMode(mode);
 
@@ -898,10 +906,14 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
 
   const selectMode = useCallback(
     (next: WorkbenchModeId) => {
-      applyMode(next);
-      pushSurface(next, false, settingsCategoryIdRef.current);
+      const navigate = () => {
+        applyMode(next);
+        pushSurface(next, false, settingsCategoryIdRef.current);
+      };
+      if (next !== modeRef.current) requestPreviewNavigation(navigate);
+      else navigate();
     },
-    [applyMode, pushSurface],
+    [applyMode, pushSurface, requestPreviewNavigation],
   );
 
   const openResearch = useCallback(
@@ -957,6 +969,23 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       ) {
         return;
       }
+      if (next !== modeRef.current && previewDirtyRef.current) {
+        // Traversal has already changed the URL. Keep it aligned with the
+        // retained editor until the owner decides whether to leave.
+        const destination = locationHref(window.location);
+        try {
+          window.history.replaceState(null, "", surfaceHref(
+            window.location, modeRef.current, settingsOpenRef.current,
+            settingsCategoryIdRef.current,
+          ));
+        } catch { /* The editor still remains safe when history is unavailable. */ }
+        requestPreviewNavigation(() => {
+          applySurface(next, settings, category);
+          try { window.history.replaceState(null, "", destination); } catch { /* Keep navigation usable. */ }
+          bumpCanvasFocus();
+        });
+        return;
+      }
       // Sample BEFORE applying the surface: the commit withdraws these regions
       // and a real browser can blur their focused control to <body> (DW-759).
       // Category-only and mode-only traversals do not request canvas focus.
@@ -978,7 +1007,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [applySurface, bumpCanvasFocus]);
+  }, [applySurface, bumpCanvasFocus, requestPreviewNavigation]);
 
   // Opening Settings is `useState` on the ONE mounted shell, exactly as a mode
   // switch is — never `router.push`, never a `<Link>`. The announcement names
@@ -1122,9 +1151,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // Same rule as the collapse toggle: the storage write is outside any state
   // updater, because React invokes updaters twice under StrictMode.
   const selectTreeTab = useCallback((next: TreeTabId) => {
-    setTreeTab(next);
-    writeStoredTreeTab(next);
-  }, []);
+    if (next === treeTab) return;
+    requestPreviewNavigation(() => {
+      setTreeTab(next);
+      writeStoredTreeTab(next);
+    });
+  }, [requestPreviewNavigation, treeTab]);
 
   // Picking the row that is already picked deselects it. Without this the only
   // ways to undock the Preview are leaving Wiki mode, switching tabs, or
@@ -1175,12 +1207,9 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // editor — the same loss by a different route, and the one case a guard
   // written as "is this a different row?" would let through.
   //
-  // Only the tree-selection path is gated. A mode switch, a Wiki switch and a
-  // tab switch all still discard silently: the ledger defers those to whichever
-  // story gives the editor a lifecycle, and gating them here would put this
-  // dialog in front of navigation it was not designed for. Settings is no
-  // longer on that list — it withdraws the column rather than unmounting it
-  // (DW-412), so there is nothing to discard and nothing to gate.
+  // Other owner navigation that unmounts the editor uses
+  // requestPreviewNavigation and the same discard dialog. Settings preserves
+  // the mounted editor, so it needs no discard gate.
   const selectRow = useCallback(
     (next: TreeSelection) => {
       if (previewDirtyRef.current) {
@@ -1237,6 +1266,13 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   }, [applyArtifactNavigation]);
 
   const confirmDiscard = useCallback(() => {
+    const navigate = pendingNavigation;
+    setPendingNavigation(null);
+    if (navigate) {
+      setSelection(null);
+      navigate();
+      return;
+    }
     const next = pendingSelection;
     const artifact = pendingArtifactNavigation;
     setPendingSelection(null);
@@ -1246,10 +1282,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       return;
     }
     if (next) applySelection(next);
-  }, [applyArtifactNavigation, applySelection, pendingArtifactNavigation, pendingSelection]);
+  }, [applyArtifactNavigation, applySelection, pendingArtifactNavigation, pendingSelection, pendingNavigation]);
 
   /** Keep editing — Cancel, Esc and the backdrop all land here. The pick is dropped. */
   const cancelDiscard = useCallback(() => {
+    setPendingNavigation(null);
     setPendingSelection(null);
     setPendingArtifactNavigation(null);
   }, []);
@@ -1935,6 +1972,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
         <div className="wb-left-head">
           <h1 className="wb-title">{APP_NAME}</h1>
           <WikiSwitcher
+            requestNavigation={requestPreviewNavigation}
             wikis={wikis}
             currentWikiId={currentWikiId}
             unavailable={registryUnavailable}
@@ -2173,7 +2211,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
           which is still mounted on both outcomes, so `useDialogA11y`'s own
           restore puts focus back where they left it either way. */}
       <ConfirmDialog
-        open={pendingSelection !== null || pendingArtifactNavigation !== null}
+        open={pendingSelection !== null || pendingArtifactNavigation !== null || pendingNavigation !== null}
         title={PREVIEW_DISCARD_CONFIRM_TITLE}
         body={PREVIEW_DISCARD_CONFIRM_BODY}
         confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}

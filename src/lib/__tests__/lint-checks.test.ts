@@ -97,6 +97,15 @@ describe("getOnDiskSlugs", () => {
     expect(slugs.sort()).toEqual(["alpha", "beta"]);
   });
 
+  it("includes saved Chat answers when the metadata index is not seeded", async () => {
+    const wikiDir = process.env.WIKI_DIR!;
+    await fs.mkdir(path.join(wikiDir, "queries"), { recursive: true });
+    await fs.writeFile(path.join(wikiDir, "queries/answer.md"), "# Saved answer\n\nEvidence.");
+    const slugs = await getOnDiskSlugs();
+    expect(slugs).toContain("queries/answer");
+    expect(await checkStaleIndex(new Set(["queries/answer"]), new Set(slugs))).toEqual([]);
+  });
+
   it("returns empty array when directory does not exist", async () => {
     const slugs = await getOnDiskSlugs();
     expect(slugs).toEqual([]);

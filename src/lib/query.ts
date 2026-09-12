@@ -550,13 +550,16 @@ export async function saveAnswerToWiki(
   // renders with the right surface — sandboxed iframe / slide deck — and is
   // excluded from the commons/search/query corpus) and attribute it to the asker
   // so it lives in THEIR silo + vault lens and is reachable at /u/<handle>/<slug>.
-  // Plain markdown saves keep the legacy system-owned commons behavior.
+  // Plain markdown saves outside Chat keep the legacy system-owned behavior.
   if (isArtifact) {
     frontmatterData.type = contentType;
-    if (owner) {
-      frontmatterData.owner = owner;
-      frontmatterData.authors = [owner];
-    }
+  }
+  // Chat saves are immediately ingested into the owner's silo. Publish to that
+  // same silo from the first write, so saving again cannot compare the owner's
+  // updated page against an obsolete default-tenant copy.
+  if (owner && (isArtifact || extras?.underQueries)) {
+    frontmatterData.owner = owner;
+    if (isArtifact) frontmatterData.authors = [owner];
   }
 
   const triggeredBy = author ?? owner ?? "system";

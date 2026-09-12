@@ -140,6 +140,9 @@ const SIGN_IN_RE = /^\/sign-in(?:\/|$)/;
 // Match the method AND the complete path: the browser-only retrieve endpoint,
 // cloud Chat stubs and future /api/v1 routes must not inherit an exemption.
 const SIDECAR_ROUTE_METHODS: ReadonlyArray<readonly [string, RegExp]> = [
+  // Extract polling/settings validate the owner service token in-route too.
+  ["GET", /^\/api\/extract\/(?:jobs|settings|bytes)$/],
+  ["POST", /^\/api\/extract\/jobs$/],
   ["GET", /^\/api\/v1\/(?:loopback-settings|projects)$/],
   ["GET", /^\/api\/v1\/projects\/[^/]+\/(?:files(?:\/content)?|graph|reviews)$/],
   ["GET", /^\/api\/(?:sources\/search|graph\/workbench)$/],

@@ -1392,3 +1392,40 @@ describe("a Sources-mode pick says nothing about a Preview", () => {
 
   });
 });
+
+
+describe("unsaved Preview navigation", () => {
+  async function editDraft() {
+    await renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Unsaved QA draft" } });
+  }
+
+  it.each(["mode", "tree tab", "new wiki", "history"])("holds %s navigation until discard is confirmed", async (destination) => {
+    await editDraft();
+    const go = () => {
+      if (destination === "mode") fireEvent.click(screen.getByRole("button", { name: "Search" }));
+      if (destination === "tree tab") fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+      if (destination === "new wiki") fireEvent.click(screen.getByRole("button", { name: "New Wiki" }));
+      if (destination === "history") {
+        window.history.replaceState(null, "", "/?mode=search");
+        fireEvent.popState(window);
+      }
+    };
+    go();
+    expect(screen.getByRole("dialog", { name: "Discard your unsaved edits?" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Unsaved QA draft");
+    expect(window.location.search).not.toContain("mode=search");
+    go();
+    fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
+    await act(async () => {});
+    expect(screen.queryByDisplayValue("Unsaved QA draft")).toBeNull();
+    if (destination === "mode" || destination === "history") expect(window.location.search).toContain("mode=search");
+    if (destination === "tree tab") expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+    if (destination === "new wiki") expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
+  });
+});

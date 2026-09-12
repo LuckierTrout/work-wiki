@@ -707,6 +707,14 @@ describe("listWorkbenchFilePaths", () => {
     await fs.writeFile(abs, "x", "utf-8");
   }
 
+  it("lists saved answers while withholding unreadable answers in the same namespace", async () => {
+    await writeSilo("wiki", "queries/answer.md");
+    await writeSilo("wiki", "queries/private.md");
+    const { paths } = await listWorkbenchFilePaths(OWNER, WIKI_ID, gate("queries/answer"));
+    expect(paths).toContain("wiki/queries/answer.md");
+    expect(paths).not.toContain("wiki/queries/private.md");
+  });
+
   it("puts the seeded artifacts at the root, above both silo roots", async () => {
     await seedArtifacts();
     await fs.writeFile(path.join(tmpDir, "wiki", "a.md"), "a", "utf-8");

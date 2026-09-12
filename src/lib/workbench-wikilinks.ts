@@ -18,6 +18,7 @@
  * `react-markdown` already renders, declared structurally here.
  */
 
+import { normalizeWikilinkTarget } from "./links";
 import { slugify } from "./slugify";
 
 /**
@@ -178,10 +179,13 @@ export function markdownLinkTarget(href: string): string | null {
  * `markdownLinkTarget` gets first refusal: a relative `.md` is a page, and a
  * page is a control, so only what that function declines reaches this one.
  */
-export type PreviewLinkKind = "external" | "anchor" | "inert";
+export type PreviewLinkKind = "external" | "anchor" | "conversation" | "inert";
 
 export function previewLinkKind(href: unknown): PreviewLinkKind {
   if (typeof href !== "string" || href.length === 0) return "inert";
+  // Save to Wiki writes this owner-authenticated return link. Other local
+  // routes remain inert; this one returns to the selected Chat conversation.
+  if (/^\/\?mode=chat&conversation=[a-zA-Z0-9%_-]+$/.test(href)) return "conversation";
   if (href.startsWith("#")) return "anchor";
   if (href.startsWith("//")) return "external";
   return /^[a-z][a-z0-9+.-]*:/i.test(href) ? "external" : "inert";
@@ -198,7 +202,7 @@ export function resolveWikilink(
   target: string,
   readableSlugs: ReadonlySet<string>,
 ): { slug: string; exists: boolean } {
-  const slug = slugify(target);
+  const slug = target.startsWith("queries/") ? normalizeWikilinkTarget(target) : slugify(target);
   return { slug, exists: slug.length > 0 && readableSlugs.has(slug) };
 }
 

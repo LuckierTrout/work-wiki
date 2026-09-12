@@ -11,12 +11,18 @@ vi.mock("@clerk/nextjs/server", () => ({
 
 import { handlePrivateRequest } from "@/middleware";
 import { GET as settings } from "@/app/api/v1/loopback-settings/route";
+import { GET as extractJobs } from "@/app/api/extract/jobs/route";
+import { GET as extractSettings } from "@/app/api/extract/settings/route";
 import { GET as projects } from "@/app/api/v1/projects/route";
 import { POST as webSearch } from "@/app/api/v1/web-search/route";
 import { loadConfig, saveConfig, _resetConfigCache } from "@/lib/config";
 
 const token = "sidecar-middleware-test-service-token";
 const routes = [
+  ["GET", "/api/extract/jobs"],
+  ["GET", "/api/extract/bytes"],
+  ["GET", "/api/extract/settings"],
+  ["POST", "/api/extract/jobs"],
   ["GET", "/api/v1/loopback-settings"],
   ["GET", "/api/v1/projects"],
   ["GET", "/api/v1/projects/current/files"],
@@ -86,6 +92,10 @@ describe("sidecar requests through the private middleware", () => {
 
   it.each([
     ["GET", "/api/settings"],
+    ["DELETE", "/api/extract/jobs"],
+    ["POST", "/api/extract/settings"],
+    ["POST", "/api/extract/bytes"],
+    ["GET", "/api/extract/new-route"],
     ["POST", "/api/v1/projects"],
     ["DELETE", "/api/v1/projects/current/files"],
     ["GET", "/api/v1/projects/current/files/content/extra"],
@@ -99,7 +109,7 @@ describe("sidecar requests through the private middleware", () => {
     expect((await gate(method, path, `Bearer ${token}`)).response.status).toBe(401);
   });
 
-  it.each([["settings", settings, "/api/v1/loopback-settings"], ["projects", projects, "/api/v1/projects"]] as const)(
+  it.each([["settings", settings, "/api/v1/loopback-settings"], ["projects", projects, "/api/v1/projects"], ["extract jobs", extractJobs, "/api/extract/jobs"], ["extract settings", extractSettings, "/api/extract/settings"]] as const)(
     "composes middleware with real %s authentication and handler",
     async (_name, handler, path) => {
       const valid = await gate("GET", path, `Bearer ${token}`);
@@ -111,7 +121,9 @@ describe("sidecar requests through the private middleware", () => {
       expect((await handler(invalid.req)).status).toBe(401);
 
       vi.stubEnv("YOPEDIA_SERVICE_PRINCIPAL", "not-the-owner");
-      expect((await handler(valid.req)).status).toBe(401);
+      // Extract's existing service-token contract drains all owners; v1
+      // startup routes additionally require the configured owner principal.
+      expect((await handler(valid.req)).status).toBe(path.startsWith("/api/extract/") ? 200 : 401);
       vi.stubEnv("YOPEDIA_SERVICE_PRINCIPAL", "sidecar-owner");
       vi.stubEnv("YOPEDIA_SERVICE_TOKEN", "rotated-token");
       expect((await handler(valid.req)).status).toBe(401);

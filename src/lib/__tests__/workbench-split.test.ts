@@ -1407,7 +1407,7 @@ describe("the shell wires the split without spelling any of it", () => {
     expect(mount).not.toContain("writeStoredTreeTab(");
     // `selectTreeTab` is still the one place a tab choice is written down.
     expect(source).toMatch(
-      /const selectTreeTab = useCallback\(\(next: TreeTabId\) => \{\s*\n\s*setTreeTab\(next\);\s*\n\s*writeStoredTreeTab\(next\);/,
+      /const selectTreeTab = useCallback\(\(next: TreeTabId\)[\s\S]*?requestPreviewNavigation\(\(\) => \{\s*setTreeTab\(next\);\s*writeStoredTreeTab\(next\);/,
     );
   });
 
@@ -1439,7 +1439,7 @@ describe("the shell wires the split without spelling any of it", () => {
     // One dialog implementation, and one wording owner: every sentence comes
     // from `workbench-preview`, none is typed into this JSX.
     expect(source).toContain(
-      "open={pendingSelection !== null || pendingArtifactNavigation !== null}",
+      "open={pendingSelection !== null || pendingArtifactNavigation !== null || pendingNavigation !== null}",
     );
     expect(source).toContain("title={PREVIEW_DISCARD_CONFIRM_TITLE}");
     expect(source).toContain("body={PREVIEW_DISCARD_CONFIRM_BODY}");
@@ -1450,11 +1450,11 @@ describe("the shell wires the split without spelling any of it", () => {
   it("gates tree picks and Settings artifact navigation on the dirty check", async () => {
     // Settings' Purpose/Schema launchers leave the current Preview selection,
     // so they share the same discard gate as tree picks. Other navigation
-    // remains outside this narrowly scoped guard.
+    // uses the shared navigation gate too.
     const source = await component("Workbench.tsx");
     const reads = source.match(/previewDirtyRef\.current/g) ?? [];
-    // Tree guard, Settings-artifact guard, and the reporter's write.
-    expect(reads.length).toBe(3);
+    // Tree, artifact, shared navigation, history, and the reporter's write.
+    expect(reads.length).toBe(5);
   });
 
   it("spells no width, floor, step or breakpoint of its own", async () => {
