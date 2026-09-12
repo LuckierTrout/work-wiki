@@ -335,7 +335,7 @@ export const SETTINGS_MODEL_INHERIT_COPY =
 
 /** Workbench Chat generates on the local sidecar, whose provider ladder is separate. */
 export const SETTINGS_CHAT_MODEL_COPY =
-  "Chat uses the local sidecar’s saved Chat provider, or detects one from its environment (falling back to Anthropic). Its saved Chat model overrides the model sent by Workbench; if neither is set, it uses claude-sonnet-4-5. The sidecar does not inherit the primary provider.";
+  "Chat uses the local sidecar’s saved Chat provider, or detects one from its environment (falling back to Anthropic). Its saved Chat model overrides the model sent by Workbench; if neither is set, it uses claude-sonnet-4-5. The sidecar does not inherit the primary provider. In local subscription mode, choose Anthropic for Claude Code or OpenAI for Codex; leave Chat model empty to use that client's default. Subscription mode uses the client's saved sign-in and plan limits, without an API key.";
 
 /** The Custom provider needs an endpoint before it can be constructed. */
 export const SETTINGS_CUSTOM_ENDPOINT_COPY =

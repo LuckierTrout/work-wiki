@@ -90,7 +90,7 @@ let originalDataDir: string | undefined;
  * scrubbed per case for the same reason the other suites scrub their provider
  * keys.
  */
-const LLM_ENV_KEYS = ["LLM_CUSTOM_BASE_URL", "OLLAMA_BASE_URL"] as const;
+const LLM_ENV_KEYS = ["LLM_CUSTOM_BASE_URL", "OLLAMA_BASE_URL", "WORKWIKI_CHAT_TRANSPORT"] as const;
 let savedLlmEnv: Record<string, string | undefined>;
 
 beforeEach(async () => {
@@ -168,6 +168,20 @@ describe("title match bonus", () => {
 });
 
 describe("assemble and search", () => {
+  it.each(["openai", "anthropic"] as const)("admits local subscription Chat for %s without an API key", async (provider) => {
+    process.env.WORKWIKI_CHAT_TRANSPORT = "subscription";
+    mockedLoadConfigAsync.mockResolvedValue({ chatProvider: provider });
+    const result = await assembleWikiContext("hello", { principal: null });
+    expect(result.chatModel).toMatchObject({ provider, configured: true });
+  });
+
+  it("does not advertise an unsupported subscription provider as configured", async () => {
+    process.env.WORKWIKI_CHAT_TRANSPORT = "subscription";
+    mockedLoadConfigAsync.mockResolvedValue({ chatProvider: "google" });
+    const result = await assembleWikiContext("hello", { principal: null });
+    expect(result.chatModel.configured).toBe(false);
+  });
+
   it("returns empty assemble and the coverage sentence when nothing matches", async () => {
     await seedPages([
       { slug: "alpha", title: "Alpha", body: "unrelated gardening notes" },

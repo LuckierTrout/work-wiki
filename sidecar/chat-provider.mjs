@@ -11,6 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { generateSubscriptionChat } from "./subscription-provider.mjs";
 
 export const PROVIDER_TIMEOUT_MS = 60_000;
 export const MAX_PROVIDER_RESPONSE_CHARS = 200_000;
@@ -63,6 +64,7 @@ function detectEnvProvider(env = process.env) {
 /** @param {Record<string, string | undefined>} [env]
  *  @param {Record<string, unknown>} [config] */
 export function resolveChatProvider(env = process.env, config = {}) {
+  if (env.WORKWIKI_CHAT_TRANSPORT === "subscription") return config.chatProvider || "anthropic";
   return config.chatProvider || detectEnvProvider(env) || "anthropic";
 }
 
@@ -194,6 +196,12 @@ export async function generateChat({
 } = {}) {
   const config = readSidecarConfig();
   const resolvedProvider = resolveChatProvider(process.env, config);
+  if (process.env.WORKWIKI_CHAT_TRANSPORT === "subscription") {
+    return generateSubscriptionChat({
+      provider: resolvedProvider, model: config.chatModel || undefined,
+      system, messages, signal,
+    });
+  }
   const resolvedModel = config.chatModel || model || "claude-sonnet-4-5";
   const key = resolveChatSecret(resolvedProvider, process.env, config);
   if (!key && resolvedProvider !== "ollama") {

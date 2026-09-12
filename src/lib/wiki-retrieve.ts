@@ -570,6 +570,14 @@ function numberBodies(hits: readonly RetrieveHit[]): {
 function chatModelForRetrieve(
   cfg: AppConfig = loadConfigSync(),
 ): AssembledContext["chatModel"] {
+  if (process.env.WORKWIKI_CHAT_TRANSPORT === "subscription") {
+    const provider = cfg.chatProvider || "anthropic";
+    return {
+      provider,
+      model: cfg.chatModel || (provider === "openai" ? "Codex default" : "Claude Code default"),
+      configured: provider === "openai" || provider === "anthropic",
+    };
+  }
   const chatModel = getChatModelSettings(cfg);
   let baseUrl: string | null = null;
   if (chatModel.provider === "custom") {
