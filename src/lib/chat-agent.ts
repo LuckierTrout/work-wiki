@@ -1,3 +1,4 @@
+import { SIDECAR_PAIRING_COPY } from "./sidecar-pairing";
 /**
  * The tool-using Chat Agent, as the BROWSER sees it (Stories 8.5–8.9).
  *
@@ -529,6 +530,7 @@ export const CHAT_API_UNAUTHORIZED_COPY =
 
 /** Turn the door's one-word refusal into the sentence that names the fix. */
 export function chatDoorRefusalCopy(error: string | undefined): string | null {
+  if (error === "sidecar_pairing_mismatch") return SIDECAR_PAIRING_COPY;
   if (error === "disabled") return CHAT_API_DISABLED_COPY;
   if (error === "unauthorized") return CHAT_API_UNAUTHORIZED_COPY;
   return null;

@@ -9,3 +9,6 @@ import { mkdtempSync } from "fs";
 if (!process.env.DATA_DIR) {
   process.env.DATA_DIR = mkdtempSync(path.join(os.tmpdir(), "yopedia-test-"));
 }
+
+// Browser bundle identity for simulated, explicitly paired sidecar responses.
+process.env.NEXT_PUBLIC_SIDECAR_INSTANCE = "test-app";

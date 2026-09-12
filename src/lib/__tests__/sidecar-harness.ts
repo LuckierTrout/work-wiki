@@ -155,7 +155,8 @@ export function sidecarHarness(
   return {
     async listen(overrides: Record<string, unknown> = {}): Promise<string> {
       const server = createSidecarServer({
-        kernel: { base: "", token: "" },
+        kernel: { base: "http://localhost:3000", token: "" },
+        pairingSource: { read: async () => ({ protocol: 1, instance: "test-app", localIdentity: "test-local" }) },
         ...defaults,
         ...overrides,
       }) as Server;

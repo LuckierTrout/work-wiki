@@ -1,3 +1,4 @@
+import { SIDECAR_PAIRING_COPY } from "./sidecar-pairing";
 /**
  * Live classification of whatever answers on 127.0.0.1:19828.
  *
@@ -17,11 +18,12 @@ import { LOOPBACK_HEALTH_URL, LOOPBACK_STATUSES, type LoopbackStatus } from "./v
 import { isPageOrigin } from "./workbench-modes";
 import { isSidecarDefaultAdmittedOrigin } from "./sidecar";
 
-export type ClassifiedLoopbackHealth = LoopbackStatus | "unreachable";
+export type ClassifiedLoopbackHealth = LoopbackStatus | "unreachable" | "pairing_mismatch";
 
 export function classifyLoopbackHealth(payload: unknown): ClassifiedLoopbackHealth {
   if (!payload || typeof payload !== "object") return "error";
   const status = (payload as { status?: unknown }).status;
+  if (status === "pairing_mismatch") return status;
   if (
     typeof status === "string" &&
     (LOOPBACK_STATUSES as readonly string[]).includes(status)
@@ -102,6 +104,8 @@ export function loopbackHealthSentence(
   pageOrigin?: string | null,
 ): string {
   switch (health) {
+    case "pairing_mismatch":
+      return SIDECAR_PAIRING_COPY;
     case "starting":
       return SETTINGS_API_HEALTH_STARTING_COPY;
     case "running":
@@ -172,6 +176,7 @@ export async function probeLoopbackApiPane(): Promise<{
   // with a list. A rejected call, a non-OK response and a body carrying no
   // `skills` array are three ways of not knowing, and none of them is zero.
   let skills: SkillSummary[] | null = null;
+  if (health === "pairing_mismatch") return { health, skills };
   try {
     const response = await loopbackFetch(SKILL_SCAN_URL, { cache: "no-store" });
     if (response.ok) {

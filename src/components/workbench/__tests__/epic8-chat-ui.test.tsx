@@ -116,6 +116,7 @@ beforeEach(() => {
   sidecar = vi.fn(async () => sse([["done", { content: "ok", citations: [] }]]));
   fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = String(input);
+    if (url.endsWith("/api/v1/health")) return Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } });
     if (url.endsWith("/api/v1/skills")) {
       return new Response(JSON.stringify({ skills: SKILLS }), { status: 200 });
     }
@@ -225,7 +226,7 @@ describe("shell approval is per command", () => {
     await ask("Anything.");
     await waitFor(() => expect(sidecar).toHaveBeenCalled());
     const headers = sidecar.mock.calls[0]?.[1]?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer tok-door");
+    expect(new Headers(headers).get("authorization")).toBe("Bearer tok-door");
   });
 
   it("opens a workspace chip with the same Bearer", async () => {
@@ -240,7 +241,7 @@ describe("shell approval is per command", () => {
         String(url).includes("/api/v1/workspace/file"),
       );
       const headers = call?.[1]?.headers as Record<string, string> | undefined;
-      expect(headers?.Authorization ?? headers?.authorization).toBe("Bearer tok-door");
+      expect(new Headers(headers).get("authorization")).toBe("Bearer tok-door");
     });
     const call = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/api/v1/workspace/file"),

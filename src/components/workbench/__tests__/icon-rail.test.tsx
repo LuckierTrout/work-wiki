@@ -13,6 +13,7 @@ import {
   WORKBENCH_MODES,
   badgeAccessibleName,
 } from "@/lib/workbench-modes";
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
 import type { SidecarStatus } from "@/lib/sidecar";
 
 /**
@@ -163,6 +164,7 @@ describe("the count badge", () => {
 describe("the sidecar dot", () => {
   const CASES: ReadonlyArray<[SidecarStatus, string, boolean]> = [
     ["unknown", "Checking sidecar", false],
+    ["mismatch", SIDECAR_PAIRING_COPY, false],
     ["up", "Sidecar running", true],
     // No `pageOrigin` is passed, which is the state the label selector degrades
     // to — so this row is byte-identical to what the dot said before DW-750.

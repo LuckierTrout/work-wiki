@@ -32,8 +32,11 @@ import {
 } from "../sidecar";
 import { settingsSource, sidecarHarness } from "./sidecar-harness";
 
+beforeEach(() => vi.stubEnv("NEXT_PUBLIC_SIDECAR_INSTANCE", "test-app"));
+afterEach(() => vi.unstubAllEnvs());
 function respond(ok: boolean, status: number): Response {
-  return { ok, status } as Response;
+  return Response.json({ status: "running", pairingReady: true,
+    pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } }, { status });
 }
 
 describe("loopback contract", () => {
@@ -56,9 +59,9 @@ describe("loopback contract", () => {
 });
 
 describe("probeSidecar", () => {
-  it("is up only on a 2xx", async () => {
+  it("is up only on a matched running health body", async () => {
     await expect(probeSidecar(async () => respond(true, 200))).resolves.toBe("up");
-    await expect(probeSidecar(async () => respond(true, 204))).resolves.toBe("up");
+    await expect(probeSidecar(async () => new Response(null, { status: 204 }))).resolves.toBe("mismatch");
   });
 
   it("is down on a non-2xx", async () => {
@@ -330,9 +333,9 @@ describe("sidecar cross-origin contract (DW-25)", () => {
       }),
       refresh: async () => guarded.current(),
     };
-    const base = await listenWith({ settingsSource: guarded }, ["https://app.example"]);
+    const base = await listenWith({ settingsSource: guarded, kernel: { base: "https://app.example", token: "" } }, ["https://app.example"]);
     const response = await fetch(`${base}/api/v1/skills`, {
-      headers: { origin: "https://app.example" },
+      headers: { origin: "https://app.example", "x-work-wiki-instance": "test-app" },
     });
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
@@ -445,8 +448,8 @@ describe("sidecar cross-origin contract (DW-25)", () => {
       });
   }
 
-  it("answers up through probeSidecar from a CONFIGURED origin", async () => {
-    const base = await listen(["https://app.example"]);
+  it("answers up through probeSidecar from a CONFIGURED paired origin", async () => {
+    const base = await listenWith({ kernel: { base: "https://app.example", token: "" } }, ["https://app.example"]);
     await expect(
       probeSidecar(probeFrom(base, "https://app.example")),
     ).resolves.toBe("up");

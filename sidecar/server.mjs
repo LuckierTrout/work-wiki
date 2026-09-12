@@ -18,6 +18,7 @@
  * and may read `.llm-wiki-config.json` for Chat provider/model/custom key.
  * Request bodies must never carry `apiKey`.
  */
+import { createPairingSource, pairingOrigin, SIDECAR_INSTANCE_HEADER } from "./pairing.mjs";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -163,7 +164,7 @@ export function applyDotEnv(text, env = process.env) {
 }
 
 export function loadSidecarEnvFromFiles(rootDir) {
-  for (const name of [".env", ".env.local"]) {
+  for (const name of [".env.local", ".env"]) {
     try {
       applyDotEnv(fs.readFileSync(path.join(rootDir, name), "utf8"));
     } catch (error) {
@@ -324,7 +325,7 @@ function cors(req, res, allowedOrigins = []) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    `Content-Type, Accept, Authorization, ${LOOPBACK_TOKEN_HEADER}`,
+    `Content-Type, Accept, Authorization, ${LOOPBACK_TOKEN_HEADER}, ${SIDECAR_INSTANCE_HEADER}`,
   );
 }
 
@@ -479,6 +480,7 @@ export function createSidecarServer({
       ""
     ).trim(),
   },
+  pairingSource = createPairingSource({ kernel }),
   workspace = createAgentWorkspace(),
   capabilities = createCapabilityStore(),
   approvals = createConversationApprovals(),
@@ -535,7 +537,11 @@ export function createSidecarServer({
     const registry = wikiRegistryRows(wikiRegistry);
 
     if (req.method === "GET" && url.pathname === "/api/v1/health") {
-      sendJson(res, 200, healthPayload({ status: status(), settings }));
+      const pairing = await pairingSource.read();
+      sendJson(res, 200, {
+        ...healthPayload({ status: status(), settings }),
+        pairing, kernelOrigin: pairingOrigin(kernel.base), pairingReady: pairing !== null && (!origin || pairingOrigin(origin) === pairingOrigin(kernel.base)),
+      });
       return;
     }
 
@@ -545,7 +551,19 @@ export function createSidecarServer({
       return;
     }
     try {
-      const allowed = authorizeLoopback(settings, extractToken(req.headers, url));
+      const pairing = await pairingSource.read();
+      const expectedInstance = req.headers[SIDECAR_INSTANCE_HEADER];
+      // Originless MCP/CLI clients keep token auth, but the sidecar must still
+      // attest its local kernel. Browsers must name the instance on every call.
+      if (!pairing || ((origin || expectedInstance) && expectedInstance !== pairing.instance) ||
+          (origin && pairingOrigin(origin) !== pairingOrigin(kernel.base))) {
+        sendJson(res, 409, { error: "sidecar_pairing_mismatch" });
+        return;
+      }
+      // Refresh the door token too: rotation must not wait for the background poll.
+      await settingsSource.refresh();
+      const currentSettings = settingsSource.current();
+      const allowed = authorizeLoopback(currentSettings, extractToken(req.headers, url));
       if (!allowed.ok) {
         // The token is NEVER echoed — not the provided one, not its length, not
         // a redacted form of it. The body is the one word.
@@ -559,7 +577,7 @@ export function createSidecarServer({
         // one poll — and a scan that ignored the map would list packs the Agent
         // will refuse to read.
         sendJson(res, 200, {
-          skills: await scanSkills({ enablement: settings.skillEnablement }),
+          skills: await scanSkills({ enablement: currentSettings.skillEnablement }),
         });
         return;
       }
@@ -578,7 +596,7 @@ export function createSidecarServer({
         await handleChat(req, res, wikiId, {
           workspace,
           kernel,
-          settings,
+          settings: currentSettings,
           capabilities,
           approvals,
           sessionFactory: chatSessionFactory,
@@ -660,7 +678,14 @@ if (isMain) {
   // `starting` until the bind resolves. It is a real state, not a formality: a
   // client that probed during startup used to be told `"ok"`.
   let listenerStatus = "starting";
+  const pairingSource = createPairingSource({ kernel });
+  const startupPairing = await pairingSource.read();
+  process.stdout.write(
+    `work-wiki sidecar kernel: ${pairingOrigin(kernel.base) || "unconfigured"}; ` +
+    `pairing: ${startupPairing ? "verified" : "unverified — check WORKWIKI_URL and start both processes from the same checkout"}\n`,
+  );
   const server = createSidecarServer({
+    pairingSource,
     settingsSource,
     status: () => listenerStatus,
     kernel,
@@ -704,6 +729,7 @@ if (isMain) {
   // machine can ask the sidecar to parse anything.
   const { startExtractLoop } = await import("./extract-loop.mjs");
   startExtractLoop({
+    beforeDrain: async () => (await pairingSource.read()) !== null,
     log: (message) => process.stdout.write(`${message}\n`),
   });
 }

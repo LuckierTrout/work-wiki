@@ -171,6 +171,7 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith("/api/v1/health")) return Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } });
       if (url.endsWith("/api/v1/skills")) {
         return new Response(JSON.stringify({ skills: [] }), { status: 200 });
       }

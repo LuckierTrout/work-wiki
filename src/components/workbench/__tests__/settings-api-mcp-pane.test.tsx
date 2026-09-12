@@ -148,7 +148,7 @@ function routeFetch(
     if (target.includes("/api/v1/health")) {
       await gate;
       if (live.health === undefined) throw new TypeError("Failed to fetch");
-      return { ok: true, status: 200, json: async () => live.health } as Response;
+      return { ok: true, status: 200, json: async () => ({ ...(live.health as Record<string, unknown>), pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } }) } as Response;
     }
     if (target.includes("/api/v1/skills")) {
       // No `skills` in the fixture means nothing is serving the scan either —
@@ -278,7 +278,7 @@ describe("the pane probes once and says what it found", () => {
     // hammer the sidecar from a pane the owner is only looking at.
     const { view } = await mountPane(payload(), { health: { status: "running" } });
     await healthLine();
-    expect(probeCount()).toBe(1);
+    expect(probeCount()).toBe(2);
     // A bare re-render, which catches a missing dependency array outright.
     view.rerender(<SettingsCanvas category="api-mcp" headingId="wb-set-heading" />);
     // …then a move on EACH prop the effect could plausibly be given as a
@@ -291,7 +291,7 @@ describe("the pane probes once and says what it found", () => {
     // Generate moves the draft a third way, for `[values.loopbackApiToken]`.
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY }));
     await settle();
-    expect(probeCount()).toBe(1);
+    expect(probeCount()).toBe(2);
   });
 
   it("counts one Skill in the singular", async () => {
@@ -385,7 +385,7 @@ describe("the pane probes once and says what it found", () => {
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_API_TOKEN_SHOW_COPY }));
     expect(screen.getByText(revealed)).toBeTruthy();
     await settle();
-    expect(probeCount()).toBe(before + 1);
+    expect(probeCount()).toBe(before + 2);
   });
 });
 

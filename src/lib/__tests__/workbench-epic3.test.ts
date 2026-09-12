@@ -57,6 +57,7 @@ function openDoorServer() {
     skillEnablement: {},
   };
   return createSidecarServer({
+    pairingSource: { read: async () => ({ protocol: 1, instance: "test-app", localIdentity: "test-local" }) },
     settingsSource: { current: () => settings, refresh: async () => settings },
   });
 }

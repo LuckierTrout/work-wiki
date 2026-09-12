@@ -119,7 +119,7 @@ beforeEach(() => {
           status: 200,
           json: async () => String(input).includes("/api/workbench/preview")
             ? { name: "Alpha", path: "wiki/alpha.md", slug: "alpha", format: "markdown", body: "# Alpha", truncated: false, editable: true }
-            : {},
+            : String(input).endsWith("/api/v1/health") ? { status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } } : {},
           text: async () => "",
         }) as unknown as Response,
     ),
@@ -337,10 +337,10 @@ describe("Workbench mode ↔ URL", () => {
     expect(window.history.length).toBe(before + 1);
     // The whole reason this is `pushState` and not `router.push`: the route
     // segment is never re-rendered, so nothing above the mode panel unmounts.
-    // Same rail node, and the sidecar probe did not run a second time.
+    // Same rail node; the additional health read attests Chat’s Skills scan.
     expect(screen.getByRole("navigation", { name: "Modes" })).toBe(rail);
     // Chat initializes on first presentation, so its reads are expected here.
-    expect(probeCalls()).toHaveLength(probes);
+    expect(probeCalls()).toHaveLength(probes + 1);
     expect(announced()).toBe("Chat");
     // The URL is layered ON the storage restore, never a replacement for it: a
     // reload with no param at all must still land on Chat.

@@ -1,8 +1,16 @@
 import type { NextConfig } from "next";
+import { randomUUID } from "node:crypto";
+import { localSidecarIdentity } from "./tools/sidecar-identity.mjs";
 
 const projectRoot = process.cwd();
 
 const nextConfig: NextConfig = {
+  // Inlined into both bundles. A new dev session/build invalidates old tabs.
+  // These are public opaque identifiers, never credentials or filesystem paths.
+  env: {
+    NEXT_PUBLIC_SIDECAR_INSTANCE: randomUUID(),
+    SIDECAR_LOCAL_IDENTITY: localSidecarIdentity(projectRoot),
+  },
   // output: "standalone" removed — the @opennextjs/cloudflare adapter
   // handles output bundling for Cloudflare Pages. Docker builds still
   // work with the default output mode.

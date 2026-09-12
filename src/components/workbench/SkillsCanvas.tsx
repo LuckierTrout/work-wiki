@@ -1,5 +1,7 @@
 "use client";
 
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SurfacePresentation, useSurfaceVisible } from "@/hooks/useSurfaceVisibility";
 import { loopbackFetch } from "@/lib/loopback-client";
@@ -89,7 +91,9 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
         if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
         if (!read.ok) {
           if (quiet) return;
-          setError(SKILLS_SCAN_FAILED_COPY);
+          const refusal = await read.json().catch(() => null);
+          if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
+          setError(refusal?.error === "sidecar_pairing_mismatch" ? SIDECAR_PAIRING_COPY : SKILLS_SCAN_FAILED_COPY);
           setSkills([]);
           return;
         }

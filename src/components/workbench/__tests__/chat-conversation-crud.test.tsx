@@ -113,6 +113,7 @@ beforeEach(() => {
   sidecar = vi.fn(async () => new Response("{}", { status: 200 }));
   fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = String(input);
+      if (url.endsWith("/api/v1/health")) return Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } });
     if (url === SKILL_SCAN_URL) {
       return new Response(JSON.stringify({ skills: SKILLS }), { status: 200 });
     }

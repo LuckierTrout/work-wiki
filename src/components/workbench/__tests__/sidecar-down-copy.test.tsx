@@ -38,6 +38,7 @@ vi.mock("../SearchCanvas", () => ({ SearchCanvas: () => null }));
 vi.mock("../SkillsCanvas", () => ({ SkillsCanvas: () => null }));
 vi.mock("../TodosCanvas", () => ({ TodosCanvas: () => null }));
 
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
 import { ModeCanvas } from "../ModeCanvas";
 
 afterEach(() => {
@@ -85,4 +86,10 @@ describe("Chat's fail-closed sentence on a deployed page (DW-607)", () => {
     expect(screen.queryByText(CHAT_SIDECAR_UNREACHABLE_COPY)).toBeNull();
     expect(screen.queryByText(CHAT_SIDECAR_DOWN_COPY)).toBeNull();
   });
+});
+
+it("explains a mismatched pair and does not mount the chat controls", () => {
+  render(<ModeCanvas mode="chat" sidecar="mismatch" headingId="wb-heading"><div /></ModeCanvas>);
+  expect(screen.getByText(SIDECAR_PAIRING_COPY)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
 });

@@ -1,5 +1,7 @@
 "use client";
 
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
+
 import { forwardRef } from "react";
 import {
   BADGE_MODE_NOUNS,
@@ -105,7 +107,7 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
       ? "Sidecar running"
       : sidecar === "down"
         ? railSidecarDownLabel(pageOrigin)
-        : "Checking sidecar";
+        : sidecar === "mismatch" ? SIDECAR_PAIRING_COPY : "Checking sidecar";
 
   return (
     <nav className="wb-rail" id={id} aria-label="Modes" ref={ref}>

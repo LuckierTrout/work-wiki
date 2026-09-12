@@ -135,6 +135,30 @@ export function authenticatesInRoute(pathname: string): boolean {
 const CLERK_PROXY_RE = /^\/__clerk(?:\/|$)/;
 const SIGN_IN_RE = /^\/sign-in(?:\/|$)/;
 
+// The sidecar has no Clerk session. These handlers authenticate the owner or
+// service token themselves (requireOwnerOrServicePrincipal / resolveV1Caller).
+// Match the method AND the complete path: the browser-only retrieve endpoint,
+// cloud Chat stubs and future /api/v1 routes must not inherit an exemption.
+const SIDECAR_ROUTE_METHODS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["GET", /^\/api\/v1\/(?:loopback-settings|projects)$/],
+  ["GET", /^\/api\/v1\/projects\/[^/]+\/(?:files(?:\/content)?|graph|reviews)$/],
+  ["GET", /^\/api\/(?:sources\/search|graph\/workbench)$/],
+  ["POST", /^\/api\/v1\/web-search$/],
+  ["POST", /^\/api\/v1\/projects\/[^/]+\/(?:search|sources\/rescan|reviews\/resolve)$/],
+  ["PATCH", /^\/api\/v1\/projects\/[^/]+\/reviews(?:\/(?!resolve$)[^/]+)?$/],
+];
+
+function isBearerSidecarRequest(
+  req: Pick<NextRequest, "method" | "headers" | "nextUrl">,
+): boolean {
+  return (
+    /^Bearer\s+\S+/i.test(req.headers.get("authorization") ?? "") &&
+    SIDECAR_ROUTE_METHODS.some(
+      ([method, path]) => req.method === method && path.test(req.nextUrl.pathname),
+    )
+  );
+}
+
 /**
  * Machine callers have no Clerk session. Only mutating routes that explicitly
  * validate bearer credentials in their own handler may bypass the owner-session
@@ -206,7 +230,11 @@ export async function handlePrivateRequest(
 
   // Queue, cron, email, agent, and MCP callers authenticate inside the route.
   // A missing bearer header never bypasses the private deployment boundary.
-  if (isBearerMachineWrite(req) || isBearerMachineRead(req)) {
+  if (
+    isBearerMachineWrite(req) ||
+    isBearerMachineRead(req) ||
+    isBearerSidecarRequest(req)
+  ) {
     return privateResponse(NextResponse.next());
   }
 

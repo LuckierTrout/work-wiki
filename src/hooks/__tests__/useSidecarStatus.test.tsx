@@ -50,7 +50,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  fetchMock = vi.fn(async () => ({ ok: true }) as unknown as Response);
+  fetchMock = vi.fn(async () => Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } }));
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -126,7 +126,7 @@ describe("useSidecarStatus", () => {
     // as terminal would sit on `down` forever, so a sidecar started a minute
     // later would never be noticed — the dot would be permanently wrong in the
     // one direction nobody checks.
-    fetchMock.mockResolvedValue({ ok: true } as unknown as Response);
+    fetchMock.mockResolvedValue(Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } }));
     await settle(FIFTEEN_SECONDS);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);

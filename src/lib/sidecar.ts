@@ -1,3 +1,5 @@
+import { matchesSidecarPairing } from "./sidecar-pairing";
+
 /**
  * The local sidecar's loopback contract (AD-6 / AD-22).
  *
@@ -145,7 +147,7 @@ export function sidecarChatUrl(wikiId: string): string {
 /** A refused port answers instantly; a wedged one must not stall the rail. */
 export const SIDECAR_PROBE_TIMEOUT_MS = 1500;
 
-export type SidecarStatus = "unknown" | "up" | "down";
+export type SidecarStatus = "unknown" | "up" | "down" | "mismatch";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -193,7 +195,7 @@ export async function probeSidecar(
     }, timeoutMs);
   });
 
-  const probed = (async (): Promise<"up" | "down"> => {
+  const probed = (async (): Promise<"up" | "down" | "mismatch"> => {
     try {
       const response = await fetchImpl(SIDECAR_HEALTH_URL, {
         method: "GET",
@@ -202,7 +204,10 @@ export async function probeSidecar(
         cache: "no-store",
         signal: controller.signal,
       });
-      return response.ok ? "up" : "down";
+      if (!response.ok) return "down";
+      const payload = await response.json().catch(() => null);
+      return matchesSidecarPairing(payload, process.env.NEXT_PUBLIC_SIDECAR_INSTANCE || "") &&
+        payload?.status === "running" ? "up" : "mismatch";
     } catch {
       // Connection refused, DNS, CORS, abort — all the same answer.
       return "down";

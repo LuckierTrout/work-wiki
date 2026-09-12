@@ -1,5 +1,7 @@
 "use client";
 
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
+
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { usePageOrigin } from "@/hooks/usePageOrigin";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
@@ -326,7 +328,7 @@ export function ModeCanvas({
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("chat").label}
           </h2>
-          <p className="wb-empty">{chatSidecarDownCopy(pageOrigin)}</p>
+          <p className="wb-empty">{sidecar === "mismatch" ? SIDECAR_PAIRING_COPY : chatSidecarDownCopy(pageOrigin)}</p>
         </div>
       ) : null}
 

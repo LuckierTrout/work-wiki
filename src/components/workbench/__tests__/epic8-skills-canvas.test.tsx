@@ -116,6 +116,7 @@ beforeEach(() => {
   );
   fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = String(input);
+    if (url.endsWith("/api/v1/health")) return Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } });
     if (url.endsWith("/api/v1/skills")) return scanned();
     if (url === "/api/settings" && init?.method === "PUT") return settingsPut(url, init);
     if (url === "/api/settings") {
@@ -201,6 +202,7 @@ describe("the switch writes one decision to the kernel", () => {
   it("refuses the write when the version cannot be read", async () => {
     vi.stubGlobal("fetch", async (input: string) => {
       const url = String(input);
+    if (url.endsWith("/api/v1/health")) return Response.json({ status: "running", pairingReady: true, pairing: { protocol: 1, instance: "test-app", localIdentity: "test-local" } });
       if (url.endsWith("/api/v1/skills")) return scanned();
       // A settings GET the surface cannot use: no `workbench`, so no version.
       return new Response("{}", { status: 200 });
@@ -382,4 +384,11 @@ describe("the switch writes one decision to the kernel", () => {
     fireEvent.click(toggle);
     expect(settingsPut).not.toHaveBeenCalled();
   });
+});
+
+it("explains an unpaired sidecar before scanning any Skills", async () => {
+  fetchMock.mockImplementation(async () => Response.json({ status: "running" }));
+  render(<SkillsCanvas active />);
+  expect(await screen.findByText(/This sidecar is not paired with this app/)).toBeTruthy();
+  expect(scanCount()).toBe(0);
 });

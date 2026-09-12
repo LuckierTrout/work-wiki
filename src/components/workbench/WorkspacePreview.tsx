@@ -1,5 +1,7 @@
 "use client";
 
+import { SIDECAR_PAIRING_COPY } from "@/lib/sidecar-pairing";
+
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { loopbackFetch } from "@/lib/loopback-client";
 import { workspaceFileUrl } from "@/lib/chat-agent";
@@ -42,12 +44,14 @@ const FAILED_COPY =
 export function WorkspacePreview({ id, selection, hidden }: WorkspacePreviewProps) {
   const [content, setContent] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [failureCopy, setFailureCopy] = useState(FAILED_COPY);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setFailed(false);
+    setFailureCopy(FAILED_COPY);
     setContent(null);
     void (async () => {
       try {
@@ -55,7 +59,11 @@ export function WorkspacePreview({ id, selection, hidden }: WorkspacePreviewProp
           cache: "no-store",
           signal: controller.signal,
         });
-        if (!read.ok) throw new Error(String(read.status));
+        if (!read.ok) {
+          const body = await read.json().catch(() => null);
+          if (body?.error === "sidecar_pairing_mismatch") setFailureCopy(SIDECAR_PAIRING_COPY);
+          throw new Error(String(read.status));
+        }
         const body = (await read.json()) as { content?: unknown };
         if (typeof body.content !== "string") throw new Error("shape");
         setContent(body.content);
@@ -203,7 +211,7 @@ export function WorkspacePreview({ id, selection, hidden }: WorkspacePreviewProp
           <p className="wb-preview-note">{LOADING_COPY}</p>
         ) : failed ? (
           <p className="wb-preview-note" role="alert">
-            {FAILED_COPY}
+            {failureCopy}
           </p>
         ) : (
           <PreviewBody

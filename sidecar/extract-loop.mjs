@@ -412,7 +412,7 @@ export async function drainOnce(config, binary, log = () => {}) {
  * never built". Records are failed with a sentence that names the real
  * problem instead.
  */
-export function startExtractLoop({ env = process.env, log = () => {} } = {}) {
+export function startExtractLoop({ env = process.env, log = () => {}, beforeDrain = async () => true } = {}) {
   const config = resolveExtractConfig(env);
   if (!config.enabled) {
     log(
@@ -427,6 +427,7 @@ export function startExtractLoop({ env = process.env, log = () => {} } = {}) {
     if (stopped) return;
     let handled = 0;
     try {
+      if (!(await beforeDrain())) throw new Error("sidecar_pairing_mismatch: check the app and sidecar pair before extracting");
       const binary = await resolveBinary(config);
       if (!binary) {
         log(

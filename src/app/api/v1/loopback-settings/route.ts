@@ -1,4 +1,5 @@
-import { getLoopbackApiSettings, loadConfigSync } from "@/lib/config";
+import { appSidecarPairing } from "@/lib/sidecar-pairing";
+import { getLoopbackApiSettings, loadConfig } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
@@ -43,9 +44,13 @@ export async function GET(request: Request) {
       // unauthenticated caller that the route exists and is worth guessing at.
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const settings = getLoopbackApiSettings();
+    // Each poll needs the stored snapshot, including after the sync cache TTL
+    // expires. A cold sync-only read reports the saved API as disabled forever.
+    const config = await loadConfig();
+    const settings = getLoopbackApiSettings(config);
     return Response.json(
       {
+        pairing: appSidecarPairing(),
         enabled: settings.enabled,
         allowUnauthenticated: settings.allowUnauthenticated,
         token: settings.token,
@@ -59,7 +64,7 @@ export async function GET(request: Request) {
         // The map records DECISIONS — absent means enabled — so an empty object
         // is the correct answer for a workspace that has never disabled a Skill,
         // and `scanSkills` reads it that way.
-        skillEnablement: loadConfigSync().skillEnablement ?? {},
+        skillEnablement: config.skillEnablement ?? {},
       },
       // Never cached, anywhere. A revoked token that a CDN or a `fetch` cache
       // kept answering with would be a credential the owner believes they
