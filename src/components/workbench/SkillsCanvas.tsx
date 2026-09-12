@@ -13,6 +13,7 @@ import {
   SKILL_SCAN_URL,
   skillScopeLabel,
   skillToggleLabel,
+  skillsScanRefusalCopy,
   type SkillSummary,
 } from "@/lib/chat-agent";
 import {
@@ -22,6 +23,16 @@ import {
   SETTINGS_SAVE_FAILED_COPY,
   verdictClearsHeldVersion,
 } from "@/lib/workbench-settings";
+
+/** The door's one-word `error`, or undefined when the body is not its JSON. */
+async function doorError(read: Response): Promise<string | undefined> {
+  try {
+    const body = (await read.json()) as { error?: unknown };
+    return typeof body.error === "string" ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The Skills rail: every `SKILL.md` on disk, and the switch that hides one
@@ -91,9 +102,9 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
         if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
         if (!read.ok) {
           if (quiet) return;
-          const refusal = await read.json().catch(() => null);
+          const refusal = await doorError(read);
           if (!visibleRef.current || signal?.aborted || seq !== scanSeq.current) return;
-          setError(refusal?.error === "sidecar_pairing_mismatch" ? SIDECAR_PAIRING_COPY : SKILLS_SCAN_FAILED_COPY);
+          setError(refusal === "sidecar_pairing_mismatch" ? SIDECAR_PAIRING_COPY : skillsScanRefusalCopy(refusal));
           setSkills([]);
           return;
         }

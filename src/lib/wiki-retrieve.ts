@@ -51,6 +51,26 @@ type RetrievalMode = "wiki" | "sources";
 /** Additive title bonus vs a body-only hit with the same token overlap. */
 export const TITLE_MATCH_BONUS = 10;
 
+/**
+ * The bytes a snippet is cut from: the document with its YAML block removed.
+ *
+ * `RetrieveDocument.body` is the WHOLE stored file — scoring reads it so a
+ * term that only appears in `tags:` still recalls the page, and the Chat
+ * context hands the model the metadata beside the prose. A snippet is what the
+ * owner READS, though, and a page whose first 240 bytes are its frontmatter
+ * (every short page, and every page the query matches nowhere in particular)
+ * showed `--- created: … owner: … ---` in the Search list. Mirrors the
+ * delimiter rule `parseFrontmatter` applies, without its validation: a block
+ * that would not parse is still not prose.
+ */
+function snippetSource(body: string): string {
+  if (!body.startsWith("---\n") && !body.startsWith("---\r\n")) return body;
+  const rest = body.slice(body.indexOf("\n") + 1);
+  const close = rest.match(/^---\s*$/m);
+  if (!close || close.index === undefined) return body;
+  return rest.slice(close.index + close[0].length).replace(/^\r?\n(?:\r?\n)?/, "");
+}
+
 const SPECIAL_SLUGS = new Set(["purpose", "index"]);
 const DEFAULT_SEARCH_TOP_K = 10;
 const DEFAULT_SEED_LIMIT = 24;
@@ -365,7 +385,7 @@ async function mergeVectorHits(
         kind: doc.kind,
         type: doc.type,
         body: doc.body,
-        snippet: extractBestSnippet(doc.body, tokenize(query), 240),
+        snippet: extractBestSnippet(snippetSource(doc.body), tokenize(query), 240),
       });
     }
     const hits = [...merged.values()].sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
@@ -431,7 +451,7 @@ async function expandHits(
           kind: doc.kind,
           type: doc.type,
           body: doc.body,
-          snippet: extractBestSnippet(doc.body, [], 240),
+          snippet: extractBestSnippet(snippetSource(doc.body), [], 240),
         },
       );
     }
@@ -466,7 +486,9 @@ function tokenizedHits(
         kind: doc.kind,
         type: doc.type,
         body: doc.body,
-        snippet: extractBestSnippet(doc.body, queryTokens, 240).replace(/\s+/g, " ").trim(),
+        snippet: extractBestSnippet(snippetSource(doc.body), queryTokens, 240)
+          .replace(/\s+/g, " ")
+          .trim(),
       } satisfies RetrieveHit;
     })
     .filter((hit): hit is RetrieveHit => hit !== null)
@@ -506,7 +528,7 @@ export async function searchWiki(
     hits: hits.slice(0, topK).map((hit) => ({
       path: hit.path,
       title: hit.title,
-      snippet: hit.snippet || hit.body.slice(0, 240),
+      snippet: hit.snippet || snippetSource(hit.body).slice(0, 240),
       score: hit.score,
     })),
   };

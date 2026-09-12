@@ -1150,11 +1150,18 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // The owner is picking, so a dock from here on is a change they made — see
     // the reveal effect below, which stays out of the mount restore.
     ownerPickedRef.current = true;
-    announce(
-      isSameSelection(liveRef.current.selection, next)
-        ? PREVIEW_CLOSED_COPY
-        : previewDockAnnouncement(selectionName(next, groups, nodes)),
-    );
+    // …and only where a column actually answers the pick. The dock rule is
+    // `shouldDockPreview`; in a mode where it says no — Sources — the row takes
+    // `aria-current` and nothing docks, so "Preview, <name>" would report a
+    // panel that never appears and "Preview closed" one that was never open.
+    // `modeRef` rather than `mode`, for the reason `liveRef` is read above.
+    if (shouldDockPreview(modeRef.current, next)) {
+      announce(
+        isSameSelection(liveRef.current.selection, next)
+          ? PREVIEW_CLOSED_COPY
+          : previewDockAnnouncement(selectionName(next, groups, nodes)),
+      );
+    }
     setSelection((current) => (isSameSelection(current, next) ? null : next));
   }, [announce]);
 

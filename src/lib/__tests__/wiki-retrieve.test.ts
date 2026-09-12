@@ -713,3 +713,23 @@ describe("assemble and search", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Search snippets are drawn from the body, never the YAML block
+// ---------------------------------------------------------------------------
+
+describe("Search snippets", () => {
+  it("never start with the page's YAML frontmatter block", async () => {
+    await writeWikiPage(
+      "overview",
+      "---\ncreated: 2026-09-12\nupdated: 2026-09-12\nowner: e2e-owner\nvisibility: public\n---\n\n# Overview\n\nThis wiki has 2 pages about the postgres migration.\n",
+    );
+    await updateIndex([{ slug: "overview", title: "Overview", summary: "Overview" }]);
+    const result = await searchWiki("postgres", { principal: null });
+    const hit = result.hits.find((entry) => entry.path === "wiki/overview.md");
+    expect(hit).toBeDefined();
+    expect(hit!.snippet).not.toMatch(/^---/);
+    expect(hit!.snippet).not.toContain("created:");
+    expect(hit!.snippet).toContain("Overview");
+  });
+});

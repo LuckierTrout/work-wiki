@@ -302,3 +302,28 @@ describe("extractAllInternalTargets", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Links that leave the wiki directory are not Page links
+// ---------------------------------------------------------------------------
+
+describe("extractWikiLinks ignores links that leave the wiki directory", () => {
+  it("skips the raw-source link Ingest writes under ## Sources", () => {
+    // `ingest-bookkeeping.ts` writes `- [<title>](../<sourcePath>)` so a
+    // markdown viewer can follow a summary to its bytes. `../raw/sources/…`
+    // names a stored file, never a Page — read as a slug it made Lint flag
+    // every ingested source summary as a broken link.
+    const content =
+      "## Sources\n\n- [q3-planning](../raw/sources/q3-planning/c91cbc56c74ca6e4.md)";
+    expect(extractWikiLinks(content)).toEqual([]);
+    expect(extractAllInternalTargets(content)).toEqual([]);
+  });
+
+  it("still extracts a Page link beside a raw-source link", () => {
+    const content =
+      "[Alpha](alpha.md) and [bytes](../raw/sources/alpha/ab12.md)";
+    expect(extractWikiLinks(content)).toEqual([
+      { text: "Alpha", targetSlug: "alpha" },
+    ]);
+  });
+});

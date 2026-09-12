@@ -43,6 +43,7 @@ import {
 } from "@/lib/chat-pending-turn";
 import {
   CHAT_COMPOSER_PLACEHOLDER,
+  CHAT_CONVERSATION_EMPTY_COPY,
   CHAT_MODEL_MISSING_COPY,
   CHAT_SIDECAR_UP_COPY,
   CHAT_VECTOR_FALLBACK_COPY,
@@ -717,7 +718,14 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         {error ? <p className="wb-chat-error">{error}</p> : null}
 
         <div className="wb-chat-log" aria-live="polite" ref={liveRef}>
-          {empty ? <p className="wb-empty">{CHAT_SIDECAR_UP_COPY}</p> : null}
+          {/* "Click New Chat to begin" is true only while nothing is open; over
+              an open conversation with no turns it tells the owner to do what
+              they just did, so that state points at the composer instead. */}
+          {empty ? (
+            <p className="wb-empty">
+              {activeId ? CHAT_CONVERSATION_EMPTY_COPY : CHAT_SIDECAR_UP_COPY}
+            </p>
+          ) : null}
           {messages.map((message) => (
             <article
               key={message.id}

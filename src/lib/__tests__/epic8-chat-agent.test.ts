@@ -66,7 +66,10 @@ import {
   CHAT_API_UNAUTHORIZED_COPY,
   isChatToolRow,
   outputChipLabel,
+  SKILLS_SCAN_DISABLED_COPY,
   SKILLS_SCAN_FAILED_COPY,
+  SKILLS_SCAN_UNAUTHORIZED_COPY,
+  skillsScanRefusalCopy,
   TOOL_ROW_STATES,
   toolRowLabel,
   workspaceFileUrl,
@@ -1965,6 +1968,21 @@ describe("chat-agent copy derives its Settings destination", () => {
     expect(SKILLS_SCAN_FAILED_COPY).not.toContain("Workbench");
   });
 
+  it("sends the two Skills door refusals to the same derived pointer", () => {
+    expect(SKILLS_SCAN_DISABLED_COPY).toBe(
+      `Skills are scanned by the local sidecar, and its API is off. Turn it on in ${pointer}.`,
+    );
+    expect(SKILLS_SCAN_UNAUTHORIZED_COPY).toBe(
+      `Skills are scanned by the local sidecar, and it refused this page’s token. Generate one in ${pointer}.`,
+    );
+    // The door's one-word answers map to those two; anything else keeps the
+    // did-not-answer sentence, because nothing readable answered.
+    expect(skillsScanRefusalCopy("disabled")).toBe(SKILLS_SCAN_DISABLED_COPY);
+    expect(skillsScanRefusalCopy("unauthorized")).toBe(SKILLS_SCAN_UNAUTHORIZED_COPY);
+    expect(skillsScanRefusalCopy(undefined)).toBe(SKILLS_SCAN_FAILED_COPY);
+    expect(skillsScanRefusalCopy("busy")).toBe(SKILLS_SCAN_FAILED_COPY);
+  });
+
   it("sends both door refusals to the same derived pointer", () => {
     expect(CHAT_API_DISABLED_COPY).toBe(
       `The local API is off. Turn it on in ${pointer} to use Chat.`,
@@ -1995,11 +2013,12 @@ describe("chat-agent copy derives its Settings destination", () => {
     // then passes for the wrong reason — a green light on the one assertion
     // this test exists to make.
     expect(source).not.toContain(settingsCategory("api-mcp").label);
-    // THREE, one per constant, counted as occurrences rather than as lines: a
-    // formatter that wraps a template literal, or a doc line that names the
-    // constant, moves a line count without any drift having happened.
+    // FIVE, one per constant — the three refusals above plus the two Skills
+    // door refusals — counted as occurrences rather than as lines: a formatter
+    // that wraps a template literal, or a doc line that names the constant,
+    // moves a line count without any drift having happened.
     const uses = source.split("${API_MCP_POINTER}").length - 1;
-    expect(uses).toBe(3);
+    expect(uses).toBe(5);
   });
 
   it("holds the sidecar's MCP instructions to the same derived pointer", () => {

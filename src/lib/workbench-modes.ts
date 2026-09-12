@@ -251,3 +251,27 @@ export function workbenchMode(id: WorkbenchModeId): WorkbenchMode {
 export function badgeAccessibleName(label: string, count: number, noun: string): string {
   return `${label}, ${count} ${noun}`;
 }
+
+/**
+ * The Sources canvas once the tree beside it lists something — or could not be
+ * read, which is not "nothing" either.
+ *
+ * Sources has no canvas surface: the tree in the left column IS the surface and
+ * no Preview docks there (`shouldDockPreview`), so the canvas holds one muted
+ * sentence. The mode's `emptyState` above is that sentence while the tree is
+ * empty; it was ALSO the sentence under a tree listing a just-ingested file,
+ * which read as a contradiction. This one names what a pick does instead.
+ */
+export const SOURCES_LISTED_COPY =
+  "Pick a Source in the left column to mark it as a meeting or delete it.";
+
+/**
+ * Chat's empty state once a conversation is OPEN and has no turns.
+ *
+ * The mode's `emptyState` — "Click New Chat to begin." — is true only while
+ * nothing is selected. It stayed on screen after the owner clicked New Chat,
+ * over the conversation that click created, instructing them to do the thing
+ * they had just done. An open, empty conversation points at the composer.
+ */
+export const CHAT_CONVERSATION_EMPTY_COPY =
+  "No messages yet. Type a message below to begin.";
